@@ -1,0 +1,40 @@
+/node_modules
+/coverage
+/dist
+/.expo
+.expo
+.DS_Store
+.vscode
+.env
+.env.*
+
+# Android
+/android/.gradle
+/android/app/build
+**/android/build
+
+# iOS
+/ios/Pods
+/ios/build
+/ios/DerivedData
+
+# Gradle
+.gradle
+
+# Metro
+metro-cache/
+
+# Yarn
+yarn-error.log
+
+# npm
+package-lock.json
+
+# Misc
+*.log
+
+# Editor directories and files
+.idea
+*.sublime-workspace
+*.sublime-project
+*.swp

@@ -1,0 +1,19 @@
+{
+  "name": "ai-trading-platform-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "react-native start",
+    "android": "npx react-native run-android",
+    "ios": "npx react-native run-ios",
+    "test": "jest"
+  },
+  "dependencies": {
+    "react": "18.2.0",
+    "react-native": "0.71.12"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.21.0",
+    "jest": "^29.0.0"
+  }
+}
