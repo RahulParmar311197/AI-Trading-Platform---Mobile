@@ -16,13 +16,13 @@ from app.session_risk import SessionPolicy, trading_allowed
 from app.trailing_stop import TrailingPolicy
 from app.partial_exit import PartialExitPolicy, partial_exit_quantity
 from app.execution_costs import ExecutionCostModel
+from app.backtest_metrics import calculate_metrics
 
 @dataclass(frozen=True)
 class BacktestV2Trade:
     symbol:str; side:str; entry:float; exit:float; quantity:float; pnl:float; entry_bar:int; exit_bar:int; reason:str; commission:float=0.0; slippage:float=0.0
 
-def _traditional_signal(history):
-    return generate_signal(history)
+def _traditional_signal(history): return generate_signal(history)
 
 def _smc_signal(history):
     data=generate_smc_ict_signal(history)
@@ -32,8 +32,7 @@ def _smc_signal(history):
 
 def _hybrid_signal(history):
     traditional=_traditional_signal(history); smc=_smc_signal(history)
-    if traditional is None or smc is None: return None
-    if traditional.action not in ('BUY','SELL') or traditional.action != smc.action: return None
+    if traditional is None or smc is None or traditional.action not in ('BUY','SELL') or traditional.action != smc.action: return None
     class Signal: pass
     s=Signal(); s.action=smc.action; s.entry=smc.entry; s.stop_loss=smc.stop_loss; s.target=smc.target; s.confidence=min(traditional.confidence,smc.confidence); s.reason=tuple(set(tuple(getattr(traditional,'reason',()))+tuple(getattr(smc,'reason',()))+('HYBRID_AGREEMENT',))); return s
 
@@ -78,4 +77,7 @@ def run_backtest_v2(candles:list[Candle], starting_equity:float=100000.0, risk_p
         if not risk.approved: rejected+=1; continue
         fill=execute_paper(risk=risk,broker=broker); portfolio.apply_fill(order,fill); open_entries[symbol]={'entry_bar':len(history)-1}
     final_prices={symbol:series[-1].close for symbol,series in by_symbol.items() if series}; result=portfolio.mark(final_prices)
-    return {'strategy':strategy,'starting_equity':starting_equity,'ending_equity':result['equity'],'realized_pnl':portfolio.realized_pnl,'open_positions':len(portfolio.positions),'risk_rejected':rejected,'mtf_rejected':mtf_rejected,'session_rejected':session_rejected,'partial_exits':sum(1 for t in trades if t.reason=='PARTIAL_TP'),'partial_rejected':partial_rejected,'total_commission':portfolio.total_commission,'total_slippage':portfolio.total_slippage,'equity_curve':equity_curve,'trade_journal':[t.__dict__ for t in trades]}
+    base={'strategy':strategy,'starting_equity':starting_equity,'ending_equity':result['equity'],'realized_pnl':portfolio.realized_pnl,'open_positions':len(portfolio.positions),'risk_rejected':rejected,'mtf_rejected':mtf_rejected,'session_rejected':session_rejected,'partial_exits':sum(1 for t in trades if t.reason=='PARTIAL_TP'),'partial_rejected':partial_rejected,'total_commission':portfolio.total_commission,'total_slippage':portfolio.total_slippage,'equity_curve':equity_curve,'trade_journal':[t.__dict__ for t in trades]}
+    metrics=calculate_metrics(base['starting_equity'],base['ending_equity'],base['trade_journal'],base['equity_curve'],base['total_commission'],base['total_slippage'])
+    base['metrics']=metrics.__dict__
+    return base
