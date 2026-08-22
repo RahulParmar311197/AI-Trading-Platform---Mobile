@@ -11,6 +11,15 @@ class RiskGatewayResult:
 
 
 def authorize(*, order: OrderIntent, equity: float, daily_pnl: float, open_positions: int, recent_losses: int = 0, limits: RiskLimits | None = None) -> RiskGatewayResult:
+    """Final pre-submit authorization. The order must already contain validated sizing/risk."""
     order.validate()
-    decision=evaluate(equity=equity,daily_pnl=daily_pnl,proposed_risk=order.risk_amount,proposed_exposure=order.quantity*order.entry,open_positions=open_positions,recent_losses=recent_losses,limits=limits)
-    return RiskGatewayResult(decision.allowed,order,decision)
+    decision = evaluate(
+        equity=equity,
+        daily_pnl=daily_pnl,
+        proposed_risk=order.risk_amount,
+        proposed_exposure=order.quantity * order.entry,
+        open_positions=open_positions,
+        recent_losses=recent_losses,
+        limits=limits,
+    )
+    return RiskGatewayResult(decision.allowed, order, decision)
