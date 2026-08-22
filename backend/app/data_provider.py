@@ -28,3 +28,26 @@ class ProviderRegistry:
         if name not in self._providers: raise KeyError(f"unknown provider: {name}")
         return self._providers[name]
     def names(self): return sorted(self._providers)
+class CachedProvider:
+    def __init__(self,provider:MarketDataProvider): self.provider=provider; self.cache={}
+    async def historical(self,symbol,timeframe,start,end):
+        key=(symbol,timeframe,start,end)
+        if key not in self.cache:
+            rows=await self.provider.historical(symbol,timeframe,start,end); seen=set(); clean=[]
+            for c in sorted(rows,key=lambda x:x.timestamp):
+                if c.timestamp not in seen: seen.add(c.timestamp); clean.append(c)
+            self.cache[key]=clean
+        return list(self.cache[key])
+class PaginatedProvider:
+    def __init__(self,fetch_page,page_size:int=1000,max_pages:int=100): self.fetch_page=fetch_page; self.page_size=page_size; self.max_pages=max_pages
+    async def historical(self,symbol,timeframe,start,end):
+        if self.page_size<1 or self.max_pages<1: raise ValueError('invalid pagination limits')
+        result=[]; cursor=None
+        for _ in range(self.max_pages):
+            page,cursor=await self.fetch_page(symbol,timeframe,start,end,cursor,self.page_size); result.extend(page)
+            if not cursor: break
+        else: raise ProviderError('historical data pagination limit exceeded')
+        seen=set(); clean=[]
+        for c in sorted(result,key=lambda x:x.timestamp):
+            if c.timestamp not in seen: seen.add(c.timestamp); clean.append(c)
+        return clean
