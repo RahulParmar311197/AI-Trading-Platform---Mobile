@@ -19,7 +19,7 @@ def run_backtest_v2(candles:list[Candle], starting_equity:float=100000.0, risk_p
     portfolio=PaperPortfolio(starting_equity); broker=PaperBroker(); trades=[]; rejected=0; equity_curve=[]; open_entries={}
     for i in range(20,len(candles)):
         bar=candles[i]
-        closed=portfolio.process_bar({bar.symbol:bar.close})
+        closed=portfolio.process_ohlc_bar({bar.symbol:bar})
         for c in closed:
             meta=open_entries.pop(c.symbol,None)
             trades.append(BacktestV2Trade(c.symbol,c.side,c.entry_price,c.exit_price,c.quantity,c.realized_pnl,meta['entry_bar'] if meta else i,i,c.reason))
@@ -31,4 +31,5 @@ def run_backtest_v2(candles:list[Candle], starting_equity:float=100000.0, risk_p
         risk=authorize(order=order,equity=portfolio.equity,daily_pnl=portfolio.realized_pnl,open_positions=len(portfolio.positions),limits=limits)
         if not risk.approved: rejected+=1; continue
         fill=execute_paper(risk=risk,broker=broker); portfolio.apply_fill(order,fill); open_entries[bar.symbol]={'entry_bar':i}
-    return {'starting_equity':starting_equity,'ending_equity':portfolio.mark({candles[-1].symbol:candles[-1].close})['equity'],'realized_pnl':portfolio.realized_pnl,'open_positions':len(portfolio.positions),'risk_rejected':rejected,'equity_curve':equity_curve,'trade_journal':[t.__dict__ for t in trades]}
+    final_prices={c.symbol:c.close for c in candles[-1:]}
+    return {'starting_equity':starting_equity,'ending_equity':portfolio.mark(final_prices)['equity'],'realized_pnl':portfolio.realized_pnl,'open_positions':len(portfolio.positions),'risk_rejected':rejected,'equity_curve':equity_curve,'trade_journal':[t.__dict__ for t in trades]}
