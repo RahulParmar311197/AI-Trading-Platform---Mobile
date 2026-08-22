@@ -7,8 +7,12 @@ from app.api.backtest import router as backtest_router
 from app.api.paper import router as paper_router
 from app.api.risk import router as risk_router
 from app.api.replay import router as replay_router
+from app.api.auth import router as auth_router
+from app.api.stream import router as stream_router
+from app.api.portfolio import router as portfolio_router
+from app.api.notifications import router as notifications_router
 
-app = FastAPI(title="AI Trading Platform API", version="1.0.0")
+app = FastAPI(title="AI Trading Platform API", version="1.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(health_router)
 app.include_router(markets_router, prefix="/api")
@@ -17,7 +21,11 @@ app.include_router(backtest_router, prefix="/api")
 app.include_router(paper_router, prefix="/api")
 app.include_router(risk_router, prefix="/api")
 app.include_router(replay_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
+app.include_router(portfolio_router, prefix="/api")
+app.include_router(notifications_router, prefix="/api")
+app.include_router(stream_router)
 
 @app.get("/")
 def root():
-    return {"name": "AI Trading Platform", "version": "1.0.0", "status": "ok"}
+    return {"name": "AI Trading Platform", "version": "1.1.0", "status": "ok"}
