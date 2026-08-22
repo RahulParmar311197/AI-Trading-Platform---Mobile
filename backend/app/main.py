@@ -30,11 +30,11 @@ from app.api.ml_trainer import router as ml_trainer_router
 from app.api.strategy_backtest import router as strategy_backtest_router
 from app.api.ict_smc import router as ict_smc_router
 from app.api.mtf_analysis import router as mtf_analysis_router
+from app.api.ict_zones import router as ict_zones_router
 from app.db import init_db
 
-app = FastAPI(title="AI Trading Platform API", version="2.8.0")
+app = FastAPI(title="AI Trading Platform API", version="2.9.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-for router in [health_router, marks_router if False else markets_router]: pass
 app.include_router(health_router)
 app.include_router(markets_router, prefix="/api")
 app.include_router(analysis_router, prefix="/api")
@@ -64,6 +64,7 @@ app.include_router(walk_forward_router)
 app.include_router(ml_trainer_router)
 app.include_router(ict_smc_router)
 app.include_router(mtf_analysis_router)
+app.include_router(ict_zones_router)
 app.include_router(stream_router)
 
 @app.on_event("startup")
@@ -72,4 +73,4 @@ def startup():
 
 @app.get("/")
 def root():
-    return {"name": "AI Trading Platform", "version": "2.8.0", "status": "ok"}
+    return {"name":"AI Trading Platform","version":"2.9.0","status":"ok"}
