@@ -11,14 +11,12 @@ def generate_signal(candles:list[Candle],min_score:int=2,htf_candles:list[Candle
     if len(candles)<20:return None
     result=score(candles); reasons=list(result.get('reasons',[])); mtf_score=0
     if htf_candles is not None:
-        mtf=confirm(htf_candles,candles)
-        reasons.append(f"MTF: {mtf.htf_bias} HTF / {mtf.ltf_bias} LTF")
-        if require_mtf and not mtf.aligned:return None
-        if mtf.aligned:
-            mtf_score=mtf.score if mtf.htf_bias==result['bias'] else -mtf.score
-            reasons.append('HTF/LTF structure aligned')
-        elif mtf.htf_bias in ('BULLISH','BEARISH') and mtf.htf_bias!=result['bias']:
-            return None if require_mtf else TradeSignal('NO_TRADE',candles[-1].close, candles[-1].close, candles[-1].close,0,0,reasons+['HTF/LTF conflict'])
+        mtf=confirm(htf_candles,candles); reasons.append(f"MTF: {mtf.htf_bias} HTF / {mtf.ltf_bias} LTF")
+        if not mtf.aligned:
+            if require_mtf:return None
+            if mtf.htf_bias in ('BULLISH','BEARISH') and mtf.htf_bias!=result['bias']:return None
+        else:
+            mtf_score=mtf.score if mtf.htf_bias==result['bias'] else -mtf.score; reasons.append('HTF/LTF structure aligned')
     total=result['score']+mtf_score
     if abs(total)<min_score:return None
     last=candles[-1].close; a=result.get('atr') or (candles[-1].high-candles[-1].low)
