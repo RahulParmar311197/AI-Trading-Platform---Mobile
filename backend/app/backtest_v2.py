@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from collections import defaultdict
 from datetime import date
 from app.strategy import generate_signal
+from app.smc_ict_strategy import generate_smc_ict_signal
 from app.market_data import Candle
 from app.position_sizing import size_position
 from app.order_intent import OrderIntent
@@ -20,8 +21,9 @@ from app.execution_costs import ExecutionCostModel
 class BacktestV2Trade:
     symbol:str; side:str; entry:float; exit:float; quantity:float; pnl:float; entry_bar:int; exit_bar:int; reason:str; commission:float=0.0; slippage:float=0.0
 
-def run_backtest_v2(candles:list[Candle], starting_equity:float=100000.0, risk_percent:float=1.0, limits:RiskLimits|None=None, mtf_timeframe:str|None=None, require_mtf_alignment:bool=False, session_policy:SessionPolicy|None=None, trailing_policy:TrailingPolicy|None=None, partial_exit_policy:PartialExitPolicy|None=None, execution_costs:ExecutionCostModel|None=None)->dict:
+def run_backtest_v2(candles:list[Candle], starting_equity:float=100000.0, risk_percent:float=1.0, limits:RiskLimits|None=None, mtf_timeframe:str|None=None, require_mtf_alignment:bool=False, session_policy:SessionPolicy|None=None, trailing_policy:TrailingPolicy|None=None, partial_exit_policy:PartialExitPolicy|None=None, execution_costs:ExecutionCostModel|None=None, strategy:str='traditional')->dict:
     if starting_equity<=0 or not candles: raise ValueError('invalid capital or candles')
+    if strategy not in ('traditional','smc_ict'): raise ValueError("strategy must be 'traditional' or 'smc_ict'")
     policy=session_policy or SessionPolicy(); costs=execution_costs or ExecutionCostModel(); by_symbol=defaultdict(list)
     for c in candles: by_symbol[c.symbol.upper()].append(c)
     for symbol in by_symbol: by_symbol[symbol]=sorted(by_symbol[symbol],key=lambda c:c.timestamp)
@@ -50,8 +52,15 @@ def run_backtest_v2(candles:list[Candle], starting_equity:float=100000.0, risk_p
         if not allowed: session_rejected+=1; continue
         history=histories[symbol]
         if len(history)<21 or symbol in portfolio.positions: continue
-        signal=generate_signal(history)
-        if signal is None or signal.action not in ('BUY','SELL'): continue
+        if strategy=='smc_ict':
+            signal_data=generate_smc_ict_signal(history)
+            if signal_data is None: continue
+            class Signal: pass
+            signal=Signal(); signal.action=signal_data['action']; signal.entry=signal_data['entry']; signal.stop_loss=signal_data['stop_loss']; signal.target=signal_data['target']; signal.confidence=signal_data['confidence']; signal.reason=signal_data['reasons']
+        else:
+            signal=generate_signal(history)
+            if signal is None or signal.action not in ('BUY','SELL'): continue
+        if signal.action not in ('BUY','SELL'): continue
         if mtf_timeframe and require_mtf_alignment:
             context=completed_htf_context(event.timestamp,history,mtf_timeframe)
             if not confirms(signal.action,context,True): mtf_rejected+=1; continue
@@ -62,4 +71,4 @@ def run_backtest_v2(candles:list[Candle], starting_equity:float=100000.0, risk_p
         fill=execute_paper(risk=risk,broker=broker); portfolio.apply_fill(order,fill); open_entries[symbol]={'entry_bar':len(history)-1}
     final_prices={symbol:series[-1].close for symbol,series in by_symbol.items() if series}
     result=portfolio.mark(final_prices)
-    return {'starting_equity':starting_equity,'ending_equity':result['equity'],'realized_pnl':portfolio.realized_pnl,'open_positions':len(portfolio.positions),'risk_rejected':rejected,'mtf_rejected':mtf_rejected,'session_rejected':session_rejected,'partial_exits':sum(1 for t in trades if t.reason=='PARTIAL_TP'),'partial_rejected':partial_rejected,'total_commission':portfolio.total_commission,'total_slippage':portfolio.total_slippage,'equity_curve':equity_curve,'trade_journal':[t.__dict__ for t in trades]}
+    return {'strategy':strategy,'starting_equity':starting_equity,'ending_equity':result['equity'],'realized_pnl':portfolio.realized_pnl,'open_positions':len(portfolio.positions),'risk_rejected':rejected,'mtf_rejected':mtf_rejected,'session_rejected':session_rejected,'partial_exits':sum(1 for t in trades if t.reason=='PARTIAL_TP'),'partial_rejected':partial_rejected,'total_commission':portfolio.total_commission,'total_slippage':portfolio.total_slippage,'equity_curve':equity_curve,'trade_journal':[t.__dict__ for t in trades]}
