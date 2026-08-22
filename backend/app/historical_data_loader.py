@@ -1,19 +1,18 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.market_data import Candle
+from app.data_quality import CandleQualityValidator
 
 @dataclass(frozen=True)
 class HistoricalDataRequest:
-    symbol:str; timeframe:str; start:datetime; end:datetime
+    symbol:str; timeframe:str; start:datetime; end:datetime; expected_interval:timedelta|None=None
 
 class HistoricalDataLoader:
-    """Provider-agnostic historical candle loader."""
-    def __init__(self,provider): self.provider=provider
+    """Provider-agnostic loader with mandatory candle quality validation."""
+    def __init__(self,provider,quality_validator:CandleQualityValidator|None=None): self.provider=provider; self.validator=quality_validator or CandleQualityValidator()
     def load(self,request:HistoricalDataRequest)->list[Candle]:
         if not request.symbol or request.start>=request.end: raise ValueError('invalid historical data request')
         if request.start.tzinfo is None or request.end.tzinfo is None: raise ValueError('timestamps must be timezone-aware')
         candles=self.provider.fetch(request.symbol,request.timeframe,request.start,request.end)
-        ordered=sorted(candles,key=lambda c:c.timestamp)
-        if any(ordered[i].timestamp>=ordered[i+1].timestamp for i in range(len(ordered)-1)): raise ValueError('historical candles must be strictly increasing')
-        return ordered
+        return self.validator.require_clean(candles,request.expected_interval)
