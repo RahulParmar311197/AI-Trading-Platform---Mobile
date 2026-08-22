@@ -15,9 +15,10 @@ from app.api.notifications import router as notifications_router
 from app.api.orders import router as orders_router
 from app.api.market_data import router as market_data_router
 from app.api.confluence import router as confluence_router
+from app.api.signals import router as signals_router
 from app.db import init_db
 
-app = FastAPI(title="AI Trading Platform API", version="1.4.0")
+app = FastAPI(title="AI Trading Platform API", version="1.5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(health_router)
 app.include_router(markets_router, prefix="/api")
@@ -32,6 +33,7 @@ app.include_router(notifications_router, prefix="/api")
 app.include_router(orders_router)
 app.include_router(market_data_router)
 app.include_router(confluence_router)
+app.include_router(signals_router)
 app.include_router(stream_router)
 
 @app.on_event("startup")
@@ -40,4 +42,4 @@ def startup():
 
 @app.get("/")
 def root():
-    return {"name": "AI Trading Platform", "version": "1.4.0", "status": "ok"}
+    return {"name": "AI Trading Platform", "version": "1.5.0", "status": "ok"}
