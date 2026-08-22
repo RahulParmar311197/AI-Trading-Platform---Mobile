@@ -32,9 +32,10 @@ from app.api.ict_smc import router as ict_smc_router
 from app.api.mtf_analysis import router as mtf_analysis_router
 from app.api.ict_zones import router as ict_zones_router
 from app.api.ensemble_v2 import router as ensemble_v2_router
+from app.api.mtf_ensemble import router as mtf_ensemble_router
 from app.db import init_db
 
-app = FastAPI(title="AI Trading Platform API", version="3.0.0")
+app = FastAPI(title="AI Trading Platform API", version="3.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(health_router)
 app.include_router(markets_router, prefix="/api")
@@ -67,6 +68,7 @@ app.include_router(ict_smc_router)
 app.include_router(mtf_analysis_router)
 app.include_router(ict_zones_router)
 app.include_router(ensemble_v2_router)
+app.include_router(mtf_ensemble_router)
 app.include_router(stream_router)
 
 @app.on_event("startup")
@@ -75,4 +77,4 @@ def startup():
 
 @app.get("/")
 def root():
-    return {"name":"AI Trading Platform","version":"3.0.0","status":"ok"}
+    return {"name":"AI Trading Platform","version":"3.1.0","status":"ok"}
