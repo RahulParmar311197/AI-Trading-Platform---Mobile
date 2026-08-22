@@ -21,9 +21,25 @@ from app.execution_costs import ExecutionCostModel
 class BacktestV2Trade:
     symbol:str; side:str; entry:float; exit:float; quantity:float; pnl:float; entry_bar:int; exit_bar:int; reason:str; commission:float=0.0; slippage:float=0.0
 
+def _traditional_signal(history):
+    return generate_signal(history)
+
+def _smc_signal(history):
+    data=generate_smc_ict_signal(history)
+    if not data: return None
+    class Signal: pass
+    s=Signal(); s.action=data['action']; s.entry=data['entry']; s.stop_loss=data['stop_loss']; s.target=data['target']; s.confidence=data['confidence']; s.reason=data['reasons']; return s
+
+def _hybrid_signal(history):
+    traditional=_traditional_signal(history); smc=_smc_signal(history)
+    if traditional is None or smc is None: return None
+    if traditional.action not in ('BUY','SELL') or traditional.action != smc.action: return None
+    class Signal: pass
+    s=Signal(); s.action=smc.action; s.entry=smc.entry; s.stop_loss=smc.stop_loss; s.target=smc.target; s.confidence=min(traditional.confidence,smc.confidence); s.reason=tuple(set(tuple(getattr(traditional,'reason',()))+tuple(getattr(smc,'reason',()))+('HYBRID_AGREEMENT',))); return s
+
 def run_backtest_v2(candles:list[Candle], starting_equity:float=100000.0, risk_percent:float=1.0, limits:RiskLimits|None=None, mtf_timeframe:str|None=None, require_mtf_alignment:bool=False, session_policy:SessionPolicy|None=None, trailing_policy:TrailingPolicy|None=None, partial_exit_policy:PartialExitPolicy|None=None, execution_costs:ExecutionCostModel|None=None, strategy:str='traditional')->dict:
     if starting_equity<=0 or not candles: raise ValueError('invalid capital or candles')
-    if strategy not in ('traditional','smc_ict'): raise ValueError("strategy must be 'traditional' or 'smc_ict'")
+    if strategy not in ('traditional','smc_ict','hybrid'): raise ValueError("strategy must be 'traditional', 'smc_ict', or 'hybrid'")
     policy=session_policy or SessionPolicy(); costs=execution_costs or ExecutionCostModel(); by_symbol=defaultdict(list)
     for c in candles: by_symbol[c.symbol.upper()].append(c)
     for symbol in by_symbol: by_symbol[symbol]=sorted(by_symbol[symbol],key=lambda c:c.timestamp)
@@ -44,23 +60,15 @@ def run_backtest_v2(candles:list[Candle], starting_equity:float=100000.0, risk_p
         for c in closed:
             meta=open_entries.pop(c.symbol,None); exit_side='SELL' if c.side=='BUY' else 'BUY'; exit_px=costs.fill_price(exit_side,c.exit_price); commission=costs.commission(exit_px,c.quantity); extra_slip=abs(exit_px-c.exit_price)*c.quantity
             net_pnl=c.realized_pnl + ((exit_px-c.exit_price)*c.quantity*(1 if c.side=='BUY' else -1)) - commission
-            portfolio.realized_pnl += net_pnl-c.realized_pnl; portfolio.total_commission += commission; portfolio.total_slippage += extra_slip
-            daily_realized += net_pnl
+            portfolio.realized_pnl += net_pnl-c.realized_pnl; portfolio.total_commission += commission; portfolio.total_slippage += extra_slip; daily_realized += net_pnl
             trades.append(BacktestV2Trade(c.symbol,c.side,c.entry_price,exit_px,c.quantity,net_pnl,meta['entry_bar'] if meta else 0,len(histories[c.symbol])-1,c.reason,commission,extra_slip))
         equity_curve.append(portfolio.mark({symbol:event.close})['equity'])
         allowed, _=trading_allowed(event.timestamp,day_start_equity,daily_realized,policy)
         if not allowed: session_rejected+=1; continue
         history=histories[symbol]
         if len(history)<21 or symbol in portfolio.positions: continue
-        if strategy=='smc_ict':
-            signal_data=generate_smc_ict_signal(history)
-            if signal_data is None: continue
-            class Signal: pass
-            signal=Signal(); signal.action=signal_data['action']; signal.entry=signal_data['entry']; signal.stop_loss=signal_data['stop_loss']; signal.target=signal_data['target']; signal.confidence=signal_data['confidence']; signal.reason=signal_data['reasons']
-        else:
-            signal=generate_signal(history)
-            if signal is None or signal.action not in ('BUY','SELL'): continue
-        if signal.action not in ('BUY','SELL'): continue
+        signal = _traditional_signal(history) if strategy=='traditional' else _smc_signal(history) if strategy=='smc_ict' else _hybrid_signal(history)
+        if signal is None or signal.action not in ('BUY','SELL'): continue
         if mtf_timeframe and require_mtf_alignment:
             context=completed_htf_context(event.timestamp,history,mtf_timeframe)
             if not confirms(signal.action,context,True): mtf_rejected+=1; continue
@@ -69,6 +77,5 @@ def run_backtest_v2(candles:list[Candle], starting_equity:float=100000.0, risk_p
         risk=authorize(order=order,equity=portfolio.equity,daily_pnl=daily_realized,open_positions=len(portfolio.positions),limits=limits)
         if not risk.approved: rejected+=1; continue
         fill=execute_paper(risk=risk,broker=broker); portfolio.apply_fill(order,fill); open_entries[symbol]={'entry_bar':len(history)-1}
-    final_prices={symbol:series[-1].close for symbol,series in by_symbol.items() if series}
-    result=portfolio.mark(final_prices)
+    final_prices={symbol:series[-1].close for symbol,series in by_symbol.items() if series}; result=portfolio.mark(final_prices)
     return {'strategy':strategy,'starting_equity':starting_equity,'ending_equity':result['equity'],'realized_pnl':portfolio.realized_pnl,'open_positions':len(portfolio.positions),'risk_rejected':rejected,'mtf_rejected':mtf_rejected,'session_rejected':session_rejected,'partial_exits':sum(1 for t in trades if t.reason=='PARTIAL_TP'),'partial_rejected':partial_rejected,'total_commission':portfolio.total_commission,'total_slippage':portfolio.total_slippage,'equity_curve':equity_curve,'trade_journal':[t.__dict__ for t in trades]}
