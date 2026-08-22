@@ -17,3 +17,9 @@ def test_paper_adapter_rejects_invalid_quantity():
         assert False
     except ValueError:
         pass
+
+
+def test_paper_adapter_exposes_account_and_positions():
+    broker=PaperBrokerAdapter()
+    assert broker.get_account()['mode']=='paper'
+    assert broker.get_positions()==[]
