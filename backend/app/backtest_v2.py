@@ -12,12 +12,13 @@ from app.execution import PaperBroker, execute_paper
 from app.portfolio import PaperPortfolio
 from app.mtf_confirmation import completed_htf_context, confirms
 from app.session_risk import SessionPolicy, trading_allowed
+from app.trailing_stop import TrailingPolicy
 
 @dataclass(frozen=True)
 class BacktestV2Trade:
     symbol:str; side:str; entry:float; exit:float; quantity:float; pnl:float; entry_bar:int; exit_bar:int; reason:str
 
-def run_backtest_v2(candles:list[Candle], starting_equity:float=100000.0, risk_percent:float=1.0, limits:RiskLimits|None=None, mtf_timeframe:str|None=None, require_mtf_alignment:bool=False, session_policy:SessionPolicy|None=None)->dict:
+def run_backtest_v2(candles:list[Candle], starting_equity:float=100000.0, risk_percent:float=1.0, limits:RiskLimits|None=None, mtf_timeframe:str|None=None, require_mtf_alignment:bool=False, session_policy:SessionPolicy|None=None, trailing_policy:TrailingPolicy|None=None)->dict:
     if starting_equity<=0 or not candles: raise ValueError('invalid capital or candles')
     policy=session_policy or SessionPolicy()
     by_symbol=defaultdict(list)
@@ -30,6 +31,7 @@ def run_backtest_v2(candles:list[Candle], starting_equity:float=100000.0, risk_p
         event_date=event.timestamp.date()
         if current_day != event_date:
             current_day=event_date; day_start_equity=portfolio.equity; daily_realized=0.0
+        portfolio.update_trailing({symbol:event.close}, trailing_policy)
         closed=portfolio.process_ohlc_bar({symbol:event})
         for c in closed:
             daily_realized += c.realized_pnl
