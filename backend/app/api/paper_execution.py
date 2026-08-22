@@ -13,11 +13,17 @@ class OpenRequest(BaseModel):
     entry: float = Field(gt=0)
     stop_loss: float = Field(gt=0)
     target: float = Field(gt=0)
+    equity: float | None = Field(default=None, gt=0)
+    max_risk_percent: float = Field(default=1.0, gt=0, le=10)
+    max_daily_loss_percent: float = Field(default=3.0, gt=0, le=100)
+    max_exposure_percent: float = Field(default=20.0, gt=0, le=100)
+    max_positions: int = Field(default=5, ge=1, le=100)
 
 
 class CloseRequest(BaseModel):
     position_id: str
     exit_price: float = Field(gt=0)
+    exit_reason: str = "MANUAL"
 
 
 @router.post("/positions", status_code=201)
@@ -31,7 +37,7 @@ def open_position(payload: OpenRequest):
 @router.post("/positions/close")
 def close_position(payload: CloseRequest):
     try:
-        return paper_broker.close(payload.position_id, payload.exit_price).__dict__
+        return paper_broker.close(payload.position_id, payload.exit_price, payload.exit_reason).__dict__
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
