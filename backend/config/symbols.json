@@ -1,0 +1,15 @@
+{
+  "NSE": [
+    {"symbol":"NIFTY","asset_class":"index"},
+    {"symbol":"BANKNIFTY","asset_class":"index"},
+    {"symbol":"RELIANCE","asset_class":"equity"},
+    {"symbol":"TCS","asset_class":"equity"},
+    {"symbol":"INFY","asset_class":"equity"}
+  ],
+  "BSE": [
+    {"symbol":"SENSEX","asset_class":"index"},
+    {"symbol":"RELIANCE","asset_class":"equity"},
+    {"symbol":"TCS","asset_class":"equity"},
+    {"symbol":"INFY","asset_class":"equity"}
+  ]
+}
