@@ -36,18 +36,17 @@ from app.api.mtf_ensemble import router as mtf_ensemble_router
 from app.api.unified_backtest import router as unified_backtest_router
 from app.api.trade_risk import router as trade_risk_router
 from app.api.execution_lifecycle import router as execution_lifecycle_router
+from app.api.position_manager import router as position_manager_router
 from app.db import init_db
 
-app = FastAPI(title="AI Trading Platform API", version="3.4.0")
+app = FastAPI(title="AI Trading Platform API", version="3.5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-for router, prefix in [(health_router,""),(markets_router,"/api"),(analysis_router,"/api"),(backtest_router,"/api"),(paper_router,"/api"),(risk_router,"/api"),(replay_router,"/api"),(auth_router,"/api"),(portfolio_router,"/api"),(notifications_router,"/api"),(backtest_engine_router,""),(strategy_backtest_router,""),(unified_backtest_router,""),(risk_engine_router,""),(orders_router,""),(market_data_router,""),(confluence_router,""),(signals_router,""),(paper_execution_router,""),(scanner_router,""),(options_router,""),(journal_router,""),(ai_router,""),(ensemble_router,""),(ml_training_router,""),(model_registry_router,""),(walk_forward_router,""),(ml_trainer_router,""),(ict_smc_router,""),(mtf_analysis_router,""),(ict_zones_router,""),(ensemble_v2_router,""),(mtf_ensemble_router,""),(trade_risk_router,""),(execution_lifecycle_router,"/")]:
+for router, prefix in [(health_router,""),(markets_router,"/api"),(analysis_router,"/api"),(backtest_router,"/api"),(paper_router,"/api"),(risk_router,"/api"),(replay_router,"/api"),(auth_router,"/api"),(portfolio_router,"/api"),(notifications_router,"/api"),(backtest_engine_router,""),(strategy_backtest_router,""),(unified_backtest_router,""),(risk_engine_router,""),(orders_router,""),(market_data_router,""),(confluence_router,""),(signals_router,""),(paper_execution_router,""),(scanner_router,""),(options_router,""),(journal_router,""),(ai_router,""),(ensemble_router,""),(ml_training_router,""),(model_registry_router,""),(walk_forward_router,""),(ml_trainer_router,""),(ict_smc_router,""),(mtf_analysis_router,""),(ict_zones_router,""),(ensemble_v2_router,""),(mtf_ensemble_router,""),(trade_risk_router,""),(execution_lifecycle_router,"/"),(position_manager_router,"")]:
     app.include_router(router, prefix=prefix)
 app.include_router(stream_router)
 
 @app.on_event("startup")
-def startup():
-    init_db()
+def startup(): init_db()
 
 @app.get("/")
-def root():
-    return {"name":"AI Trading Platform","version":"3.4.0","status":"ok"}
+def root(): return {"name":"AI Trading Platform","version":"3.5.0","status":"ok"}
