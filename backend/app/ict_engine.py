@@ -54,6 +54,13 @@ def order_blocks(candles:list[Candle],displacement_mult:float=1.5)->list[OrderBl
         elif nxt.close<nxt.open and prev.close>prev.open:out.append(OrderBlock(i,'BEARISH',prev.low,prev.high,move/rng))
     return out
 
+def dealing_range(candles:list[Candle])->dict:
+    sw=swings(candles)
+    if not sw:return {'high':None,'low':None,'equilibrium':None,'location':'UNKNOWN'}
+    hi=max(x.price for x in sw); lo=min(x.price for x in sw); eq=(hi+lo)/2; price=candles[-1].close
+    location='PREMIUM' if price>eq else 'DISCOUNT' if price<eq else 'EQUILIBRIUM'
+    return {'high':hi,'low':lo,'equilibrium':eq,'location':location,'range':hi-lo}
+
 def structure(candles:list[Candle])->dict:
     sw=swings(candles); highs=[x for x in sw if x.kind=='HIGH']; lows=[x for x in sw if x.kind=='LOW']; labels=[]
     for seq in (highs,lows):
@@ -65,4 +72,4 @@ def structure(candles:list[Candle])->dict:
         if hh and hl:bos=bias='BULLISH'
         elif lh and ll:bos=bias='BEARISH'
     pools=liquidity_pools(candles); sweeps=liquidity_sweeps(candles,pools); fvg=fair_value_gaps(candles); obs=order_blocks(candles)
-    return {'bias':bias,'bos':bos,'choch':choch,'swings':[asdict(x) for x in sw],'structure_labels':labels,'fvg':[asdict(x) for x in fvg],'liquidity_pools':[asdict(x) for x in pools],'liquidity_sweeps':sweeps,'order_blocks':[asdict(x) for x in obs]}
+    return {'bias':bias,'bos':bos,'choch':choch,'swings':[asdict(x) for x in sw],'structure_labels':labels,'fvg':[asdict(x) for x in fvg],'liquidity_pools':[asdict(x) for x in pools],'liquidity_sweeps':sweeps,'order_blocks':[asdict(x) for x in obs],'dealing_range':dealing_range(candles)}
