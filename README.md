@@ -1,34 +1,37 @@
-# AI Trading Platform - Mobile
+# AI Trading Platform
 
-Mobile client for the AI Trading Platform. This repository contains the mobile UI and integrations for the AI trading backend. This commit bootstraps a React Native starter so you can begin development.
+Android-first multi-market trading platform based on `AI_TRADING_PLATFORM_BLUEPRINT.md`.
 
-Getting started (React Native)
+## Implemented foundation
 
-1. Install Node.js (LTS) and Yarn or npm.
-2. Install dependencies:
+- FastAPI backend
+- PostgreSQL + Redis local infrastructure
+- Deterministic SMC swing/BOS/MSS/liquidity/FVG analysis
+- Risk engine with veto authority
+- Event-style backtest foundation
+- Paper-order endpoint
+- AI strategy DSL translation endpoint
+- Android Jetpack Compose dashboard
+- Docker Compose development environment
 
-   yarn install
-   # or
-   npm install
+## Architecture
 
-3. Start Metro bundler:
+`Market Data -> SMC/ICT -> Strategy -> AI interpretation -> Risk -> Execution -> Broker`
 
-   yarn start
-   # or
-   npm run start
+AI never has direct authority to submit live orders. Live broker adapters must be configured and validated separately.
 
-4. Run on Android emulator/device:
+## Run backend
 
-   yarn android
-   # or
-   npm run android
+```bash
+docker compose up --build
+```
 
-5. Run on iOS simulator (macOS only):
+API: `http://localhost:8000/docs`
 
-   yarn ios
-   # or
-   npm run ios
+## Run Android
 
-Notes
-- This is an initial bootstrap. Replace App.js and package.json dependencies with the versions you prefer.
-- See src/README.md for local file layout.
+Open `android/` in Android Studio and run the `app` module.
+
+## Important
+
+The repository intentionally defaults to paper/demo behavior. Real Dhan/Upstox credentials, licensed market data, authentication hardening, broker reconciliation, production observability, and regulatory/compliance validation are required before real-money trading.
