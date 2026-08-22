@@ -42,6 +42,22 @@ class PaperPortfolio:
         if exit_price<=0: raise ValueError('exit_price must be positive')
         p=self.positions.pop(symbol); pnl=p.unrealized_pnl(exit_price); self.realized_pnl+=pnl
         return CloseResult(symbol,p.side,p.entry_price,exit_price,p.quantity,pnl,reason)
+    def process_ohlc_bar(self, bars:dict[str,object])->list[CloseResult]:
+        closed=[]
+        for symbol,p in list(self.positions.items()):
+            bar=bars.get(symbol)
+            if bar is None: continue
+            high=float(bar.high); low=float(bar.low); reason=None; exit_price=None
+            if p.side=='BUY':
+                hit_stop=low<=p.stop_loss; hit_target=high>=p.take_profit
+                if hit_stop: reason='STOP_LOSS'; exit_price=p.stop_loss
+                elif hit_target: reason='TAKE_PROFIT'; exit_price=p.take_profit
+            else:
+                hit_stop=high>=p.stop_loss; hit_target=low<=p.take_profit
+                if hit_stop: reason='STOP_LOSS'; exit_price=p.stop_loss
+                elif hit_target: reason='TAKE_PROFIT'; exit_price=p.take_profit
+            if reason: closed.append(self.close_position(symbol,exit_price,reason))
+        return closed
     def process_bar(self,prices:dict[str,float])->list[CloseResult]:
         closed=[]
         for symbol,p in list(self.positions.items()):
