@@ -33,9 +33,10 @@ from app.api.mtf_analysis import router as mtf_analysis_router
 from app.api.ict_zones import router as ict_zones_router
 from app.api.ensemble_v2 import router as ensemble_v2_router
 from app.api.mtf_ensemble import router as mtf_ensemble_router
+from app.api.unified_backtest import router as unified_backtest_router
 from app.db import init_db
 
-app = FastAPI(title="AI Trading Platform API", version="3.1.0")
+app = FastAPI(title="AI Trading Platform API", version="3.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(health_router)
 app.include_router(markets_router, prefix="/api")
@@ -43,6 +44,7 @@ app.include_router(analysis_router, prefix="/api")
 app.include_router(backtest_router, prefix="/api")
 app.include_router(backtest_engine_router)
 app.include_router(strategy_backtest_router)
+app.include_router(unified_backtest_router)
 app.include_router(paper_router, prefix="/api")
 app.include_router(risk_router, prefix="/api")
 app.include_router(risk_engine_router)
@@ -77,4 +79,4 @@ def startup():
 
 @app.get("/")
 def root():
-    return {"name":"AI Trading Platform","version":"3.1.0","status":"ok"}
+    return {"name":"AI Trading Platform","version":"3.2.0","status":"ok"}
