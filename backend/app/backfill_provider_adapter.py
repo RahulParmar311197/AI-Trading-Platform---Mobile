@@ -3,7 +3,7 @@ from datetime import datetime,timedelta
 from app.data_provider import MarketDataProvider
 from app.provider_runtime import ProviderRuntime
 from app.historical_market_store import HistoricalMarketStore
-from app.mtf_aggregator import Candle
+from app.market_data import Candle
 TIMEFRAME_SECONDS={'1m':60,'3m':180,'5m':300,'15m':900,'30m':1800,'1h':3600,'4h':14400,'1d':86400}
 class ProviderBackfillAdapter:
     def __init__(self,provider:MarketDataProvider,store:HistoricalMarketStore,chunk_seconds:int=86400):
@@ -14,6 +14,7 @@ class ProviderBackfillAdapter:
         while cursor<=end:
             chunk_end=min(end,cursor+timedelta(seconds=self.chunk_seconds-step))
             rows=await self.runtime.historical(symbol,cursor,chunk_end,timeframe)
-            total+=self.store.upsert([Candle(x.timestamp,x.open,x.high,x.low,x.close,x.volume,symbol,timeframe) for x in rows])
+            candles=[Candle(timestamp=x.timestamp,symbol=symbol.upper(),timeframe=timeframe,open=x.open,high=x.high,low=x.low,close=x.close,volume=x.volume) for x in rows]
+            total+=self.store.upsert(candles)
             chunks+=1; cursor=chunk_end+timedelta(seconds=step)
         return {'symbol':symbol.upper(),'timeframe':timeframe,'chunks':chunks,'stored':total}
