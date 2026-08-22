@@ -2,13 +2,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from app.market_data import Candle
+from app.market_calendar import NSEMarketCalendar
 @dataclass(frozen=True)
 class DataQualityIssue:
     code:str; message:str; timestamp:object|None=None
 class CandleQualityValidator:
-    def __init__(self,max_gap_multiplier:float=3.0):
+    def __init__(self,max_gap_multiplier:float=3.0,calendar:NSEMarketCalendar|None=None):
         if max_gap_multiplier<1: raise ValueError('max_gap_multiplier must be >= 1')
-        self.max_gap_multiplier=max_gap_multiplier
+        self.max_gap_multiplier=max_gap_multiplier; self.calendar=calendar
     def validate(self,candles:list[Candle],expected_interval:timedelta|None=None)->list[DataQualityIssue]:
         issues=[]
         if not candles:return [DataQualityIssue('EMPTY_DATA','No candles supplied')]
@@ -21,7 +22,10 @@ class CandleQualityValidator:
             if previous is not None:
                 gap=c.timestamp-previous
                 if gap.total_seconds()<=0:issues.append(DataQualityIssue('NON_MONOTONIC','Timestamps are not strictly increasing',c.timestamp))
-                elif expected_interval and gap>expected_interval*self.max_gap_multiplier:issues.append(DataQualityIssue('DATA_GAP','Large candle gap detected',c.timestamp))
+                elif expected_interval:
+                    large_gap=gap>expected_interval*self.max_gap_multiplier
+                    if self.calendar: large_gap=self.calendar.expected_gap(previous,c.timestamp,expected_interval)
+                    if large_gap:issues.append(DataQualityIssue('DATA_GAP','Unexpected trading-session candle gap',c.timestamp))
             previous=c.timestamp
         return issues
     def require_clean(self,candles:list[Candle],expected_interval:timedelta|None=None)->list[Candle]:
