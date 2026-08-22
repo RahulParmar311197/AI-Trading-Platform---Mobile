@@ -12,14 +12,16 @@ def score(candles:list[Candle])->dict:
     if ict['choch']=='BULLISH':points+=2;reasons.append('bullish CHoCH')
     elif ict['choch']=='BEARISH':points-=2;reasons.append('bearish CHoCH')
     if ict['liquidity_sweeps']:
-        sweep=ict['liquidity_sweeps'][-1]
-        if sweep['direction']=='BULLISH':points+=2;reasons.append('bullish liquidity sweep')
-        elif sweep['direction']=='BEARISH':points-=2;reasons.append('bearish liquidity sweep')
+        s=ict['liquidity_sweeps'][-1]; points+=2 if s['direction']=='BULLISH' else -2; reasons.append(s['direction'].lower()+' liquidity sweep')
     if ict['fvg']:
-        fvg=ict['fvg'][-1]
-        if fvg['direction']=='BULLISH' and last>=fvg['low']:points+=1;reasons.append('bullish FVG')
-        elif fvg['direction']=='BEARISH' and last<=fvg['high']:points-=1;reasons.append('bearish FVG')
+        f=ict['fvg'][-1]
+        if f['direction']=='BULLISH' and last>=f['low']:points+=1;reasons.append('bullish FVG')
+        elif f['direction']=='BEARISH' and last<=f['high']:points-=1;reasons.append('bearish FVG')
+    if ict.get('order_blocks'):
+        ob=ict['order_blocks'][-1]
+        if ob['direction']=='BULLISH' and ob['low']<=last<=ob['high']:points+=2;reasons.append('bullish order block')
+        elif ob['direction']=='BEARISH' and ob['low']<=last<=ob['high']:points-=2;reasons.append('bearish order block')
     if fast is not None and last>fast:points+=1;reasons.append('price above EMA')
     elif fast is not None and last<fast:points-=1;reasons.append('price below EMA')
-    bias='BULLISH' if points>=2 else 'BEARISH' if points<=-2 else 'NEUTRAL'
-    return {'score':max(-9,min(9,points)),'bias':bias,'reasons':reasons,'atr':a,'ict':ict}
+    bias='BULLISH' if points>=3 else 'BEARISH' if points<=-3 else 'NEUTRAL'
+    return {'score':max(-11,min(11,points)),'bias':bias,'reasons':reasons,'atr':a,'ict':ict}
