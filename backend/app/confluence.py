@@ -5,8 +5,7 @@ from app.market_data import Candle
 
 def score(candles:list[Candle])->dict:
     if not candles:return {'score':0,'bias':'NEUTRAL','reasons':[]}
-    closes=[c.close for c in candles]; highs=[c.high for c in candles]; lows=[c.low for c in candles]; ict=structure(candles)
-    fast=ema(closes,min(20,len(closes))); a=atr(highs,lows,closes,min(14,len(closes))); last=closes[-1]; points=0; reasons=[]
+    closes=[c.close for c in candles]; highs=[c.high for c in candles]; lows=[c.low for c in candles]; ict=structure(candles); fast=ema(closes,min(20,len(closes))); a=atr(highs,lows,closes,min(14,len(closes))); last=closes[-1]; points=0; reasons=[]
     if ict['bos']=='BULLISH':points+=2;reasons.append('bullish BOS')
     elif ict['bos']=='BEARISH':points-=2;reasons.append('bearish BOS')
     if ict['choch']=='BULLISH':points+=2;reasons.append('bullish CHoCH')
@@ -21,7 +20,10 @@ def score(candles:list[Candle])->dict:
         ob=ict['order_blocks'][-1]
         if ob['direction']=='BULLISH' and ob['low']<=last<=ob['high']:points+=2;reasons.append('bullish order block')
         elif ob['direction']=='BEARISH' and ob['low']<=last<=ob['high']:points-=2;reasons.append('bearish order block')
+    dr=ict.get('dealing_range',{}); loc=dr.get('location')
+    if loc=='DISCOUNT':points+=1;reasons.append('price in discount')
+    elif loc=='PREMIUM':points-=1;reasons.append('price in premium')
     if fast is not None and last>fast:points+=1;reasons.append('price above EMA')
     elif fast is not None and last<fast:points-=1;reasons.append('price below EMA')
     bias='BULLISH' if points>=3 else 'BEARISH' if points<=-3 else 'NEUTRAL'
-    return {'score':max(-11,min(11,points)),'bias':bias,'reasons':reasons,'atr':a,'ict':ict}
+    return {'score':max(-12,min(12,points)),'bias':bias,'reasons':reasons,'atr':a,'ict':ict}
