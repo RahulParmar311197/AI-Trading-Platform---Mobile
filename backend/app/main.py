@@ -21,9 +21,10 @@ from app.api.backtest_engine import router as backtest_engine_router
 from app.api.scanner import router as scanner_router
 from app.api.options import router as options_router
 from app.api.risk_engine import router as risk_engine_router
+from app.api.journal import router as journal_router
 from app.db import init_db
 
-app = FastAPI(title="AI Trading Platform API", version="2.0.0")
+app = FastAPI(title="AI Trading Platform API", version="2.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(health_router)
 app.include_router(markets_router, prefix="/api")
@@ -44,6 +45,7 @@ app.include_router(signals_router)
 app.include_router(paper_execution_router)
 app.include_router(scanner_router)
 app.include_router(options_router)
+app.include_router(journal_router)
 app.include_router(stream_router)
 
 @app.on_event("startup")
@@ -52,4 +54,4 @@ def startup():
 
 @app.get("/")
 def root():
-    return {"name": "AI Trading Platform", "version": "2.0.0", "status": "ok"}
+    return {"name": "AI Trading Platform", "version": "2.1.0", "status": "ok"}
