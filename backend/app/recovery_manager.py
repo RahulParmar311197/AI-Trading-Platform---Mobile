@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from app.broker_snapshot import BrokerSnapshot
 from app.execution_persistence import ExecutionStateStore
 from app.order_lifecycle import OrderLifecycle
 from app.reconciliation import ReconciliationEngine, ReconciliationResult
@@ -18,19 +19,9 @@ class RecoveryResult:
 
 
 class StartupRecoveryManager:
-    """Restores local execution state and gates trading on broker reconciliation.
+    """Restores local execution state and gates trading on broker reconciliation."""
 
-    The broker snapshot callback must return ``(orders, positions)``. Broker I/O
-    stays outside this class so adapters can implement their own authentication,
-    retries, and transport without coupling recovery to a vendor.
-    """
-
-    def __init__(
-        self,
-        execution_store: ExecutionStateStore,
-        safety_store: SafetyStateStore,
-        reconciliation: ReconciliationEngine | None = None,
-    ) -> None:
+    def __init__(self, execution_store: ExecutionStateStore, safety_store: SafetyStateStore, reconciliation: ReconciliationEngine | None = None) -> None:
         self.execution_store = execution_store
         self.safety_store = safety_store
         self.reconciliation = reconciliation or ReconciliationEngine()
@@ -39,7 +30,7 @@ class StartupRecoveryManager:
     def startup(
         self,
         lifecycle: OrderLifecycle,
-        broker_snapshot: Callable[[], tuple[list[dict], list[dict]]],
+        broker_snapshot: Callable[[], BrokerSnapshot | tuple[list[dict], list[dict]]],
     ) -> RecoveryResult:
         try:
             state_loaded = self.execution_store.load(lifecycle)
@@ -53,13 +44,12 @@ class StartupRecoveryManager:
                 {"symbol": p.symbol, "quantity": p.quantity}
                 for p in lifecycle.positions.values()
             ]
-            broker_orders, broker_positions = broker_snapshot()
-            result = self.reconciliation.check(
-                internal_orders,
-                broker_orders,
-                internal_positions,
-                broker_positions,
-            )
+            snapshot = broker_snapshot()
+            if isinstance(snapshot, BrokerSnapshot):
+                broker_orders, broker_positions = snapshot.orders, snapshot.positions
+            else:
+                broker_orders, broker_positions = snapshot
+            result = self.reconciliation.check(internal_orders, broker_orders, internal_positions, broker_positions)
             if not result.ok:
                 self.safety_store.halt("BROKER_STATE_DRIFT")
                 recovery = RecoveryResult(False, state_loaded, result, "BROKER_STATE_DRIFT")
@@ -83,12 +73,7 @@ class StartupRecoveryManager:
             raise RuntimeError("cannot resume while reconciliation has drift")
         self.reconciliation.reset_halt()
         self.safety_store.clear()
-        self._last_result = RecoveryResult(
-            True,
-            self._last_result.state_loaded,
-            self._last_result.reconciliation,
-            "RECOVERY_RESUMED",
-        )
+        self._last_result = RecoveryResult(True, self._last_result.state_loaded, self._last_result.reconciliation, "RECOVERY_RESUMED")
         return self._last_result
 
     @property
