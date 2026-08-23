@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Lock
 
 from app.broker_adapter import BrokerOrderRequest
 
@@ -28,15 +29,44 @@ class RiskDecision:
     reason: str
 
 
+class ExposureReservationBook:
+    """Process-wide atomic reservations used to close the stale-snapshot race."""
+
+    def __init__(self):
+        self._lock = Lock()
+        self._reservations: dict[str, float] = {}
+
+    def reserve(self, client_order_id: str, signed_quantity: float, current_position: float, max_position: float) -> bool:
+        with self._lock:
+            existing = self._reservations.get(client_order_id)
+            if existing is not None:
+                return existing == signed_quantity
+            reserved = sum(self._reservations.values())
+            projected = current_position + reserved + signed_quantity
+            if abs(projected) > max_position + 1e-9:
+                return False
+            self._reservations[client_order_id] = signed_quantity
+            return True
+
+    def release(self, client_order_id: str) -> None:
+        with self._lock:
+            self._reservations.pop(client_order_id, None)
+
+    def get(self, client_order_id: str) -> float | None:
+        with self._lock:
+            return self._reservations.get(client_order_id)
+
+
 class PreTradeRiskGate:
     """Fail-closed authorization immediately before broker submission."""
 
-    def __init__(self, limits: RiskLimits):
+    def __init__(self, limits: RiskLimits, reservations: ExposureReservationBook | None = None):
         if limits.max_order_quantity <= 0 or limits.max_position_quantity <= 0:
             raise ValueError("risk quantity limits must be positive")
         if limits.max_daily_loss < 0 or limits.max_trade_loss < 0:
             raise ValueError("risk loss limits cannot be negative")
         self.limits = limits
+        self.reservations = reservations or ExposureReservationBook()
 
     @staticmethod
     def _side_sign(side: object) -> int:
@@ -75,3 +105,15 @@ class PreTradeRiskGate:
         if float(snapshot.projected_trade_loss) > self.limits.max_trade_loss + 1e-9:
             return RiskDecision(False, "RISK_TRADE_LOSS_LIMIT")
         return RiskDecision(True, "RISK_OK")
+
+    def reserve(self, request: BrokerOrderRequest, snapshot: RiskSnapshot) -> RiskDecision:
+        decision = self.evaluate(request, snapshot)
+        if not decision.allowed:
+            return decision
+        signed = self._side_sign(request.side) * float(request.quantity)
+        if not self.reservations.reserve(request.client_order_id, signed, float(snapshot.position_quantity), self.limits.max_position_quantity):
+            return RiskDecision(False, "RISK_EXPOSURE_RESERVATION")
+        return RiskDecision(True, "RISK_OK")
+
+    def release(self, client_order_id: str) -> None:
+        self.reservations.release(client_order_id)
