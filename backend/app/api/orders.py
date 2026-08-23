@@ -47,14 +47,7 @@ def _order_response(order: Order, message: str | None = None) -> dict:
 
 
 @router.post("")
-def create_order(
-    payload: OrderRequest,
-    request: Request,
-    response: Response,
-    db: Session = Depends(get_order_db),
-    _: None = Depends(require_trading_ready),
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-):
+def create_order(payload: OrderRequest, request: Request, response: Response, db: Session = Depends(get_order_db), _: None = Depends(require_trading_ready), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
     from app.main import broker_router, execution_store, idempotency_store
     from app.order_execution_service import OrderExecutionService
     from app.order_lifecycle import OrderLifecycle
@@ -71,6 +64,18 @@ def create_order(
 
     existing = db.query(Order).filter(Order.client_order_id == client_order_id).first()
     if existing is not None:
+        if existing.note == "EXECUTION_PENDING_RECONCILIATION":
+            lifecycle = OrderLifecycle()
+            execution_store.load(lifecycle)
+            service = OrderExecutionService(broker_router, lifecycle, execution_store, idempotency_store)
+            result = service.submit(BrokerOrderRequest(client_order_id=client_order_id, symbol=existing.symbol, side=existing.side, quantity=existing.quantity, order_type=existing.order_type))
+            existing.status = result.status
+            existing.broker_order_id = result.broker_order_id
+            existing.note = result.message
+            db.commit()
+            db.refresh(existing)
+            response.status_code = 202 if result.message == "EXECUTION_PENDING_RECONCILIATION" else 201
+            return _order_response(existing, result.message)
         return _order_response(existing, "IDEMPOTENT_REPLAY")
 
     symbol = payload.symbol.upper()
@@ -92,9 +97,8 @@ def create_order(
 
     order.status = result.status
     order.broker_order_id = result.broker_order_id
-    if result.message:
-        order.note = result.message
+    order.note = result.message
     db.commit()
     db.refresh(order)
-    response.status_code = 202 if result.status == "PENDING_RECONCILIATION" else 201
+    response.status_code = 202 if result.message == "EXECUTION_PENDING_RECONCILIATION" else 201
     return _order_response(order, result.message)
