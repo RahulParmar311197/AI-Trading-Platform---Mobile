@@ -52,30 +52,47 @@ from app.api.stream_pipeline import router as stream_pipeline_router
 from app.api.trade_risk import router as trade_risk_router
 from app.api.unified_backtest import router as unified_backtest_router
 from app.api.walk_forward import router as walk_forward_router
+from app.broker_factory import build_broker_router
+from app.broker_recovery import BrokerStartupRecovery
 from app.config import get_settings
 from app.db import init_db
 from app.execution_persistence import ExecutionStateStore
+from app.order_lifecycle import OrderLifecycle
 from app.recovery_manager import StartupRecoveryManager
 from app.safety_state import SafetyStateStore
 
 settings = get_settings()
-recovery_manager = StartupRecoveryManager(
-    ExecutionStateStore(),
-    SafetyStateStore(),
+execution_store = ExecutionStateStore()
+safety_store = SafetyStateStore()
+recovery_manager = StartupRecoveryManager(execution_store, safety_store)
+broker_router = build_broker_router()
+broker_recovery = BrokerStartupRecovery(
+    broker_router,
+    execution_store,
+    safety_store,
+    recovery_manager,
 )
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    # Do not contact a live broker implicitly during application startup.
-    # Recovery is invoked explicitly once a broker snapshot provider is available.
+    # Paper recovery is safe to run at startup. A live Dhan route is only
+    # enabled when DHAN_LIVE_ENABLED=true, so startup cannot implicitly trade.
+    try:
+        lifecycle = OrderLifecycle()
+        broker_recovery.run(lifecycle)
+    except Exception:
+        # RecoveryManager persists a fail-closed safety halt. Application startup
+        # itself must remain available so the operator can inspect /api/recovery/status.
+        pass
     yield
 
 
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
+    environment=settings.environment,
     lifespan=lifespan,
 )
 
