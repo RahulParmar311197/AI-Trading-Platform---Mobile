@@ -1,16 +1,59 @@
-from app.order_lifecycle import OrderLifecycle,OrderStatus
+from app.order_lifecycle import OrderLifecycle, OrderStatus
+import pytest
+
 
 def test_full_order_lifecycle_opens_and_closes_position():
-    book=OrderLifecycle(); book.create('o1','NIFTY','BUY',10); book.transition('o1',OrderStatus.SUBMITTED); book.transition('o1',OrderStatus.FILLED,10,100.0)
-    assert book.orders['o1'].status==OrderStatus.FILLED; assert book.positions['NIFTY'].quantity==10
-    book.create('o2','NIFTY','SELL',10); book.transition('o2',OrderStatus.FILLED,10,110.0)
-    assert 'NIFTY' not in book.positions
+    book = OrderLifecycle()
+    book.create("o1", "NIFTY", "BUY", 10)
+    book.transition("o1", OrderStatus.SUBMITTED)
+    book.transition("o1", OrderStatus.FILLED, 10, 100.0)
+    assert book.orders["o1"].status == OrderStatus.FILLED
+    assert book.positions["NIFTY"].quantity == 10
+    book.create("o2", "NIFTY", "SELL", 10)
+    book.transition("o2", OrderStatus.FILLED, 10, 110.0)
+    assert "NIFTY" not in book.positions
+
 
 def test_partial_fill_is_tracked():
-    book=OrderLifecycle(); book.create('o1','BANKNIFTY','BUY',10); book.transition('o1',OrderStatus.PARTIALLY_FILLED,4,500.0)
-    assert book.orders['o1'].filled_quantity==4; assert book.orders['o1'].status==OrderStatus.PARTIALLY_FILLED
+    book = OrderLifecycle()
+    book.create("o1", "BANKNIFTY", "BUY", 10)
+    book.transition("o1", OrderStatus.PARTIALLY_FILLED, 4, 500.0)
+    assert book.orders["o1"].filled_quantity == 4
+    assert book.orders["o1"].status == OrderStatus.PARTIALLY_FILLED
+    assert book.positions["BANKNIFTY"].quantity == 4
+
+
+def test_partial_then_full_does_not_double_count_position():
+    book = OrderLifecycle()
+    book.create("o1", "NIFTY", "BUY", 10)
+    book.transition("o1", OrderStatus.PARTIALLY_FILLED, 4, 100.0)
+    book.transition("o1", OrderStatus.FILLED, 10, 102.0)
+    assert book.positions["NIFTY"].quantity == 10
+    assert book.orders["o1"].applied_fill_quantity == 10
+
+    # Replaying the same broker snapshot must not create another 10-unit position.
+    book.transition("o1", OrderStatus.FILLED, 10, 102.0)
+    assert book.positions["NIFTY"].quantity == 10
+
+
+def test_average_fill_price_reconciliation_applies_only_new_quantity():
+    book = OrderLifecycle()
+    book.create("o1", "NIFTY", "BUY", 10)
+    book.transition("o1", OrderStatus.PARTIALLY_FILLED, 4, 100.0)
+    book.transition("o1", OrderStatus.FILLED, 10, 104.0)
+    assert book.positions["NIFTY"].entry_price == pytest.approx(104.0)
+
 
 def test_invalid_fill_rejected():
-    book=OrderLifecycle(); book.create('o1','NIFTY','BUY',10)
-    try: book.transition('o1',OrderStatus.FILLED,11,100.0); assert False
-    except ValueError: pass
+    book = OrderLifecycle()
+    book.create("o1", "NIFTY", "BUY", 10)
+    with pytest.raises(ValueError):
+        book.transition("o1", OrderStatus.FILLED, 11, 100.0)
+
+
+def test_fill_quantity_cannot_move_backwards():
+    book = OrderLifecycle()
+    book.create("o1", "NIFTY", "BUY", 10)
+    book.transition("o1", OrderStatus.PARTIALLY_FILLED, 6, 100.0)
+    with pytest.raises(ValueError, match="move backwards"):
+        book.transition("o1", OrderStatus.PARTIALLY_FILLED, 4, 100.0)
