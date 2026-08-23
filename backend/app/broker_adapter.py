@@ -87,6 +87,20 @@ class BrokerAdapter(ABC):
     @abstractmethod
     def get_account(self) -> dict[str, Any]: ...
 
+    def find_order_by_client_id(self, client_order_id: str) -> dict[str, Any] | None:
+        """Return the broker order for a client id, or None when not found.
+
+        Adapters with a native client-order-id lookup should override this method.
+        The default implementation preserves compatibility by scanning snapshots.
+        """
+        get_orders = getattr(self, "get_orders", None)
+        if get_orders is None:
+            raise NotImplementedError("broker does not support client-order reconciliation")
+        for order in get_orders():
+            if str(order.get("client_order_id", "")) == client_order_id:
+                return dict(order)
+        return None
+
 
 class PaperBrokerAdapter(BrokerAdapter):
     def __init__(self):
@@ -100,15 +114,7 @@ class PaperBrokerAdapter(BrokerAdapter):
         client_order_id = order.client_order_id if isinstance(order, BrokerOrderRequest) else f"client-{self.next_id}"
         oid = f"PAPER-{self.next_id}"
         self.next_id += 1
-        record = {
-            "order_id": oid,
-            "status": BrokerOrderStatus.FILLED.value,
-            "client_order_id": client_order_id,
-            "symbol": order.symbol.upper(),
-            "side": order.side.upper(),
-            "quantity": order.quantity,
-            "price": order.price,
-        }
+        record = {"order_id": oid, "status": BrokerOrderStatus.FILLED.value, "client_order_id": client_order_id, "symbol": order.symbol.upper(), "side": order.side.upper(), "quantity": order.quantity, "price": order.price}
         self.orders[oid] = record
         return BrokerOrderUpdate(**record)
 
