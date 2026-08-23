@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Numeric, String, Text, func
+from sqlalchemy import DateTime, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -22,7 +22,14 @@ class Instrument(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     symbol: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     exchange: Mapped[str] = mapped_column(String(32), index=True)
-    asset_class: Mapped[str] = mapped_column(String(32), default="equity")
+    asset_class: Mapped[str] = mapped_column(String(32), default="equity", index=True)
+    instrument_type: Mapped[str] = mapped_column(String(32), default="SPOT", index=True)
+    underlying_symbol: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    expiry_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    strike_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
+    option_type: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    tick_size: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    lot_size: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
 
 
 class Position(Base):
@@ -47,5 +54,5 @@ class Order(Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6))
     status: Mapped[str] = mapped_column(String(24), default="PENDING", index=True)
     broker_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
