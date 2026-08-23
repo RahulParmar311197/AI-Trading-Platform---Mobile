@@ -3,14 +3,10 @@ name: Backend Tests
 on:
   push:
     branches:
-      - production/blueprint-implementation
       - main
-      - integration/production-into-main
   pull_request:
     branches:
-      - production/blueprint-implementation
       - main
-      - integration/production-into-main
 
 jobs:
   pytest:
