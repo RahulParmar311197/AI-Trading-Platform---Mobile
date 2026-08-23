@@ -5,6 +5,7 @@ import os
 import uuid
 
 from app.broker_adapter import BrokerAdapter, BrokerOrderRequest, BrokerOrderUpdate
+from app.broker_snapshot import BrokerSnapshot, dhan_snapshot
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,9 @@ class DhanAdapter(BrokerAdapter):
         if self.transport is None:
             raise RuntimeError("Dhan HTTP transport is not configured")
 
+    def _headers(self) -> dict[str, str]:
+        return {"Content-Type": "application/json", "access-token": self.config.access_token}
+
     def submit_order(self, request: BrokerOrderRequest) -> BrokerOrderUpdate:
         self._require_live()
         if not request.security_id:
@@ -56,48 +60,47 @@ class DhanAdapter(BrokerAdapter):
             "price": request.price,
             "triggerPrice": request.trigger_price,
         }
-        response = self.transport.post(
-            f"{self.config.base_url}/orders",
-            headers={"Content-Type": "application/json", "access-token": self.config.access_token},
-            json=payload,
-        )
+        response = self.transport.post(f"{self.config.base_url}/orders", headers=self._headers(), json=payload)
         response.raise_for_status()
         data = response.json()
         return BrokerOrderUpdate(order_id=str(data["orderId"]), status=str(data["orderStatus"]))
 
     def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
         self._require_live()
-        response = self.transport.delete(
-            f"{self.config.base_url}/orders/{broker_order_id}",
-            headers={"Content-Type": "application/json", "access-token": self.config.access_token},
-        )
+        response = self.transport.delete(f"{self.config.base_url}/orders/{broker_order_id}", headers=self._headers())
         response.raise_for_status()
         data = response.json()
         return BrokerOrderUpdate(order_id=str(data["orderId"]), status=str(data["orderStatus"]))
 
     def get_order(self, broker_order_id: str) -> dict:
         self._require_live()
-        response = self.transport.get(
-            f"{self.config.base_url}/orders/{broker_order_id}",
-            headers={"access-token": self.config.access_token},
-        )
+        response = self.transport.get(f"{self.config.base_url}/orders/{broker_order_id}", headers=self._headers())
         response.raise_for_status()
         return response.json()
+
+    def get_orders(self) -> list[dict]:
+        self._require_live()
+        response = self.transport.get(f"{self.config.base_url}/orders", headers=self._headers())
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, list):
+            raise RuntimeError("Dhan orders response must be a list")
+        return data
 
     def get_positions(self) -> list[dict]:
         self._require_live()
-        response = self.transport.get(
-            f"{self.config.base_url}/positions",
-            headers={"access-token": self.config.access_token},
-        )
+        response = self.transport.get(f"{self.config.base_url}/positions", headers=self._headers())
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        if not isinstance(data, list):
+            raise RuntimeError("Dhan positions response must be a list")
+        return data
 
     def get_account(self) -> dict:
         self._require_live()
-        response = self.transport.get(
-            f"{self.config.base_url}/fundlimit",
-            headers={"access-token": self.config.access_token},
-        )
+        response = self.transport.get(f"{self.config.base_url}/fundlimit", headers=self._headers())
         response.raise_for_status()
         return response.json()
+
+    def get_snapshot(self) -> BrokerSnapshot:
+        return dhan_snapshot(self.get_orders(), self.get_positions())
