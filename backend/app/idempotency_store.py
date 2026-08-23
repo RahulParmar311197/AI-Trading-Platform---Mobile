@@ -6,7 +6,7 @@ from threading import Lock
 
 
 class IdempotencyStore:
-    """SQLite-backed claim store shared by application workers on the same host."""
+    """SQLite-backed execution claim store shared by application workers."""
 
     def __init__(self, path: str = "data/idempotency.sqlite3"):
         self.path = Path(path)
@@ -24,3 +24,19 @@ class IdempotencyStore:
             )
             db.commit()
             return cursor.rowcount == 1
+
+    def get_state(self, client_order_id: str) -> str | None:
+        with self._lock, sqlite3.connect(self.path) as db:
+            row = db.execute(
+                "SELECT state FROM execution_claims WHERE client_order_id = ?",
+                (client_order_id,),
+            ).fetchone()
+            return str(row[0]) if row else None
+
+    def mark_completed(self, client_order_id: str) -> None:
+        with self._lock, sqlite3.connect(self.path) as db:
+            db.execute(
+                "UPDATE execution_claims SET state = 'COMPLETED' WHERE client_order_id = ?",
+                (client_order_id,),
+            )
+            db.commit()
