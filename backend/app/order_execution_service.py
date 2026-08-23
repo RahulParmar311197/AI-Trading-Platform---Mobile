@@ -6,6 +6,7 @@ from threading import Lock
 from app.broker_adapter import BrokerOrderRequest
 from app.broker_router import BrokerRouter
 from app.execution_persistence import ExecutionStateStore
+from app.idempotency_store import IdempotencyStore
 from app.order_lifecycle import OrderLifecycle, OrderStatus
 
 
@@ -22,10 +23,11 @@ class OrderExecutionService:
 
     _claim_lock = Lock()
 
-    def __init__(self, router: BrokerRouter, lifecycle: OrderLifecycle, store: ExecutionStateStore):
+    def __init__(self, router: BrokerRouter, lifecycle: OrderLifecycle, store: ExecutionStateStore, idempotency_store: IdempotencyStore | None = None):
         self.router = router
         self.lifecycle = lifecycle
         self.store = store
+        self.idempotency_store = idempotency_store
 
     def _recover_broker_order(self, client_order_id: str):
         for order in self.router.get_orders():
@@ -39,15 +41,29 @@ class OrderExecutionService:
             if existing is not None:
                 return ExecutionResult(request.client_order_id, existing.status.value, existing.broker_order_id, "IDEMPOTENT_REPLAY")
 
+            if self.idempotency_store is not None and not self.idempotency_store.claim(request.client_order_id):
+                recovered = self._recover_broker_order(request.client_order_id)
+                if recovered is not None:
+                    broker_id = str(recovered.get("order_id"))
+                    status = str(recovered.get("status", "NEW")).upper()
+                    lifecycle_status = OrderStatus.FILLED if status in {"FILLED", "TRADED", "COMPLETE"} else OrderStatus.SUBMITTED
+                    self.lifecycle.create(request.client_order_id, request.symbol, request.side, request.quantity)
+                    self.lifecycle.orders[request.client_order_id].broker_order_id = broker_id
+                    self.lifecycle.transition(request.client_order_id, lifecycle_status, filled_quantity=request.quantity if lifecycle_status == OrderStatus.FILLED else 0, fill_price=recovered.get("price"))
+                    self.store.save(self.lifecycle)
+                    return ExecutionResult(request.client_order_id, lifecycle_status.value, broker_id, "BROKER_ORDER_RECOVERED")
+                return ExecutionResult(request.client_order_id, OrderStatus.SUBMITTED.value, message="EXECUTION_CLAIMED")
+
             recovered = self._recover_broker_order(request.client_order_id)
             if recovered is not None:
+                broker_id = str(recovered.get("order_id"))
                 status = str(recovered.get("status", "NEW")).upper()
                 lifecycle_status = OrderStatus.FILLED if status in {"FILLED", "TRADED", "COMPLETE"} else OrderStatus.SUBMITTED
                 self.lifecycle.create(request.client_order_id, request.symbol, request.side, request.quantity)
-                self.lifecycle.orders[request.client_order_id].broker_order_id = str(recovered.get("order_id"))
+                self.lifecycle.orders[request.client_order_id].broker_order_id = broker_id
                 self.lifecycle.transition(request.client_order_id, lifecycle_status, filled_quantity=request.quantity if lifecycle_status == OrderStatus.FILLED else 0, fill_price=recovered.get("price"))
                 self.store.save(self.lifecycle)
-                return ExecutionResult(request.client_order_id, lifecycle_status.value, str(recovered.get("order_id")), "BROKER_ORDER_RECOVERED")
+                return ExecutionResult(request.client_order_id, lifecycle_status.value, broker_id, "BROKER_ORDER_RECOVERED")
 
             self.lifecycle.create(request.client_order_id, request.symbol, request.side, request.quantity)
             self.store.save(self.lifecycle)
