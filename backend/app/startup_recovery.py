@@ -45,10 +45,10 @@ class StartupRecoveryCoordinator:
         unresolved: list[str] = []
         try:
             for order_id, order in lifecycle.orders.items():
-                if order.status not in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED):
+                if order.status not in (OrderStatus.SUBMISSION_INTENT, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED):
                     continue
                 updated = reconcile_order(order)
-                if updated is None or updated.status in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED):
+                if updated is None or updated.status in (OrderStatus.SUBMISSION_INTENT, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED):
                     unresolved.append(order_id)
             if unresolved:
                 self.state = RecoveryState.FAILED
