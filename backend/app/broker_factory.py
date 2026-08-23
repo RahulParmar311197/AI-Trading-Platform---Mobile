@@ -6,6 +6,7 @@ from app.broker_adapter import PaperBrokerAdapter
 from app.broker_router import BrokerRoute, BrokerRouter
 from app.dhan_adapter import DhanAdapter
 from app.safety_state import SafetyStateStore
+from app.upstox_adapter import UpstoxAdapter
 
 
 def build_broker_router(safety_store: SafetyStateStore | None = None) -> BrokerRouter:
@@ -15,5 +16,8 @@ def build_broker_router(safety_store: SafetyStateStore | None = None) -> BrokerR
 
     dhan = DhanAdapter()
     routes.append(BrokerRoute("dhan", dhan, enabled=bool(dhan.config.live_enabled)))
+
+    upstox = UpstoxAdapter()
+    routes.append(BrokerRoute("upstox", upstox, enabled=bool(upstox.config.live_enabled)))
 
     return BrokerRouter(routes, selected, safety_store=safety_store or SafetyStateStore())
