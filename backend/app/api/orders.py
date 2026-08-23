@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.broker_adapter import BrokerOrderRequest
@@ -41,6 +42,10 @@ def get_order_db(request: Request, db: Session = Depends(get_db)):
         yield db
 
 
+def _order_response(order: Order, message: str | None = None) -> dict:
+    return {"id": order.id, "client_order_id": order.client_order_id, "broker_order_id": order.broker_order_id, "status": order.status, "message": message}
+
+
 @router.post("", status_code=201)
 def create_order(
     payload: OrderRequest,
@@ -65,12 +70,19 @@ def create_order(
 
     existing = db.query(Order).filter(Order.client_order_id == client_order_id).first()
     if existing is not None:
-        return {"id": existing.id, "client_order_id": existing.client_order_id, "broker_order_id": existing.broker_order_id, "status": existing.status, "message": "IDEMPOTENT_REPLAY"}
+        return _order_response(existing, "IDEMPOTENT_REPLAY")
 
     symbol = payload.symbol.upper()
     order = Order(user_id=payload.user_id, client_order_id=client_order_id, symbol=symbol, side=payload.side, quantity=payload.quantity, order_type=payload.order_type, status="PENDING")
     db.add(order)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        existing = db.query(Order).filter(Order.client_order_id == client_order_id).first()
+        if existing is None:
+            raise HTTPException(status_code=409, detail="ORDER_CREATION_CONFLICT")
+        return _order_response(existing, "IDEMPOTENT_REPLAY")
 
     lifecycle = OrderLifecycle()
     execution_store.load(lifecycle)
@@ -83,4 +95,4 @@ def create_order(
         order.note = result.message
     db.commit()
     db.refresh(order)
-    return {"id": order.id, "client_order_id": order.client_order_id, "broker_order_id": order.broker_order_id, "status": order.status, "message": result.message}
+    return _order_response(order, result.message)
