@@ -42,15 +42,69 @@ class OrderExecutionService:
             return OrderStatus.REJECTED
         return OrderStatus.SUBMITTED
 
+    @staticmethod
+    def _aggregate_recovered_orders(orders: list[dict], requested_quantity: float) -> tuple[str, float, float | None, str]:
+        filled = 0.0
+        weighted_value = 0.0
+        statuses: list[str] = []
+        ids: list[str] = []
+        for order in orders:
+            statuses.append(str(order.get("status", "NEW")))
+            if order.get("order_id") is not None:
+                ids.append(str(order["order_id"]))
+            qty = float(order.get("filled_quantity", order.get("filledQty", 0)) or 0)
+            price = order.get("average_price", order.get("averagePrice", order.get("price")))
+            filled += max(0.0, qty)
+            if price is not None and qty > 0:
+                weighted_value += float(price) * qty
+        if filled > requested_quantity:
+            raise RuntimeError("broker reconciliation filled quantity exceeds requested quantity")
+        average_price = weighted_value / filled if filled > 0 else None
+        mapped = [self_status for self_status in (OrderExecutionService._status_value(s) for s in statuses)]
+        if filled >= requested_quantity and requested_quantity > 0:
+            status = OrderStatus.FILLED.value
+        elif filled > 0:
+            status = OrderStatus.PARTIALLY_FILLED.value
+        elif mapped and all(s == OrderStatus.CANCELLED for s in mapped):
+            status = OrderStatus.CANCELLED.value
+        elif mapped and all(s == OrderStatus.REJECTED for s in mapped):
+            status = OrderStatus.REJECTED.value
+        else:
+            status = OrderStatus.SUBMITTED.value
+        return status, filled, average_price, ",".join(ids)
+
+    @staticmethod
+    def _status_value(status: str) -> OrderStatus:
+        normalized = status.upper().strip()
+        if normalized in {"FILLED", "TRADED", "COMPLETE"}:
+            return OrderStatus.FILLED
+        if normalized in {"PARTIALLY_FILLED", "PART_TRADED", "PARTIALLY_TRADED"}:
+            return OrderStatus.PARTIALLY_FILLED
+        if normalized in {"CANCELLED", "CANCELED"}:
+            return OrderStatus.CANCELLED
+        if normalized in {"REJECTED", "FAILED", "ERROR"}:
+            return OrderStatus.REJECTED
+        return OrderStatus.SUBMITTED
+
     def _save_recovered(self, request: BrokerOrderRequest, recovered: dict, message: str) -> ExecutionResult:
-        broker_id = str(recovered.get("order_id"))
-        status = str(recovered.get("status", "NEW"))
-        lifecycle_status = self._map_broker_status(status)
-        filled_quantity = float(recovered.get("filled_quantity", recovered.get("filledQty", 0)) or 0)
+        if recovered.get("multi_order"):
+            orders = recovered.get("orders")
+            if not isinstance(orders, list) or not orders:
+                return ExecutionResult(request.client_order_id, OrderStatus.SUBMITTED.value, message="EXECUTION_PENDING_RECONCILIATION")
+            status, filled_quantity, average_price, broker_id = self._aggregate_recovered_orders(orders, request.quantity)
+        else:
+            broker_id = str(recovered.get("order_id"))
+            status = str(recovered.get("status", "NEW"))
+            filled_quantity = float(recovered.get("filled_quantity", recovered.get("filledQty", 0)) or 0)
+            average_price = recovered.get("average_price", recovered.get("averagePrice", recovered.get("price")))
+            lifecycle_status = self._map_broker_status(status)
+            status = lifecycle_status.value
+        lifecycle_status = OrderStatus(status)
         if request.client_order_id not in self.lifecycle.orders:
             self.lifecycle.create(request.client_order_id, request.symbol, request.side, request.quantity)
         self.lifecycle.orders[request.client_order_id].broker_order_id = broker_id
-        self.lifecycle.transition(request.client_order_id, lifecycle_status, filled_quantity=filled_quantity if lifecycle_status in {OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED} else 0, fill_price=recovered.get("price"))
+        fill_qty = filled_quantity if lifecycle_status in {OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED} else 0
+        self.lifecycle.transition(request.client_order_id, lifecycle_status, filled_quantity=fill_qty, fill_price=average_price)
         self.store.save(self.lifecycle)
         if self.idempotency_store is not None and lifecycle_status != OrderStatus.PARTIALLY_FILLED:
             self.idempotency_store.mark_completed(request.client_order_id)
