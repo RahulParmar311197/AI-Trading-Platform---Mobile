@@ -28,8 +28,12 @@ class Candle:
                 # Legacy: (symbol, timeframe, timestamp, open, high, low, close, volume)
                 positional_fields = ("symbol", "timeframe", "timestamp", "open", "high", "low", "close", "volume")
             elif isinstance(args[0], str) and len(args) >= 2 and isinstance(args[1], datetime):
-                # Older legacy: (symbol, timestamp, timeframe, open, high, low, close, volume)
-                positional_fields = ("symbol", "timestamp", "timeframe", "open", "high", "low", "close", "volume")
+                if len(args) >= 3 and not isinstance(args[2], str):
+                    # Legacy: (symbol, timestamp, open, high, low, close, volume)
+                    positional_fields = ("symbol", "timestamp", "open", "high", "low", "close", "volume")
+                else:
+                    # Legacy: (symbol, timestamp, timeframe, open, high, low, close, volume)
+                    positional_fields = ("symbol", "timestamp", "timeframe", "open", "high", "low", "close", "volume")
             else:
                 # Production: (timestamp, symbol, timeframe, open, high, low, close, volume)
                 positional_fields = fields
