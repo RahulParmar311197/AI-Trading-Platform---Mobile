@@ -36,6 +36,28 @@ class BrokerOrderUpdate:
     price: float | None = None
     message: str | None = None
 
+    def __getitem__(self, key: str):
+        value = getattr(self, key)
+        return value.value if isinstance(value, Enum) else value
+
+    def get(self, key: str, default: Any = None):
+        try:
+            return self[key]
+        except (AttributeError, KeyError):
+            return default
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "client_order_id": self.client_order_id,
+            "broker_order_id": self.broker_order_id,
+            "status": self.status.value,
+            "symbol": self.symbol,
+            "side": self.side,
+            "quantity": self.quantity,
+            "price": self.price,
+            "message": self.message,
+        }
+
 
 @dataclass(frozen=True)
 class BrokerOrder:
@@ -99,8 +121,7 @@ class PaperBrokerAdapter(BrokerAdapter):
         if broker_order_id not in self.orders:
             raise KeyError("order not found")
         self.orders[broker_order_id]["status"] = BrokerOrderStatus.CANCELLED
-        record = self.orders[broker_order_id]
-        return BrokerOrderUpdate(**record)
+        return BrokerOrderUpdate(**self.orders[broker_order_id])
 
     def get_order(self, broker_order_id: str) -> dict[str, Any]:
         if broker_order_id not in self.orders:
