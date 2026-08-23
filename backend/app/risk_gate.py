@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from threading import Lock
 
 from app.broker_adapter import BrokerOrderRequest
+from app.order_lifecycle import OrderStatus
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,7 @@ class RiskDecision:
 
 
 class ExposureReservationBook:
-    """Process-wide atomic reservations used to close the stale-snapshot race."""
+    """Atomic reservations rebuilt from durable lifecycle state after restart."""
 
     def __init__(self):
         self._lock = Lock()
@@ -40,13 +41,44 @@ class ExposureReservationBook:
         with self._lock:
             existing = self._reservations.get(client_order_id)
             if existing is not None:
-                return existing == signed_quantity
+                return abs(existing - signed_quantity) <= 1e-9
             reserved = sum(self._reservations.values())
             projected = current_position + reserved + signed_quantity
             if abs(projected) > max_position + 1e-9:
                 return False
             self._reservations[client_order_id] = signed_quantity
             return True
+
+    def update(self, client_order_id: str, signed_quantity: float, current_position: float, max_position: float) -> bool:
+        with self._lock:
+            if client_order_id not in self._reservations:
+                return False
+            other_reserved = sum(v for k, v in self._reservations.items() if k != client_order_id)
+            projected = current_position + other_reserved + signed_quantity
+            if abs(projected) > max_position + 1e-9:
+                return False
+            if abs(signed_quantity) <= 1e-9:
+                self._reservations.pop(client_order_id, None)
+            else:
+                self._reservations[client_order_id] = signed_quantity
+            return True
+
+    def rebuild_from_lifecycle(self, lifecycle) -> None:
+        """Reconstruct only unresolved exposure from durable order records."""
+        rebuilt: dict[str, float] = {}
+        for order_id, order in lifecycle.orders.items():
+            if order.status in {OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED}:
+                continue
+            remaining = max(0.0, float(order.quantity) - float(order.filled_quantity))
+            if remaining <= 1e-9:
+                continue
+            side = str(order.side).upper()
+            sign = 1 if side == "BUY" else -1 if side == "SELL" else 0
+            if sign == 0:
+                raise RuntimeError(f"cannot rebuild risk reservation for invalid side: {side}")
+            rebuilt[str(order_id)] = sign * remaining
+        with self._lock:
+            self._reservations = rebuilt
 
     def release(self, client_order_id: str) -> None:
         with self._lock:
@@ -55,6 +87,10 @@ class ExposureReservationBook:
     def get(self, client_order_id: str) -> float | None:
         with self._lock:
             return self._reservations.get(client_order_id)
+
+    def snapshot(self) -> dict[str, float]:
+        with self._lock:
+            return dict(self._reservations)
 
 
 class PreTradeRiskGate:
@@ -114,6 +150,16 @@ class PreTradeRiskGate:
         if not self.reservations.reserve(request.client_order_id, signed, float(snapshot.position_quantity), self.limits.max_position_quantity):
             return RiskDecision(False, "RISK_EXPOSURE_RESERVATION")
         return RiskDecision(True, "RISK_OK")
+
+    def update_after_fill(self, request: BrokerOrderRequest, filled_quantity: float, current_position: float) -> RiskDecision:
+        remaining = max(0.0, float(request.quantity) - float(filled_quantity))
+        signed_remaining = self._side_sign(request.side) * remaining
+        if not self.reservations.update(request.client_order_id, signed_remaining, current_position, self.limits.max_position_quantity):
+            return RiskDecision(False, "RISK_EXPOSURE_RESERVATION_UPDATE")
+        return RiskDecision(True, "RISK_OK")
+
+    def rebuild_from_lifecycle(self, lifecycle) -> None:
+        self.reservations.rebuild_from_lifecycle(lifecycle)
 
     def release(self, client_order_id: str) -> None:
         self.reservations.release(client_order_id)
