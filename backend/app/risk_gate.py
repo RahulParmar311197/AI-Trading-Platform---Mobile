@@ -38,6 +38,15 @@ class PreTradeRiskGate:
             raise ValueError("risk loss limits cannot be negative")
         self.limits = limits
 
+    @staticmethod
+    def _side_sign(side: object) -> int:
+        normalized = str(side or "").strip().upper()
+        if normalized in {"BUY", "B", "LONG"}:
+            return 1
+        if normalized in {"SELL", "S", "SHORT"}:
+            return -1
+        return 0
+
     def evaluate(self, request: BrokerOrderRequest, snapshot: RiskSnapshot) -> RiskDecision:
         if snapshot.kill_switch:
             return RiskDecision(False, "RISK_KILL_SWITCH_ACTIVE")
@@ -51,8 +60,15 @@ class PreTradeRiskGate:
             return RiskDecision(False, "RISK_INVALID_QUANTITY")
         if quantity > self.limits.max_order_quantity:
             return RiskDecision(False, "RISK_MAX_ORDER_QUANTITY")
-        projected_position = abs(float(snapshot.position_quantity)) + quantity
-        if projected_position > self.limits.max_position_quantity + 1e-9:
+        side_sign = self._side_sign(request.side)
+        if side_sign == 0:
+            return RiskDecision(False, "RISK_INVALID_SIDE")
+        try:
+            current_position = float(snapshot.position_quantity)
+        except (TypeError, ValueError):
+            return RiskDecision(False, "RISK_INVALID_POSITION_SNAPSHOT")
+        projected_position = current_position + side_sign * quantity
+        if abs(projected_position) > self.limits.max_position_quantity + 1e-9:
             return RiskDecision(False, "RISK_MAX_POSITION_QUANTITY")
         if -float(snapshot.daily_pnl) >= self.limits.max_daily_loss:
             return RiskDecision(False, "RISK_DAILY_LOSS_LIMIT")
