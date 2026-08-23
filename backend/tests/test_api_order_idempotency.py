@@ -1,8 +1,10 @@
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 from app.app_factory import create_app, create_resources
 from app.broker_adapter import BrokerOrderUpdate
 from app.broker_router import BrokerRoute, BrokerRouter
+from app.models import User
 
 
 class CountingBroker:
@@ -38,20 +40,17 @@ def test_same_idempotency_key_returns_same_order(tmp_path):
         database_url=f"sqlite:///{db_path}",
     )
     resources.safety_store.clear()
+    with Session(resources.session_local()) as db:
+        db.add(User(email="test@example.com", password_hash="test-hash"))
+        db.commit()
+
     broker = CountingBroker()
     router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=resources.safety_store)
     app = create_app(resources, broker_router=router)
 
     with TestClient(app) as client:
-        payload = {
-            "user_id": 1,
-            "symbol": "NIFTY",
-            "side": "BUY",
-            "quantity": 1,
-            "order_type": "MARKET",
-        }
+        payload = {"user_id": 1, "symbol": "NIFTY", "side": "BUY", "quantity": 1, "order_type": "MARKET"}
         headers = {"Idempotency-Key": "api-test-123"}
-
         first = client.post("/api/orders", json=payload, headers=headers)
         second = client.post("/api/orders", json=payload, headers=headers)
 
