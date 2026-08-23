@@ -30,9 +30,7 @@ def require_trading_ready() -> None:
 
 @router.post("", status_code=201)
 def create_order(payload: OrderRequest, db: Session = Depends(get_db), _: None = Depends(require_trading_ready)):
-    # Import at request time to avoid the main -> orders import cycle while
-    # still using the application's single broker router and execution store.
-    from app.main import broker_router, execution_store
+    from app.main import broker_router, execution_store, idempotency_store
     from app.order_execution_service import OrderExecutionService
     from app.order_lifecycle import OrderLifecycle
 
@@ -52,7 +50,7 @@ def create_order(payload: OrderRequest, db: Session = Depends(get_db), _: None =
 
     lifecycle = OrderLifecycle()
     execution_store.load(lifecycle)
-    service = OrderExecutionService(broker_router, lifecycle, execution_store)
+    service = OrderExecutionService(broker_router, lifecycle, execution_store, idempotency_store)
     result = service.submit(
         BrokerOrderRequest(
             client_order_id=client_order_id,
@@ -76,8 +74,3 @@ def create_order(payload: OrderRequest, db: Session = Depends(get_db), _: None =
         "status": order.status,
         "message": result.message,
     }
-
-
-@router.get("/{user_id}")
-def list_orders(user_id: int, db: Session = Depends(get_db)):
-    return db.query(Order).filter(Order.user_id == user_id).order_by(Order.id.desc()).all()
