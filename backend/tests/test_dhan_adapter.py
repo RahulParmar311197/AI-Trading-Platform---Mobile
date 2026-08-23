@@ -1,13 +1,14 @@
 import pytest
 
 from app.broker_adapter import BrokerOrderRequest
-from app.dhan_adapter import DhanAdapter, DhanConfig
+from app.dhan_adapter import DhanAdapter, DhanConfig, DhanHttpTransport
 
 
 class FakeResponse:
     def __init__(self, payload, status=200):
         self.payload = payload
         self.status = status
+        self.status_code = status
 
     def raise_for_status(self):
         if self.status >= 400:
@@ -38,18 +39,7 @@ class FakeTransport:
 
 
 def request(client_order_id="TEST123"):
-    return BrokerOrderRequest(
-        client_order_id=client_order_id,
-        security_id="11536",
-        exchange_segment="NSE_EQ",
-        side="BUY",
-        quantity=5,
-        order_type="MARKET",
-        product_type="INTRADAY",
-        validity="DAY",
-        price=0,
-        trigger_price=0,
-    )
+    return BrokerOrderRequest(client_order_id=client_order_id, security_id="11536", exchange_segment="NSE_EQ", side="BUY", quantity=5, order_type="MARKET", product_type="INTRADAY", validity="DAY", price=0, trigger_price=0)
 
 
 def test_live_is_disabled_by_default():
@@ -103,3 +93,36 @@ def test_credentials_are_required_before_transport():
     adapter = DhanAdapter(DhanConfig("", "", live_enabled=True), FakeTransport())
     with pytest.raises(RuntimeError, match="credentials"):
         adapter.submit_order(request())
+
+
+def test_dhan_http_transport_passes_bounded_timeout():
+    class FakeHttpClient:
+        def __init__(self):
+            self.calls = []
+
+        def post(self, url, **kwargs):
+            self.calls.append(("POST", url, kwargs))
+            return FakeResponse({"ok": True})
+
+        def get(self, url, **kwargs):
+            self.calls.append(("GET", url, kwargs))
+            return FakeResponse({"ok": True})
+
+        def delete(self, url, **kwargs):
+            self.calls.append(("DELETE", url, kwargs))
+            return FakeResponse({"ok": True})
+
+        def close(self):
+            pass
+
+    client = FakeHttpClient()
+    transport = DhanHttpTransport(timeout_seconds=7.5, client=client)
+    transport.post("https://example.test/orders")
+    transport.get("https://example.test/orders")
+    transport.delete("https://example.test/orders/D123")
+    assert all(call[2]["timeout"] == 7.5 for call in client.calls)
+
+
+def test_dhan_http_transport_rejects_non_positive_timeout():
+    with pytest.raises(ValueError, match="greater than zero"):
+        DhanHttpTransport(timeout_seconds=0)
