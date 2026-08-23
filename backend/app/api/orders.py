@@ -46,8 +46,19 @@ def _order_response(order: Order, message: str | None = None) -> dict:
     return {"id": order.id, "client_order_id": order.client_order_id, "broker_order_id": order.broker_order_id, "status": order.status, "message": message}
 
 
+def _set_execution_response_status(response: Response, status: str) -> None:
+    response.status_code = 202 if status == "EXECUTION_PENDING_RECONCILIATION" else 201
+
+
 @router.post("")
-def create_order(payload: OrderRequest, request: Request, response: Response, db: Session = Depends(get_order_db), _: None = Depends(require_trading_ready), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
+def create_order(
+    payload: OrderRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_order_db),
+    _: None = Depends(require_trading_ready),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
     from app.main import broker_router, execution_store, idempotency_store
     from app.order_execution_service import OrderExecutionService
     from app.order_lifecycle import OrderLifecycle
@@ -74,7 +85,7 @@ def create_order(payload: OrderRequest, request: Request, response: Response, db
             existing.note = result.message
             db.commit()
             db.refresh(existing)
-            response.status_code = 202 if result.message == "EXECUTION_PENDING_RECONCILIATION" else 201
+            _set_execution_response_status(response, result.status)
             return _order_response(existing, result.message)
         return _order_response(existing, "IDEMPOTENT_REPLAY")
 
@@ -100,5 +111,5 @@ def create_order(payload: OrderRequest, request: Request, response: Response, db
     order.note = result.message
     db.commit()
     db.refresh(order)
-    response.status_code = 202 if result.message == "EXECUTION_PENDING_RECONCILIATION" else 201
+    _set_execution_response_status(response, result.status)
     return _order_response(order, result.message)
