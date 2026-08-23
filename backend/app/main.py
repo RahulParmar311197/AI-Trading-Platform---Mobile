@@ -57,15 +57,17 @@ from app.broker_recovery import BrokerStartupRecovery
 from app.config import get_settings
 from app.db import init_db
 from app.execution_persistence import ExecutionStateStore
+from app.idempotency_store import IdempotencyStore
 from app.order_lifecycle import OrderLifecycle
 from app.recovery_manager import StartupRecoveryManager
 from app.safety_state import SafetyStateStore
 
 settings = get_settings()
 execution_store = ExecutionStateStore()
+idempotency_store = IdempotencyStore()
 safety_store = SafetyStateStore()
 recovery_manager = StartupRecoveryManager(execution_store, safety_store)
-broker_router = build_broker_router()
+broker_router = build_broker_router(safety_store)
 broker_recovery = BrokerStartupRecovery(
     broker_router,
     execution_store,
@@ -77,94 +79,32 @@ broker_recovery = BrokerStartupRecovery(
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    # Paper recovery is safe to run at startup. A live Dhan route is only
-    # enabled when DHAN_LIVE_ENABLED=true, so startup cannot implicitly trade.
-    try:
-        lifecycle = OrderLifecycle()
-        broker_recovery.run(lifecycle)
-    except Exception:
-        # RecoveryManager persists a fail-closed safety halt. Application startup
-        # itself must remain available so the operator can inspect /api/recovery/status.
-        pass
     yield
 
 
-app = FastAPI(
-    title=settings.app_name,
-    version=settings.app_version,
-    lifespan=lifespan,
-)
+app = FastAPI(title="AI Trading Platform", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "Origin"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-for router, prefix in [
-    (health_router, ""),
-    (markets_router, "/api"),
-    (analysis_router, "/api"),
-    (backtest_router, "/api"),
-    (paper_router, "/api"),
-    (risk_router, "/api"),
-    (replay_router, "/api"),
-    (auth_router, "/api"),
-    (portfolio_router, "/api"),
-    (notifications_router, "/api"),
-    (backtest_engine_router, ""),
-    (strategy_backtest_router, ""),
-    (unified_backtest_router, ""),
-    (risk_engine_router, ""),
-    (orders_router, ""),
-    (market_data_router, ""),
-    (confluence_router, ""),
-    (signals_router, ""),
-    (paper_execution_router, ""),
-    (scanner_router, ""),
-    (options_router, ""),
-    (journal_router, ""),
-    (ai_router, ""),
-    (ensemble_router, ""),
-    (ml_training_router, ""),
-    (model_registry_router, ""),
-    (walk_forward_router, ""),
-    (ml_trainer_router, ""),
-    (ict_smc_router, ""),
-    (mtf_analysis_router, ""),
-    (ict_zones_router, ""),
-    (ensemble_v2_router, ""),
-    (mtf_ensemble_router, ""),
-    (trade_risk_router, ""),
-    (execution_lifecycle_router, "/"),
-    (position_manager_router, ""),
-    (protection_engine_router, ""),
-    (broker_router, ""),
-    (reconciliation_router, ""),
-    (recovery_router, ""),
-    (market_data_normalizer_router, ""),
-    (mtf_aggregator_router, ""),
-    (realtime_market_stream_router, ""),
-    (candle_builder_router, ""),
-    (stream_pipeline_router, ""),
-    (historical_market_store_router, ""),
-    (historical_backfill_router, ""),
-    (data_provider_router, ""),
+for router in [
+    ai_router, analysis_router, auth_router, backtest_router, backtest_engine_router,
+    broker_router, candle_builder_router, confluence_router, data_provider_router,
+    ensemble_router, ensemble_v2_router, execution_lifecycle_router,
+    historical_backfill_router, historical_market_store_router, health_router,
+    ict_smc_router, ict_zones_router, journal_router, market_data_router,
+    market_data_normalizer_router, markets_router, ml_trainer_router, ml_training_router,
+    model_registry_router, mtf_aggregator_router, mtf_analysis_router, mtf_ensemble_router,
+    notifications_router, options_router, orders_router, paper_router, paper_execution_router,
+    portfolio_router, position_manager_router, protection_engine_router,
+    realtime_market_stream_router, reconciliation_router, recovery_router, replay_router,
+    risk_router, risk_engine_router, scanner_router, signals_router, strategy_backtest_router,
+    stream_router, stream_pipeline_router, trade_risk_router, unified_backtest_router,
+    walk_forward_router,
 ]:
-    app.include_router(router, prefix=prefix)
-
-app.include_router(stream_router)
-
-
-@app.get("/")
-def root():
-    return {
-        "name": settings.app_name,
-        "version": settings.app_version,
-        "environment": settings.environment,
-        "status": "ok",
-        "live_trading_enabled": settings.live_trading_enabled,
-        "recovery_manager": "available",
-    }
+    app.include_router(router)
