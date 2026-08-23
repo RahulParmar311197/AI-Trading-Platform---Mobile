@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fastapi import FastAPI
 from app.db import init_db
+from app.db_runtime import create_db_runtime
 from app.execution_persistence import ExecutionStateStore
 from app.idempotency_store import IdempotencyStore
 from app.safety_state import SafetyStateStore
@@ -15,13 +16,18 @@ class AppResources:
     execution_store: ExecutionStateStore
     idempotency_store: IdempotencyStore
     safety_store: SafetyStateStore
+    session_local: object | None = None
 
 
-def create_resources(*, execution_path="data/execution_state.json", idempotency_path="data/idempotency.sqlite3", safety_path="data/safety_state.json") -> AppResources:
+def create_resources(*, execution_path="data/execution_state.json", idempotency_path="data/idempotency.sqlite3", safety_path="data/safety_state.json", database_url: str | None = None) -> AppResources:
+    session_local = None
+    if database_url:
+        _, session_local = create_db_runtime(database_url)
     return AppResources(
         execution_store=ExecutionStateStore(execution_path),
         idempotency_store=IdempotencyStore(idempotency_path),
         safety_store=SafetyStateStore(safety_path),
+        session_local=session_local,
     )
 
 
@@ -33,7 +39,8 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
 
     @app.on_event("startup")
     async def startup() -> None:
-        init_db()
+        if resources.session_local is None:
+            init_db()
 
     from app.api.orders import router as orders_router
     app.include_router(orders_router)
