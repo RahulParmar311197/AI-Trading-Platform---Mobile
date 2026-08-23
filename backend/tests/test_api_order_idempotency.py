@@ -16,6 +16,7 @@ class CountingBroker:
         self._submit_calls = 0
         self.orders = []
         self.fail_after_accept = False
+        self.hide_accepted_orders = False
 
     @property
     def submit_calls(self):
@@ -40,6 +41,8 @@ class CountingBroker:
 
     def get_orders(self):
         with self._lock:
+            if self.hide_accepted_orders:
+                return []
             return list(self.orders)
 
     def get_positions(self):
@@ -145,3 +148,30 @@ def test_broker_accepts_then_response_is_lost_retry_recovers_without_resubmit(tm
     assert retry.json()["broker_order_id"] == "TEST-BROKER-1"
     assert retry.json()["message"] in {"BROKER_ORDER_RECOVERED", "IDEMPOTENT_REPLAY"}
     assert broker.submit_calls == 1
+
+
+def test_unresolved_broker_execution_returns_202(tmp_path):
+    resources = create_resources(
+        execution_path=str(tmp_path / "execution.json"),
+        idempotency_path=str(tmp_path / "idempotency.sqlite3"),
+        safety_path=str(tmp_path / "safety.json"),
+        database_url=f"sqlite:///{tmp_path / 'orders.sqlite3'}",
+    )
+    resources.safety_store.clear()
+    with Session(resources.session_local()) as db:
+        db.add(User(email="pending@example.com", password_hash="test-hash"))
+        db.commit()
+
+    broker = CountingBroker()
+    broker.fail_after_accept = True
+    broker.hide_accepted_orders = True
+    router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=resources.safety_store)
+    app = create_app(resources, broker_router=router)
+    payload = {"user_id": 1, "symbol": "NIFTY", "side": "BUY", "quantity": 1, "order_type": "MARKET"}
+    headers = {"Idempotency-Key": "pending-api-test"}
+
+    with TestClient(app) as client:
+        result = client.post("/api/orders", json=payload, headers=headers)
+
+    assert result.status_code == 202
+    assert result.json()["status"] == "PENDING_RECONCILIATION"
