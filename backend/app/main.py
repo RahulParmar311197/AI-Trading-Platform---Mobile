@@ -61,6 +61,7 @@ from app.idempotency_store import IdempotencyStore
 from app.order_lifecycle import OrderLifecycle
 from app.recovery_manager import StartupRecoveryManager
 from app.safety_state import SafetyStateStore
+from app.startup_recovery import RecoveryState, StartupRecoveryCoordinator
 
 settings = get_settings()
 execution_store = ExecutionStateStore()
@@ -74,11 +75,21 @@ broker_recovery = BrokerStartupRecovery(
     safety_store,
     recovery_manager,
 )
+startup_recovery = StartupRecoveryCoordinator()
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
     init_db()
+    lifecycle = OrderLifecycle()
+    app.state.startup_recovery = startup_recovery
+    result = broker_recovery.run(lifecycle)
+    if result.ready:
+        startup_recovery.state = RecoveryState.READY
+    else:
+        startup_recovery.state = RecoveryState.FAILED
+    app.state.recovery_result = result
+    app.state.execution_lifecycle = lifecycle
     yield
 
 
