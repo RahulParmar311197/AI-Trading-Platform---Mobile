@@ -40,6 +40,7 @@ from app.api.position_manager import router as position_manager_router
 from app.api.protection_engine import router as protection_engine_router
 from app.api.realtime_market_stream import router as realtime_market_stream_router
 from app.api.reconciliation import router as reconciliation_router
+from app.api.recovery import router as recovery_router
 from app.api.replay import router as replay_router
 from app.api.risk import router as risk_router
 from app.api.risk_engine import router as risk_engine_router
@@ -54,7 +55,6 @@ from app.api.walk_forward import router as walk_forward_router
 from app.config import get_settings
 from app.db import init_db
 from app.execution_persistence import ExecutionStateStore
-from app.order_lifecycle import OrderLifecycle
 from app.recovery_manager import StartupRecoveryManager
 from app.safety_state import SafetyStateStore
 
@@ -127,6 +127,7 @@ for router, prefix in [
     (protection_engine_router, ""),
     (broker_router, ""),
     (reconciliation_router, ""),
+    (recovery_router, ""),
     (market_data_normalizer_router, ""),
     (mtf_aggregator_router, ""),
     (realtime_market_stream_router, ""),
