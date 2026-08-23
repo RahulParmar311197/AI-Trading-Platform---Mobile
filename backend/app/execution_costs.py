@@ -29,8 +29,6 @@ class ExecutionCostModel:
         return price * quantity * self.commission_bps / 10000.0 + self.fixed_fee
 
     def round_trip_cost(self, entry_price: float, exit_price: float, quantity: float) -> float:
-        variable_commission = (
-            entry_price + exit_price
-        ) * quantity * self.commission_bps / 10000.0
-        slippage_cost = abs(exit_price - entry_price) * quantity * self.slippage_bps / 10000.0
+        variable_commission = (entry_price + exit_price) * quantity * self.commission_bps / 10000.0
+        slippage_cost = 2.0 * entry_price * quantity * self.slippage_bps / 10000.0
         return variable_commission + self.fixed_fee + slippage_cost
