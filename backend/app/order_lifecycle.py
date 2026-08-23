@@ -65,17 +65,24 @@ class OrderLifecycle:
         order.status = status
         order.filled_quantity = filled_quantity
         if fill_price is not None:
-            order.average_fill_price = float(fill_price)
+            fill_price = float(fill_price)
+            if fill_price <= 0:
+                raise ValueError("fill price must be positive")
+            order.average_fill_price = fill_price
         order.updated_at = datetime.now(timezone.utc)
 
         delta_quantity = filled_quantity - order.applied_fill_quantity
         if delta_quantity > 0:
             if order.average_fill_price is None:
                 raise ValueError("fill price is required when applying a fill")
-            delta_value = delta_quantity * order.average_fill_price
-            self._apply_position_delta(order, delta_quantity, order.average_fill_price)
+            cumulative_value = filled_quantity * order.average_fill_price
+            delta_value = cumulative_value - order.applied_fill_value
+            if delta_value <= 0:
+                raise ValueError("cumulative fill value cannot move backwards")
+            delta_price = delta_value / delta_quantity
+            self._apply_position_delta(order, delta_quantity, delta_price)
             order.applied_fill_quantity = filled_quantity
-            order.applied_fill_value += delta_value
+            order.applied_fill_value = cumulative_value
         return order
 
     def _apply_position_delta(self, order, quantity, price):
