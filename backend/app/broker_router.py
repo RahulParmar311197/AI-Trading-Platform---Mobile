@@ -47,6 +47,9 @@ class BrokerRouter:
             raise NotImplementedError("broker does not support order snapshots")
         return get_orders()
 
+    def find_order_by_client_id(self, client_order_id: str, route: str | None = None) -> dict | None:
+        return self.get(route).adapter.find_order_by_client_id(client_order_id)
+
     def get_positions(self, route: str | None = None) -> list[dict]:
         return self.get(route).adapter.get_positions()
 
