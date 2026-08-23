@@ -7,14 +7,7 @@ from typing import Protocol
 
 @dataclass(frozen=True, init=False)
 class Candle:
-    """OHLCV candle with compatibility for both historical constructor orders.
-
-    Supported positional forms are:
-      Candle(timestamp, symbol, timeframe, open, high, low, close, volume)
-      Candle(symbol, timestamp, timeframe, open, high, low, close, volume)
-
-    Keyword construction remains the preferred API and defaults timeframe to 5m.
-    """
+    """OHLCV candle supporting all constructor orders used by the merged codebase."""
 
     timestamp: datetime
     symbol: str
@@ -28,15 +21,17 @@ class Candle:
     def __init__(self, *args, **kwargs):
         fields = ("timestamp", "symbol", "timeframe", "open", "high", "low", "close", "volume")
         values = dict(kwargs)
-
         if args:
             if len(args) > len(fields):
                 raise TypeError(f"Candle expected at most {len(fields)} positional arguments")
-            # Older code used (symbol, timestamp, timeframe, ...); production code
-            # uses (timestamp, symbol, timeframe, ...). Detect the form by types.
-            if isinstance(args[0], str) and len(args) >= 2 and isinstance(args[1], datetime):
+            if isinstance(args[0], str) and len(args) >= 3 and isinstance(args[2], datetime):
+                # Legacy: (symbol, timeframe, timestamp, open, high, low, close, volume)
+                positional_fields = ("symbol", "timeframe", "timestamp", "open", "high", "low", "close", "volume")
+            elif isinstance(args[0], str) and len(args) >= 2 and isinstance(args[1], datetime):
+                # Older legacy: (symbol, timestamp, timeframe, open, high, low, close, volume)
                 positional_fields = ("symbol", "timestamp", "timeframe", "open", "high", "low", "close", "volume")
             else:
+                # Production: (timestamp, symbol, timeframe, open, high, low, close, volume)
                 positional_fields = fields
             for name, value in zip(positional_fields, args):
                 if name in values:
@@ -49,7 +44,6 @@ class Candle:
         if missing:
             raise TypeError(f"Candle missing required arguments: {', '.join(missing)}")
         values.setdefault("volume", 0.0)
-
         object.__setattr__(self, "timestamp", values["timestamp"])
         object.__setattr__(self, "symbol", values["symbol"])
         object.__setattr__(self, "timeframe", values["timeframe"])
