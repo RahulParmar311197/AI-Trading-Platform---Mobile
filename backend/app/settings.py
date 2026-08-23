@@ -1,10 +1,4 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from app.config import Settings, get_settings
 
 
-class Settings(BaseSettings):
-    database_url: str = "sqlite:///./trading.db"
-    jwt_secret: str = "change-me-in-production"
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
-
-settings = Settings()
+settings: Settings = get_settings()
