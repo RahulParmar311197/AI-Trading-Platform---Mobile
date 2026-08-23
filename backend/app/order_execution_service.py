@@ -8,6 +8,7 @@ from app.broker_router import BrokerRouter
 from app.execution_persistence import ExecutionStateStore
 from app.idempotency_store import IdempotencyStore
 from app.order_lifecycle import OrderLifecycle, OrderStatus
+from app.startup_recovery import StartupRecoveryCoordinator
 
 
 @dataclass(frozen=True)
@@ -21,11 +22,12 @@ class ExecutionResult:
 class OrderExecutionService:
     _claim_lock = Lock()
 
-    def __init__(self, router: BrokerRouter, lifecycle: OrderLifecycle, store: ExecutionStateStore, idempotency_store: IdempotencyStore | None = None):
+    def __init__(self, router: BrokerRouter, lifecycle: OrderLifecycle, store: ExecutionStateStore, idempotency_store: IdempotencyStore | None = None, recovery: StartupRecoveryCoordinator | None = None):
         self.router = router
         self.lifecycle = lifecycle
         self.store = store
         self.idempotency_store = idempotency_store
+        self.recovery = recovery or StartupRecoveryCoordinator()
 
     def _recover_broker_order(self, client_order_id: str):
         return self.router.find_order_by_client_id(client_order_id)
@@ -60,7 +62,7 @@ class OrderExecutionService:
         if filled > requested_quantity:
             raise RuntimeError("broker reconciliation filled quantity exceeds requested quantity")
         average_price = weighted_value / filled if filled > 0 else None
-        mapped = [self_status for self_status in (OrderExecutionService._status_value(s) for s in statuses)]
+        mapped = [OrderExecutionService._status_value(s) for s in statuses]
         if filled >= requested_quantity and requested_quantity > 0:
             status = OrderStatus.FILLED.value
         elif filled > 0:
@@ -97,8 +99,7 @@ class OrderExecutionService:
             status = str(recovered.get("status", "NEW"))
             filled_quantity = float(recovered.get("filled_quantity", recovered.get("filledQty", 0)) or 0)
             average_price = recovered.get("average_price", recovered.get("averagePrice", recovered.get("price")))
-            lifecycle_status = self._map_broker_status(status)
-            status = lifecycle_status.value
+            status = self._map_broker_status(status).value
         lifecycle_status = OrderStatus(status)
         if request.client_order_id not in self.lifecycle.orders:
             self.lifecycle.create(request.client_order_id, request.symbol, request.side, request.quantity)
@@ -115,6 +116,8 @@ class OrderExecutionService:
             existing = self.lifecycle.orders.get(request.client_order_id)
             if existing is not None and existing.status in {OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED}:
                 return ExecutionResult(request.client_order_id, existing.status.value, existing.broker_order_id, "IDEMPOTENT_REPLAY")
+            if self.recovery.state.value != "READY":
+                return ExecutionResult(request.client_order_id, OrderStatus.SUBMITTED.value, message="LIVE_EXECUTION_LOCKED_STARTUP_RECOVERY_REQUIRED")
             if self.idempotency_store is not None and not self.idempotency_store.claim(request.client_order_id):
                 recovered = self._recover_broker_order(request.client_order_id)
                 if recovered is not None:
