@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import Lock
+from typing import Callable
 
 from app.broker_adapter import BrokerOrderRequest
 from app.broker_router import BrokerRouter
 from app.execution_persistence import ExecutionStateStore
 from app.idempotency_store import IdempotencyStore
 from app.order_lifecycle import OrderLifecycle, OrderStatus
+from app.risk_gate import PreTradeRiskGate, RiskSnapshot
 from app.startup_recovery import StartupRecoveryCoordinator
 
 
@@ -22,12 +24,14 @@ class ExecutionResult:
 class OrderExecutionService:
     _claim_lock = Lock()
 
-    def __init__(self, router: BrokerRouter, lifecycle: OrderLifecycle, store: ExecutionStateStore, idempotency_store: IdempotencyStore | None = None, recovery: StartupRecoveryCoordinator | None = None):
+    def __init__(self, router: BrokerRouter, lifecycle: OrderLifecycle, store: ExecutionStateStore, idempotency_store: IdempotencyStore | None = None, recovery: StartupRecoveryCoordinator | None = None, risk_gate: PreTradeRiskGate | None = None, risk_snapshot_provider: Callable[[], RiskSnapshot] | None = None):
         self.router = router
         self.lifecycle = lifecycle
         self.store = store
         self.idempotency_store = idempotency_store
         self.recovery = recovery or StartupRecoveryCoordinator()
+        self.risk_gate = risk_gate
+        self.risk_snapshot_provider = risk_snapshot_provider
 
     def _recover_broker_order(self, client_order_id: str):
         return self.router.find_order_by_client_id(client_order_id)
@@ -162,6 +166,20 @@ class OrderExecutionService:
             self.idempotency_store.mark_completed(request.client_order_id)
         return ExecutionResult(request.client_order_id, lifecycle_status.value, broker_id, message)
 
+    def _authorize_risk(self, request: BrokerOrderRequest) -> ExecutionResult | None:
+        if self.risk_gate is None:
+            return None
+        if self.risk_snapshot_provider is None:
+            return ExecutionResult(request.client_order_id, OrderStatus.REJECTED.value, message="RISK_SNAPSHOT_UNAVAILABLE")
+        try:
+            snapshot = self.risk_snapshot_provider()
+            decision = self.risk_gate.evaluate(request, snapshot)
+        except Exception:
+            return ExecutionResult(request.client_order_id, OrderStatus.REJECTED.value, message="RISK_GATE_ERROR")
+        if not decision.allowed:
+            return ExecutionResult(request.client_order_id, OrderStatus.REJECTED.value, message=decision.reason)
+        return None
+
     def submit(self, request: BrokerOrderRequest) -> ExecutionResult:
         with self._claim_lock:
             existing = self.lifecycle.orders.get(request.client_order_id)
@@ -180,6 +198,9 @@ class OrderExecutionService:
             if request.client_order_id not in self.lifecycle.orders:
                 self.lifecycle.create(request.client_order_id, request.symbol, request.side, request.quantity)
             self.store.save(self.lifecycle)
+            risk_result = self._authorize_risk(request)
+            if risk_result is not None:
+                return risk_result
             try:
                 result = self.router.submit(request)
                 lifecycle_status = self._map_broker_status(str(result.status))
