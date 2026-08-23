@@ -96,11 +96,22 @@ class OrderLifecycle:
             existing.quantity = total
             return
 
-        qty = min(existing.quantity, quantity)
-        pnl = (price - existing.entry_price) * qty * (1 if existing.side == "BUY" else -1)
+        closing_qty = min(existing.quantity, quantity)
+        pnl = (price - existing.entry_price) * closing_qty * (1 if existing.side == "BUY" else -1)
         existing.realized_pnl += pnl
-        existing.quantity -= qty
-        if existing.quantity <= 0:
-            existing.status = PositionStatus.CLOSED
+        remaining_order_qty = quantity - closing_qty
+        existing.quantity -= closing_qty
+
+        if existing.quantity > 0:
             existing.exit_price = price
-            del self.positions[order.symbol]
+            return
+
+        del self.positions[order.symbol]
+        if remaining_order_qty > 0:
+            self.positions[order.symbol] = PositionRecord(
+                order.symbol,
+                order.side,
+                remaining_order_qty,
+                price,
+                PositionStatus.OPEN,
+            )
