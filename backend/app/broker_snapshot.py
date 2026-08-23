@@ -10,11 +10,23 @@ class BrokerSnapshot:
     positions: list[dict[str, Any]]
 
 
+def canonical_order_status(status: Any) -> str:
+    value = str(status or "").upper()
+    return {
+        "TRADED": "FILLED",
+        "FILLED": "FILLED",
+        "CANCELLED": "CANCELLED",
+        "REJECTED": "REJECTED",
+        "TRANSIT": "NEW",
+        "PENDING": "NEW",
+    }.get(value, value)
+
+
 def map_dhan_order(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "broker_order_id": str(row.get("orderId") or row.get("order_id") or ""),
         "client_order_id": row.get("correlationId") or row.get("client_order_id"),
-        "status": str(row.get("orderStatus") or row.get("status") or "").upper(),
+        "status": canonical_order_status(row.get("orderStatus") or row.get("status")),
     }
 
 
