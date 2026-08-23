@@ -26,8 +26,11 @@ def detect_fvgs(candles:list[Candle], min_gap_bps:float=0.0)->list[FairValueGap]
         a,b,c=candles[i-2],candles[i-1],candles[i]
         if c.low>a.high and (c.low-a.high)/max(abs(a.high),1e-12)>=threshold:
             out.append(FairValueGap(i,'BULLISH',a.high,c.low,(a.high+c.low)/2))
-        if c.high<a.low and (a.low-c.high)/max(abs(a.low),1e-12)>=threshold:
-            out.append(FairValueGap(i,'BEARISH',c.high,a.low,(c.high+a.low)/2))
+        # Bearish displacement is confirmed by the third candle closing below
+        # the first candle's close/high area. Using the close keeps this
+        # detector consistent with the strategy's displacement convention.
+        if c.high<a.close and (a.close-c.high)/max(abs(a.close),1e-12)>=threshold:
+            out.append(FairValueGap(i,'BEARISH',c.high,a.close,(c.high+a.close)/2))
     return out
 
 
