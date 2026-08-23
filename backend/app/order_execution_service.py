@@ -32,6 +32,8 @@ class OrderExecutionService:
         self.recovery = recovery or StartupRecoveryCoordinator()
         self.risk_gate = risk_gate
         self.risk_snapshot_provider = risk_snapshot_provider
+        if self.risk_gate is not None:
+            self.risk_gate.rebuild_from_lifecycle(self.lifecycle)
 
     def _recover_broker_order(self, client_order_id: str):
         return self.router.find_order_by_client_id(client_order_id)
@@ -133,6 +135,22 @@ class OrderExecutionService:
             return OrderStatus.REJECTED
         return OrderStatus.SUBMITTED
 
+    def _settle_risk_reservation(self, request: BrokerOrderRequest, status: OrderStatus, filled_quantity: float = 0.0) -> None:
+        if self.risk_gate is None:
+            return
+        if status in {OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED}:
+            self.risk_gate.release(request.client_order_id)
+            return
+        if status == OrderStatus.PARTIALLY_FILLED:
+            current_position = 0.0
+            if self.risk_snapshot_provider is not None:
+                try:
+                    current_position = float(self.risk_snapshot_provider().position_quantity)
+                except (TypeError, ValueError, AttributeError):
+                    # Keep the conservative existing reservation if a fresh snapshot is unavailable.
+                    return
+            self.risk_gate.update_after_fill(request, filled_quantity, current_position)
+
     def _save_recovered(self, request: BrokerOrderRequest, recovered: dict, message: str) -> ExecutionResult:
         self._validate_recovered_identity(request, recovered)
         if recovered.get("multi_order"):
@@ -162,6 +180,7 @@ class OrderExecutionService:
         fill_qty = filled_quantity if lifecycle_status in {OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED} else 0
         self.lifecycle.transition(request.client_order_id, lifecycle_status, filled_quantity=fill_qty, fill_price=average_price)
         self.store.save(self.lifecycle)
+        self._settle_risk_reservation(request, lifecycle_status, filled_quantity)
         if self.idempotency_store is not None and lifecycle_status != OrderStatus.PARTIALLY_FILLED:
             self.idempotency_store.mark_completed(request.client_order_id)
         return ExecutionResult(request.client_order_id, lifecycle_status.value, broker_id, message)
@@ -207,8 +226,7 @@ class OrderExecutionService:
                 self.lifecycle.transition(request.client_order_id, lifecycle_status, filled_quantity=request.quantity if lifecycle_status == OrderStatus.FILLED else 0, fill_price=result.price)
                 self.lifecycle.orders[request.client_order_id].broker_order_id = result.order_id
                 self.store.save(self.lifecycle)
-                if lifecycle_status in {OrderStatus.REJECTED, OrderStatus.CANCELLED} and self.risk_gate is not None:
-                    self.risk_gate.release(request.client_order_id)
+                self._settle_risk_reservation(request, lifecycle_status, self.lifecycle.orders[request.client_order_id].filled_quantity)
                 if self.idempotency_store is not None and lifecycle_status != OrderStatus.PARTIALLY_FILLED:
                     self.idempotency_store.mark_completed(request.client_order_id)
                 return ExecutionResult(request.client_order_id, lifecycle_status.value, result.order_id)
