@@ -22,18 +22,30 @@ class OrderRequest(BaseModel):
 
 
 def require_trading_ready(request: Request) -> None:
-    safety_store = getattr(request.app.state, "resources", None)
-    safety_store = safety_store.safety_store if safety_store else SafetyStateStore()
+    resources = getattr(request.app.state, "resources", None)
+    safety_store = resources.safety_store if resources else SafetyStateStore()
     state = safety_store.load()
     if state.trading_halted:
         raise HTTPException(status_code=409, detail={"code": "TRADING_HALTED", "reason": state.halt_reason})
+
+
+def get_order_db(request: Request, db: Session = Depends(get_db)):
+    resources = getattr(request.app.state, "resources", None)
+    if resources and resources.session_local is not None:
+        session = resources.session_local()
+        try:
+            yield session
+        finally:
+            session.close()
+    else:
+        yield db
 
 
 @router.post("", status_code=201)
 def create_order(
     payload: OrderRequest,
     request: Request,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_order_db),
     _: None = Depends(require_trading_ready),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
