@@ -48,7 +48,23 @@ class BrokerRouter:
         return get_orders()
 
     def find_order_by_client_id(self, client_order_id: str, route: str | None = None) -> dict | None:
-        return self.get(route).adapter.find_order_by_client_id(client_order_id)
+        """Resolve a client id only when it maps to exactly one broker order.
+
+        Ambiguous identity is a hard reconciliation failure; returning the first
+        match could attach the wrong broker order and create a duplicate trade.
+        """
+        adapter = self.get(route)
+        get_orders = getattr(adapter, "get_orders", None)
+        if get_orders is not None:
+            matches = [
+                dict(order)
+                for order in get_orders()
+                if str(order.get("client_order_id", "")) == str(client_order_id)
+            ]
+            if len(matches) > 1:
+                raise RuntimeError(f"ambiguous broker order identity for client_order_id: {client_order_id}")
+            return matches[0] if matches else None
+        return adapter.find_order_by_client_id(client_order_id)
 
     def get_positions(self, route: str | None = None) -> list[dict]:
         return self.get(route).adapter.get_positions()
