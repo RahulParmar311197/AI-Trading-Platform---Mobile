@@ -147,7 +147,6 @@ class OrderExecutionService:
                 try:
                     current_position = float(self.risk_snapshot_provider().position_quantity)
                 except (TypeError, ValueError, AttributeError):
-                    # Keep the conservative existing reservation if a fresh snapshot is unavailable.
                     return
             self.risk_gate.update_after_fill(request, filled_quantity, current_position)
 
@@ -216,9 +215,12 @@ class OrderExecutionService:
                 return self._save_recovered(request, recovered, "BROKER_ORDER_RECOVERED")
             if request.client_order_id not in self.lifecycle.orders:
                 self.lifecycle.create(request.client_order_id, request.symbol, request.side, request.quantity)
+            self.lifecycle.transition(request.client_order_id, OrderStatus.SUBMISSION_INTENT)
             self.store.save(self.lifecycle)
             risk_result = self._authorize_risk(request)
             if risk_result is not None:
+                self.lifecycle.transition(request.client_order_id, OrderStatus.REJECTED)
+                self.store.save(self.lifecycle)
                 return risk_result
             try:
                 result = self.router.submit(request)
