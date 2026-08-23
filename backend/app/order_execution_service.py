@@ -28,10 +28,7 @@ class OrderExecutionService:
         self.idempotency_store = idempotency_store
 
     def _recover_broker_order(self, client_order_id: str):
-        for order in self.router.get_orders():
-            if str(order.get("client_order_id", "")) == client_order_id:
-                return order
-        return None
+        return self.router.find_order_by_client_id(client_order_id)
 
     def _save_recovered(self, request: BrokerOrderRequest, recovered: dict, message: str) -> ExecutionResult:
         broker_id = str(recovered.get("order_id"))
@@ -79,7 +76,7 @@ class OrderExecutionService:
                 if self.idempotency_store is not None:
                     self.idempotency_store.mark_completed(request.client_order_id)
                 return ExecutionResult(request.client_order_id, self.lifecycle.orders[request.client_order_id].status.value, result.order_id)
-            except Exception as exc:
+            except Exception:
                 recovered = self._recover_broker_order(request.client_order_id)
                 if recovered is not None:
                     return self._save_recovered(request, recovered, "BROKER_ORDER_RECOVERED")
