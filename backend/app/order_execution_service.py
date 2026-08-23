@@ -46,30 +46,51 @@ class OrderExecutionService:
 
     @staticmethod
     def _aggregate_recovered_orders(orders: list[dict], requested_quantity: float) -> tuple[str, float, float | None, str]:
+        if requested_quantity <= 0:
+            raise ValueError("requested quantity must be positive")
+        seen_ids: set[str] = set()
         filled = 0.0
         weighted_value = 0.0
-        statuses: list[str] = []
+        statuses: list[OrderStatus] = []
         ids: list[str] = []
         for order in orders:
-            statuses.append(str(order.get("status", "NEW")))
-            if order.get("order_id") is not None:
-                ids.append(str(order["order_id"]))
-            qty = float(order.get("filled_quantity", order.get("filledQty", 0)) or 0)
+            child_id = order.get("order_id", order.get("broker_order_id"))
+            if child_id is None:
+                raise RuntimeError("multi-order reconciliation child is missing broker order id")
+            child_id = str(child_id)
+            if child_id in seen_ids:
+                raise RuntimeError(f"duplicate broker child order id: {child_id}")
+            seen_ids.add(child_id)
+            ids.append(child_id)
+            statuses.append(OrderExecutionService._status_value(str(order.get("status", "NEW"))))
+            try:
+                qty = float(order.get("filled_quantity", order.get("filledQty", 0)) or 0)
+            except (TypeError, ValueError):
+                raise RuntimeError(f"invalid filled quantity for broker child order: {child_id}")
+            if qty < 0:
+                raise RuntimeError(f"negative filled quantity for broker child order: {child_id}")
             price = order.get("average_price", order.get("averagePrice", order.get("price")))
-            filled += max(0.0, qty)
-            if price is not None and qty > 0:
-                weighted_value += float(price) * qty
-        if filled > requested_quantity:
+            if qty > 0:
+                if price is None:
+                    raise RuntimeError(f"missing average fill price for broker child order: {child_id}")
+                try:
+                    price_value = float(price)
+                except (TypeError, ValueError):
+                    raise RuntimeError(f"invalid average fill price for broker child order: {child_id}")
+                if price_value <= 0:
+                    raise RuntimeError(f"non-positive average fill price for broker child order: {child_id}")
+                weighted_value += price_value * qty
+            filled += qty
+        if filled > requested_quantity + 1e-9:
             raise RuntimeError("broker reconciliation filled quantity exceeds requested quantity")
         average_price = weighted_value / filled if filled > 0 else None
-        mapped = [OrderExecutionService._status_value(s) for s in statuses]
-        if filled >= requested_quantity and requested_quantity > 0:
+        if filled >= requested_quantity - 1e-9:
             status = OrderStatus.FILLED.value
         elif filled > 0:
             status = OrderStatus.PARTIALLY_FILLED.value
-        elif mapped and all(s == OrderStatus.CANCELLED for s in mapped):
+        elif statuses and all(s == OrderStatus.CANCELLED for s in statuses):
             status = OrderStatus.CANCELLED.value
-        elif mapped and all(s == OrderStatus.REJECTED for s in mapped):
+        elif statuses and all(s == OrderStatus.REJECTED for s in statuses):
             status = OrderStatus.REJECTED.value
         else:
             status = OrderStatus.SUBMITTED.value
