@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from app.app_factory import create_app, create_resources
 from app.broker_adapter import BrokerOrderUpdate
-from app.broker_router import BrokerRoute, BrokerRouter
 from app.models import Order, User
 
 
@@ -45,6 +44,10 @@ class CountingBroker:
                 return []
             return list(self.orders)
 
+    def find_order_by_client_id(self, client_order_id):
+        with self._lock:
+            return next((dict(order) for order in self.orders if order["client_order_id"] == client_order_id), None)
+
     def get_positions(self):
         return []
 
@@ -59,8 +62,8 @@ def test_same_idempotency_key_returns_same_order(tmp_path):
     with Session(resources.session_local()) as db:
         db.add(User(email="test@example.com", password_hash="test-hash"))
         db.commit()
-
     broker = CountingBroker()
+    from app.broker_router import BrokerRoute, BrokerRouter
     router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=resources.safety_store)
     app = create_app(resources, broker_router=router)
     with TestClient(app) as client:
@@ -84,6 +87,7 @@ def test_concurrent_same_idempotency_key_creates_one_order(tmp_path):
         db.add(User(email="concurrent@example.com", password_hash="test-hash"))
         db.commit()
     broker = CountingBroker()
+    from app.broker_router import BrokerRoute, BrokerRouter
     router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=resources.safety_store)
     app = create_app(resources, broker_router=router)
     payload = {"user_id": 1, "symbol": "NIFTY", "side": "BUY", "quantity": 1, "order_type": "MARKET"}
@@ -109,6 +113,7 @@ def test_broker_accepts_then_response_is_lost_retry_recovers_without_resubmit(tm
         db.commit()
     broker = CountingBroker()
     broker.fail_after_accept = True
+    from app.broker_router import BrokerRoute, BrokerRouter
     router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=resources.safety_store)
     app = create_app(resources, broker_router=router)
     payload = {"user_id": 1, "symbol": "NIFTY", "side": "BUY", "quantity": 1, "order_type": "MARKET"}
@@ -132,6 +137,7 @@ def test_uncertain_execution_is_202_then_retry_recovers_without_resubmit(tmp_pat
     broker = CountingBroker()
     broker.fail_after_accept = True
     broker.hide_accepted_orders = True
+    from app.broker_router import BrokerRoute, BrokerRouter
     router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=resources.safety_store)
     app = create_app(resources, broker_router=router)
     payload = {"user_id": 1, "symbol": "NIFTY", "side": "BUY", "quantity": 1, "order_type": "MARKET"}
@@ -146,4 +152,26 @@ def test_uncertain_execution_is_202_then_retry_recovers_without_resubmit(tmp_pat
     assert retry.json()["status"] in {"FILLED", "SUBMITTED"}
     assert retry.json()["broker_order_id"] == "TEST-BROKER-1"
     assert retry.json()["message"] in {"BROKER_ORDER_RECOVERED", "IDEMPOTENT_REPLAY"}
+    assert broker.submit_calls == 1
+
+
+def test_broker_adapter_client_order_lookup_is_used_for_reconciliation(tmp_path):
+    resources = create_resources(execution_path=str(tmp_path / "execution.json"), idempotency_path=str(tmp_path / "idempotency.sqlite3"), safety_path=str(tmp_path / "safety.json"), database_url=f"sqlite:///{tmp_path / 'orders.sqlite3'}")
+    resources.safety_store.clear()
+    with Session(resources.session_local()) as db:
+        db.add(User(email="lookup@example.com", password_hash="test-hash"))
+        db.commit()
+    broker = CountingBroker()
+    broker.fail_after_accept = True
+    broker.hide_accepted_orders = True
+    from app.broker_router import BrokerRoute, BrokerRouter
+    router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=resources.safety_store)
+    app = create_app(resources, broker_router=router)
+    payload = {"user_id": 1, "symbol": "NIFTY", "side": "BUY", "quantity": 1, "order_type": "MARKET"}
+    headers = {"Idempotency-Key": "native-lookup-test"}
+    with TestClient(app) as client:
+        first = client.post("/api/orders", json=payload, headers=headers)
+        assert first.status_code == 201
+        assert first.json()["broker_order_id"] == "TEST-BROKER-1"
+        assert first.json()["message"] == "BROKER_ORDER_RECOVERED"
     assert broker.submit_calls == 1
