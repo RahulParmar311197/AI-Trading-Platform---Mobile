@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 class OrderStatus(str, Enum):
     CREATED = "CREATED"
+    SUBMISSION_INTENT = "SUBMISSION_INTENT"
     SUBMITTED = "SUBMITTED"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
