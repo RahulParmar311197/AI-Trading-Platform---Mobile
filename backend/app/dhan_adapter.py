@@ -25,13 +25,6 @@ class DhanConfig:
 
 
 class DhanAdapter(BrokerAdapter):
-    """DhanHQ v2 adapter boundary.
-
-    Live submission is deliberately disabled unless explicitly enabled and
-    the adapter is constructed with credentials. HTTP transport is injected
-    so unit tests never contact the broker.
-    """
-
     name = "dhan"
 
     def __init__(self, config: DhanConfig | None = None, transport=None):
@@ -48,6 +41,8 @@ class DhanAdapter(BrokerAdapter):
 
     def submit_order(self, request: BrokerOrderRequest) -> BrokerOrderUpdate:
         self._require_live()
+        if not request.security_id:
+            raise ValueError("security_id is required for Dhan")
         payload = {
             "dhanClientId": self.config.client_id,
             "correlationId": request.client_order_id or uuid.uuid4().hex[:20],
@@ -70,12 +65,39 @@ class DhanAdapter(BrokerAdapter):
         data = response.json()
         return BrokerOrderUpdate(order_id=str(data["orderId"]), status=str(data["orderStatus"]))
 
-    def cancel_order(self, order_id: str) -> BrokerOrderUpdate:
+    def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
         self._require_live()
         response = self.transport.delete(
-            f"{self.config.base_url}/orders/{order_id}",
+            f"{self.config.base_url}/orders/{broker_order_id}",
             headers={"Content-Type": "application/json", "access-token": self.config.access_token},
         )
         response.raise_for_status()
         data = response.json()
         return BrokerOrderUpdate(order_id=str(data["orderId"]), status=str(data["orderStatus"]))
+
+    def get_order(self, broker_order_id: str) -> dict:
+        self._require_live()
+        response = self.transport.get(
+            f"{self.config.base_url}/orders/{broker_order_id}",
+            headers={"access-token": self.config.access_token},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_positions(self) -> list[dict]:
+        self._require_live()
+        response = self.transport.get(
+            f"{self.config.base_url}/positions",
+            headers={"access-token": self.config.access_token},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_account(self) -> dict:
+        self._require_live()
+        response = self.transport.get(
+            f"{self.config.base_url}/fundlimit",
+            headers={"access-token": self.config.access_token},
+        )
+        response.raise_for_status()
+        return response.json()
