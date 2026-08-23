@@ -39,9 +39,25 @@ def _filled(order: dict) -> float:
     return max(0.0, _num(order.get("filled_quantity", order.get("filledQty", order.get("filled_qty", 0)))))
 
 
-def _average_price(order: dict) -> float | None:
-    value = order.get("average_price", order.get("averagePrice", order.get("avg_price")))
-    return None if value is None else _num(value, 0.0)
+def _side_sign(value: object) -> int:
+    side = str(value or "").strip().upper()
+    if side in {"BUY", "B", "LONG", "1", "+1"}:
+        return 1
+    if side in {"SELL", "S", "SHORT", "-1"}:
+        return -1
+    return 0
+
+
+def _signed_position(position: dict) -> float:
+    if "signed_quantity" in position:
+        return _num(position.get("signed_quantity"))
+    quantity = _num(position.get("quantity", position.get("net_quantity", position.get("netQty", 0))))
+    if "side" in position:
+        sign = _side_sign(position.get("side"))
+        if sign == 0 and abs(quantity) > 1e-9:
+            raise ValueError(f"unknown position side: {position.get('side')}")
+        return abs(quantity) * sign
+    return quantity
 
 
 class ReconciliationEngine:
@@ -51,8 +67,8 @@ class ReconciliationEngine:
     def check(self, internal_orders, broker_orders, internal_positions, broker_positions):
         io = {_order_key(x): x for x in internal_orders}
         bo = {_order_key(x): x for x in broker_orders}
-        po = {str(x.get("symbol")).upper(): _num(x.get("quantity")) for x in internal_positions}
-        pb = {str(x.get("symbol")).upper(): _num(x.get("quantity")) for x in broker_positions}
+        po = {str(x.get("symbol")).upper(): _signed_position(x) for x in internal_positions}
+        pb = {str(x.get("symbol")).upper(): _signed_position(x) for x in broker_positions}
 
         order_drift = []
         for key in set(io) | set(bo):
@@ -76,20 +92,10 @@ class ReconciliationEngine:
             elif internal_status == "FILLED" and abs(broker_filled - requested) > 1e-9:
                 drift = "FILLED_WITH_INCOMPLETE_QUANTITY"
             if drift:
-                order_drift.append({
-                    "id": key,
-                    "internal": internal,
-                    "broker": broker,
-                    "reason": drift,
-                    "internal_normalized_status": internal_status,
-                    "broker_normalized_status": broker_status,
-                    "internal_filled_quantity": internal_filled,
-                    "broker_filled_quantity": broker_filled,
-                    "requested_quantity": requested,
-                })
+                order_drift.append({"id": key, "internal": internal, "broker": broker, "reason": drift, "internal_normalized_status": internal_status, "broker_normalized_status": broker_status, "internal_filled_quantity": internal_filled, "broker_filled_quantity": broker_filled, "requested_quantity": requested})
 
         position_drift = [
-            {"symbol": s, "internal_quantity": po.get(s, 0), "broker_quantity": pb.get(s, 0), "reason": "POSITION_QUANTITY_MISMATCH"}
+            {"symbol": s, "internal_signed_quantity": po.get(s, 0), "broker_signed_quantity": pb.get(s, 0), "reason": "POSITION_SIGNED_QUANTITY_MISMATCH"}
             for s in set(po) | set(pb)
             if abs(po.get(s, 0) - pb.get(s, 0)) > 1e-9
         ]
