@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -11,10 +12,17 @@ from app.models import Order, User
 
 class CountingBroker:
     def __init__(self):
-        self.submit_calls = 0
+        self._lock = Lock()
+        self._submit_calls = 0
+
+    @property
+    def submit_calls(self):
+        with self._lock:
+            return self._submit_calls
 
     def submit_order(self, request):
-        self.submit_calls += 1
+        with self._lock:
+            self._submit_calls += 1
         return BrokerOrderUpdate(order_id="TEST-BROKER-1", status="FILLED", price=100.0)
 
     def cancel_order(self, order_id):
