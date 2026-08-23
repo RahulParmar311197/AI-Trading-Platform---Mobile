@@ -23,8 +23,8 @@ def detect_order_blocks(candles:list[Candle], displacement_threshold:float=0.002
     out=[]
     for i in range(1,len(candles)):
         prev,c=candles[i-1],candles[i]
-        bullish_move=c.close>c.open and (c.close-c.open)/max(abs(prev.close),1e-12)>=displacement_threshold
-        bearish_move=c.close<c.open and (c.open-c.close)/max(abs(prev.close),1e-12)>=displacement_threshold
+        bullish_move=(c.close>c.open and c.close>prev.high and (c.close-c.open)/max(abs(prev.close),1e-12)>=displacement_threshold)
+        bearish_move=(c.close<c.open and c.close<prev.low and (c.open-c.close)/max(abs(prev.close),1e-12)>=displacement_threshold)
         if bullish_move and prev.close<prev.open:
             out.append(OrderBlock(i,'BULLISH',prev.low,prev.high,i-1))
         if bearish_move and prev.close>prev.open:
