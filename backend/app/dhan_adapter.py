@@ -47,9 +47,12 @@ class DhanAdapter(BrokerAdapter):
         self._require_live()
         if not request.security_id:
             raise ValueError("security_id is required for Dhan")
+        correlation_id = request.client_order_id or uuid.uuid4().hex[:20]
+        if len(correlation_id) > 30:
+            raise ValueError("Dhan correlationId must be at most 30 characters")
         payload = {
             "dhanClientId": self.config.client_id,
-            "correlationId": request.client_order_id or uuid.uuid4().hex[:20],
+            "correlationId": correlation_id,
             "transactionType": request.side.upper(),
             "exchangeSegment": request.exchange_segment,
             "productType": request.product_type,
@@ -64,6 +67,22 @@ class DhanAdapter(BrokerAdapter):
         response.raise_for_status()
         data = response.json()
         return BrokerOrderUpdate(order_id=str(data["orderId"]), status=str(data["orderStatus"]))
+
+    def find_order_by_client_id(self, client_order_id: str) -> dict | None:
+        self._require_live()
+        if not client_order_id or len(client_order_id) > 30:
+            raise ValueError("Dhan correlationId must be between 1 and 30 characters")
+        response = self.transport.get(
+            f"{self.config.base_url}/orders/external/{client_order_id}",
+            headers=self._headers(),
+        )
+        if getattr(response, "status_code", None) == 404:
+            return None
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict) or not data.get("orderId"):
+            return None
+        return data
 
     def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
         self._require_live()
