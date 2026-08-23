@@ -53,14 +53,23 @@ from app.api.unified_backtest import router as unified_backtest_router
 from app.api.walk_forward import router as walk_forward_router
 from app.config import get_settings
 from app.db import init_db
-
+from app.execution_persistence import ExecutionStateStore
+from app.order_lifecycle import OrderLifecycle
+from app.recovery_manager import StartupRecoveryManager
+from app.safety_state import SafetyStateStore
 
 settings = get_settings()
+recovery_manager = StartupRecoveryManager(
+    ExecutionStateStore(),
+    SafetyStateStore(),
+)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    # Do not contact a live broker implicitly during application startup.
+    # Recovery is invoked explicitly once a broker snapshot provider is available.
     yield
 
 
@@ -140,4 +149,5 @@ def root():
         "environment": settings.environment,
         "status": "ok",
         "live_trading_enabled": settings.live_trading_enabled,
+        "recovery_manager": "available",
     }
