@@ -173,7 +173,7 @@ class OrderExecutionService:
             return ExecutionResult(request.client_order_id, OrderStatus.REJECTED.value, message="RISK_SNAPSHOT_UNAVAILABLE")
         try:
             snapshot = self.risk_snapshot_provider()
-            decision = self.risk_gate.evaluate(request, snapshot)
+            decision = self.risk_gate.reserve(request, snapshot)
         except Exception:
             return ExecutionResult(request.client_order_id, OrderStatus.REJECTED.value, message="RISK_GATE_ERROR")
         if not decision.allowed:
@@ -207,6 +207,8 @@ class OrderExecutionService:
                 self.lifecycle.transition(request.client_order_id, lifecycle_status, filled_quantity=request.quantity if lifecycle_status == OrderStatus.FILLED else 0, fill_price=result.price)
                 self.lifecycle.orders[request.client_order_id].broker_order_id = result.order_id
                 self.store.save(self.lifecycle)
+                if lifecycle_status in {OrderStatus.REJECTED, OrderStatus.CANCELLED} and self.risk_gate is not None:
+                    self.risk_gate.release(request.client_order_id)
                 if self.idempotency_store is not None and lifecycle_status != OrderStatus.PARTIALLY_FILLED:
                     self.idempotency_store.mark_completed(request.client_order_id)
                 return ExecutionResult(request.client_order_id, lifecycle_status.value, result.order_id)
