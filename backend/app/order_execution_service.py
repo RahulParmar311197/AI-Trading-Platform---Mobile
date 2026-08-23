@@ -32,6 +32,26 @@ class OrderExecutionService:
     def _recover_broker_order(self, client_order_id: str):
         return self.router.find_order_by_client_id(client_order_id)
 
+    @staticmethod
+    def _validate_recovered_identity(request: BrokerOrderRequest, recovered: dict) -> None:
+        recovered_client_id = recovered.get("client_order_id")
+        if recovered_client_id is not None and str(recovered_client_id) != str(request.client_order_id):
+            raise RuntimeError("broker recovery returned an order for a different client_order_id")
+        recovered_symbol = recovered.get("symbol")
+        if recovered_symbol is not None and str(recovered_symbol).upper() != str(request.symbol).upper():
+            raise RuntimeError("broker recovery returned an order for a different symbol")
+        recovered_side = recovered.get("side")
+        if recovered_side is not None and str(recovered_side).upper() != str(request.side).upper():
+            raise RuntimeError("broker recovery returned an order for a different side")
+        recovered_quantity = recovered.get("quantity", recovered.get("requested_quantity"))
+        if recovered_quantity is not None:
+            try:
+                quantity = float(recovered_quantity)
+            except (TypeError, ValueError):
+                raise RuntimeError("broker recovery returned an invalid requested quantity")
+            if abs(quantity - float(request.quantity)) > 1e-9:
+                raise RuntimeError("broker recovery returned an order with a different requested quantity")
+
     def _map_broker_status(self, status: str) -> OrderStatus:
         normalized = status.upper().strip()
         if normalized in {"FILLED", "TRADED", "COMPLETE"}:
@@ -110,17 +130,27 @@ class OrderExecutionService:
         return OrderStatus.SUBMITTED
 
     def _save_recovered(self, request: BrokerOrderRequest, recovered: dict, message: str) -> ExecutionResult:
+        self._validate_recovered_identity(request, recovered)
         if recovered.get("multi_order"):
             orders = recovered.get("orders")
             if not isinstance(orders, list) or not orders:
                 return ExecutionResult(request.client_order_id, OrderStatus.SUBMITTED.value, message="EXECUTION_PENDING_RECONCILIATION")
             status, filled_quantity, average_price, broker_id = self._aggregate_recovered_orders(orders, request.quantity)
         else:
-            broker_id = str(recovered.get("order_id"))
+            broker_id_value = recovered.get("order_id", recovered.get("broker_order_id"))
+            if broker_id_value is None:
+                raise RuntimeError("broker recovery returned an order without broker order id")
+            broker_id = str(broker_id_value)
             status = str(recovered.get("status", "NEW"))
             filled_quantity = float(recovered.get("filled_quantity", recovered.get("filledQty", 0)) or 0)
             average_price = recovered.get("average_price", recovered.get("averagePrice", recovered.get("price")))
             status = self._map_broker_status(status).value
+            if filled_quantity < 0:
+                raise RuntimeError("broker recovery returned a negative filled quantity")
+            if filled_quantity > float(request.quantity) + 1e-9:
+                raise RuntimeError("broker recovery returned a filled quantity above requested quantity")
+            if filled_quantity > 0 and average_price is None:
+                raise RuntimeError("broker recovery returned a fill without an average price")
         lifecycle_status = OrderStatus(status)
         if request.client_order_id not in self.lifecycle.orders:
             self.lifecycle.create(request.client_order_id, request.symbol, request.side, request.quantity)
