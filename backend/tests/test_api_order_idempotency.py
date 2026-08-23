@@ -30,27 +30,30 @@ class CountingBroker:
 
 
 def test_same_idempotency_key_returns_same_order(tmp_path):
+    db_path = tmp_path / "orders.sqlite3"
     resources = create_resources(
         execution_path=str(tmp_path / "execution.json"),
         idempotency_path=str(tmp_path / "idempotency.sqlite3"),
         safety_path=str(tmp_path / "safety.json"),
+        database_url=f"sqlite:///{db_path}",
     )
     resources.safety_store.clear()
     broker = CountingBroker()
     router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=resources.safety_store)
     app = create_app(resources, broker_router=router)
-    client = TestClient(app)
-    payload = {
-        "user_id": 1,
-        "symbol": "NIFTY",
-        "side": "BUY",
-        "quantity": 1,
-        "order_type": "MARKET",
-    }
-    headers = {"Idempotency-Key": "api-test-123"}
 
-    first = client.post("/api/orders", json=payload, headers=headers)
-    second = client.post("/api/orders", json=payload, headers=headers)
+    with TestClient(app) as client:
+        payload = {
+            "user_id": 1,
+            "symbol": "NIFTY",
+            "side": "BUY",
+            "quantity": 1,
+            "order_type": "MARKET",
+        }
+        headers = {"Idempotency-Key": "api-test-123"}
+
+        first = client.post("/api/orders", json=payload, headers=headers)
+        second = client.post("/api/orders", json=payload, headers=headers)
 
     assert first.status_code == 201
     assert second.status_code == 201
