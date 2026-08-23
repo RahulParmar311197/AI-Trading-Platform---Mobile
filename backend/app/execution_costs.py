@@ -29,10 +29,8 @@ class ExecutionCostModel:
         return price * quantity * self.commission_bps / 10000.0 + self.fixed_fee
 
     def round_trip_cost(self, entry_price: float, exit_price: float, quantity: float) -> float:
-        # The fixed broker/order fee is charged once for the round trip; the
-        # variable commission is charged on both entry and exit.
-        return (
-            self.commission(entry_price, quantity)
-            + self.commission(exit_price, quantity)
-            - self.fixed_fee
-        )
+        variable_commission = (
+            entry_price + exit_price
+        ) * quantity * self.commission_bps / 10000.0
+        slippage_cost = abs(exit_price - entry_price) * quantity * self.slippage_bps / 10000.0
+        return variable_commission + self.fixed_fee + slippage_cost
