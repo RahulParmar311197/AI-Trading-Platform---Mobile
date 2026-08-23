@@ -54,12 +54,7 @@ class CountingBroker:
 
 def test_same_idempotency_key_returns_same_order(tmp_path):
     db_path = tmp_path / "orders.sqlite3"
-    resources = create_resources(
-        execution_path=str(tmp_path / "execution.json"),
-        idempotency_path=str(tmp_path / "idempotency.sqlite3"),
-        safety_path=str(tmp_path / "safety.json"),
-        database_url=f"sqlite:///{db_path}",
-    )
+    resources = create_resources(execution_path=str(tmp_path / "execution.json"), idempotency_path=str(tmp_path / "idempotency.sqlite3"), safety_path=str(tmp_path / "safety.json"), database_url=f"sqlite:///{db_path}")
     resources.safety_store.clear()
     with Session(resources.session_local()) as db:
         db.add(User(email="test@example.com", password_hash="test-hash"))
@@ -68,13 +63,11 @@ def test_same_idempotency_key_returns_same_order(tmp_path):
     broker = CountingBroker()
     router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=resources.safety_store)
     app = create_app(resources, broker_router=router)
-
     with TestClient(app) as client:
         payload = {"user_id": 1, "symbol": "NIFTY", "side": "BUY", "quantity": 1, "order_type": "MARKET"}
         headers = {"Idempotency-Key": "api-test-123"}
         first = client.post("/api/orders", json=payload, headers=headers)
         second = client.post("/api/orders", json=payload, headers=headers)
-
     assert first.status_code == 201
     assert second.status_code == 201
     assert second.json()["id"] == first.json()["id"]
@@ -85,64 +78,44 @@ def test_same_idempotency_key_returns_same_order(tmp_path):
 
 
 def test_concurrent_same_idempotency_key_creates_one_order(tmp_path):
-    resources = create_resources(
-        execution_path=str(tmp_path / "execution.json"),
-        idempotency_path=str(tmp_path / "idempotency.sqlite3"),
-        safety_path=str(tmp_path / "safety.json"),
-        database_url=f"sqlite:///{tmp_path / 'orders.sqlite3'}",
-    )
+    resources = create_resources(execution_path=str(tmp_path / "execution.json"), idempotency_path=str(tmp_path / "idempotency.sqlite3"), safety_path=str(tmp_path / "safety.json"), database_url=f"sqlite:///{tmp_path / 'orders.sqlite3'}")
     resources.safety_store.clear()
     with Session(resources.session_local()) as db:
         db.add(User(email="concurrent@example.com", password_hash="test-hash"))
         db.commit()
-
     broker = CountingBroker()
     router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=resources.safety_store)
     app = create_app(resources, broker_router=router)
     payload = {"user_id": 1, "symbol": "NIFTY", "side": "BUY", "quantity": 1, "order_type": "MARKET"}
     headers = {"Idempotency-Key": "concurrent-api-test"}
-
     def submit():
         with TestClient(app) as client:
             return client.post("/api/orders", json=payload, headers=headers)
-
     with ThreadPoolExecutor(max_workers=2) as pool:
         responses = list(pool.map(lambda _: submit(), range(2)))
-
     assert all(response.status_code == 201 for response in responses)
-    ids = {response.json()["id"] for response in responses}
-    broker_ids = {response.json()["broker_order_id"] for response in responses}
-    assert len(ids) == 1
-    assert len(broker_ids) == 1
+    assert len({response.json()["id"] for response in responses}) == 1
+    assert len({response.json()["broker_order_id"] for response in responses}) == 1
     assert broker.submit_calls == 1
-
     with Session(resources.session_local()) as db:
         assert db.query(Order).filter(Order.client_order_id == "concurrent-api-test").count() == 1
 
 
 def test_broker_accepts_then_response_is_lost_retry_recovers_without_resubmit(tmp_path):
-    resources = create_resources(
-        execution_path=str(tmp_path / "execution.json"),
-        idempotency_path=str(tmp_path / "idempotency.sqlite3"),
-        safety_path=str(tmp_path / "safety.json"),
-        database_url=f"sqlite:///{tmp_path / 'orders.sqlite3'}",
-    )
+    resources = create_resources(execution_path=str(tmp_path / "execution.json"), idempotency_path=str(tmp_path / "idempotency.sqlite3"), safety_path=str(tmp_path / "safety.json"), database_url=f"sqlite:///{tmp_path / 'orders.sqlite3'}")
     resources.safety_store.clear()
     with Session(resources.session_local()) as db:
         db.add(User(email="recovery@example.com", password_hash="test-hash"))
         db.commit()
-
     broker = CountingBroker()
     broker.fail_after_accept = True
     router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=resources.safety_store)
     app = create_app(resources, broker_router=router)
     payload = {"user_id": 1, "symbol": "NIFTY", "side": "BUY", "quantity": 1, "order_type": "MARKET"}
     headers = {"Idempotency-Key": "recovery-api-test"}
-
     with TestClient(app) as client:
         first = client.post("/api/orders", json=payload, headers=headers)
         retry = client.post("/api/orders", json=payload, headers=headers)
-
     assert first.status_code == 201
     assert retry.status_code == 201
     assert retry.json()["broker_order_id"] == "TEST-BROKER-1"
@@ -150,18 +123,12 @@ def test_broker_accepts_then_response_is_lost_retry_recovers_without_resubmit(tm
     assert broker.submit_calls == 1
 
 
-def test_unresolved_broker_execution_returns_202(tmp_path):
-    resources = create_resources(
-        execution_path=str(tmp_path / "execution.json"),
-        idempotency_path=str(tmp_path / "idempotency.sqlite3"),
-        safety_path=str(tmp_path / "safety.json"),
-        database_url=f"sqlite:///{tmp_path / 'orders.sqlite3'}",
-    )
+def test_uncertain_execution_is_202_then_retry_recovers_without_resubmit(tmp_path):
+    resources = create_resources(execution_path=str(tmp_path / "execution.json"), idempotency_path=str(tmp_path / "idempotency.sqlite3"), safety_path=str(tmp_path / "safety.json"), database_url=f"sqlite:///{tmp_path / 'orders.sqlite3'}")
     resources.safety_store.clear()
     with Session(resources.session_local()) as db:
         db.add(User(email="pending@example.com", password_hash="test-hash"))
         db.commit()
-
     broker = CountingBroker()
     broker.fail_after_accept = True
     broker.hide_accepted_orders = True
@@ -169,9 +136,14 @@ def test_unresolved_broker_execution_returns_202(tmp_path):
     app = create_app(resources, broker_router=router)
     payload = {"user_id": 1, "symbol": "NIFTY", "side": "BUY", "quantity": 1, "order_type": "MARKET"}
     headers = {"Idempotency-Key": "pending-api-test"}
-
     with TestClient(app) as client:
-        result = client.post("/api/orders", json=payload, headers=headers)
-
-    assert result.status_code == 202
-    assert result.json()["status"] == "PENDING_RECONCILIATION"
+        first = client.post("/api/orders", json=payload, headers=headers)
+        assert first.status_code == 202
+        assert first.json()["status"] == "PENDING_RECONCILIATION"
+        broker.hide_accepted_orders = False
+        retry = client.post("/api/orders", json=payload, headers=headers)
+    assert retry.status_code == 201
+    assert retry.json()["status"] in {"FILLED", "SUBMITTED"}
+    assert retry.json()["broker_order_id"] == "TEST-BROKER-1"
+    assert retry.json()["message"] in {"BROKER_ORDER_RECOVERED", "IDEMPOTENT_REPLAY"}
+    assert broker.submit_calls == 1
