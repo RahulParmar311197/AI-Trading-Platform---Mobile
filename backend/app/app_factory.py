@@ -7,6 +7,7 @@ from app.execution_persistence import ExecutionStateStore
 from app.idempotency_store import IdempotencyStore
 from app.safety_state import SafetyStateStore
 from app.broker_factory import build_broker_router
+from app.broker_router import BrokerRouter
 
 
 @dataclass
@@ -24,11 +25,11 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     )
 
 
-def create_app(resources: AppResources | None = None) -> FastAPI:
+def create_app(resources: AppResources | None = None, broker_router: BrokerRouter | None = None) -> FastAPI:
     resources = resources or create_resources()
     app = FastAPI(title="AI Trading Platform", version="1.0.0")
     app.state.resources = resources
-    app.state.broker_router = build_broker_router(resources.safety_store)
+    app.state.broker_router = broker_router or build_broker_router(resources.safety_store)
 
     @app.on_event("startup")
     async def startup() -> None:
