@@ -1,11 +1,60 @@
 from fastapi import APIRouter, HTTPException
-from app.data_provider import ProviderRegistry, RetryPolicy
-router=APIRouter(prefix="/api/providers",tags=["market-data-providers"])
-registry=ProviderRegistry(); retry=RetryPolicy()
+
+from app.provider_bootstrap import build_provider_registry
+
+
+router = APIRouter(
+    prefix="/api/providers",
+    tags=["data-provider"],
+)
+
+
 @router.get("")
-def providers(): return {"providers":registry.names()}
+def providers():
+    try:
+        registry = build_provider_registry()
+        return {"providers": registry.names()}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get("/health")
+def provider_health():
+    try:
+        registry = build_provider_registry()
+        return {
+            "status": "ok",
+            "providers": registry.names(),
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        ) from exc
+
+
 @router.get("/{name}/health")
-async def provider_health(name:str):
-    try: provider=registry.get(name)
-    except KeyError as e: raise HTTPException(404,str(e))
-    return {"provider":provider.name,"status":"registered"}
+def provider_health_by_name(name: str):
+    try:
+        registry = build_provider_registry()
+        provider = registry.get(name)
+
+        return {
+            "provider": provider.name,
+            "status": "registered",
+        }
+
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        ) from exc
