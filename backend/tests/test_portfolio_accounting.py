@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 from app.portfolio import PaperPortfolio
 from app.order_intent import OrderIntent
 from app.execution import ExecutionResult, OrderStatus
@@ -38,7 +37,7 @@ def test_full_close_removes_position_and_records_net_pnl():
     assert result.realized_pnl == 992.0
     assert 'NIFTY' not in portfolio.positions
     assert portfolio.realized_pnl == 992.0
-    assert portfolio.equity == 99982.0
+    assert portfolio.equity == 100982.0
 
 
 def test_short_position_pnl_direction():
