@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -46,10 +46,11 @@ def _order_response(order: Order, message: str | None = None) -> dict:
     return {"id": order.id, "client_order_id": order.client_order_id, "broker_order_id": order.broker_order_id, "status": order.status, "message": message}
 
 
-@router.post("", status_code=201)
+@router.post("")
 def create_order(
     payload: OrderRequest,
     request: Request,
+    response: Response,
     db: Session = Depends(get_order_db),
     _: None = Depends(require_trading_ready),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -95,4 +96,5 @@ def create_order(
         order.note = result.message
     db.commit()
     db.refresh(order)
+    response.status_code = 202 if result.status == "PENDING_RECONCILIATION" else 201
     return _order_response(order, result.message)
