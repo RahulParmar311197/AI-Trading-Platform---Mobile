@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     app_name: str = "AI Trading Platform"
     environment: str = "development"
@@ -8,6 +9,8 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me"
     jwt_exp_minutes: int = 60
     cors_origins: str = "*"
+    recovery_admin_username: str = ""
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
 
 settings = Settings()
