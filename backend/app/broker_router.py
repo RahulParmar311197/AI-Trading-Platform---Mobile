@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from app.broker_adapter import BrokerAdapter, BrokerOrderRequest, BrokerOrderUpdate
 from app.broker_snapshot import BrokerSnapshot
+from app.safety_state import SafetyStateStore
 from app.trading_gate import TradingGate
 
 
@@ -14,10 +15,11 @@ class BrokerRoute:
 
 
 class BrokerRouter:
-    def __init__(self, routes: list[BrokerRoute], default_route: str, trading_gate: TradingGate | None = None):
+    def __init__(self, routes: list[BrokerRoute], default_route: str, safety_store: SafetyStateStore | None = None, trading_gate: TradingGate | None = None):
         self.routes = {r.name: r for r in routes}
         self.default_route = default_route
-        self.trading_gate = trading_gate
+        self.safety_store = safety_store
+        self.trading_gate = trading_gate or TradingGate()
         if default_route not in self.routes:
             raise ValueError("default broker route is not configured")
 
@@ -27,9 +29,9 @@ class BrokerRouter:
             raise ValueError("broker route unavailable")
         return route
 
-    def submit(self, request: BrokerOrderRequest, route: str | None = None, trading_halted: bool = False) -> BrokerOrderUpdate:
-        if self.trading_gate is not None:
-            self.trading_gate.require_ready(trading_halted)
+    def submit(self, request: BrokerOrderRequest, route: str | None = None) -> BrokerOrderUpdate:
+        halted = self.safety_store.load().trading_halted if self.safety_store else True
+        self.trading_gate.require_ready(halted)
         return self.get(route).adapter.submit_order(request)
 
     def cancel(self, order_id: str, route: str | None = None) -> BrokerOrderUpdate:
