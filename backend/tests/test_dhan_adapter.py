@@ -20,6 +20,7 @@ class FakeResponse:
 class FakeTransport:
     def __init__(self):
         self.calls = []
+        self.external_order = {"orderId": "D123", "orderStatus": "TRANSIT", "correlationId": "TEST123"}
 
     def post(self, url, **kwargs):
         self.calls.append(("POST", url, kwargs))
@@ -29,10 +30,16 @@ class FakeTransport:
         self.calls.append(("DELETE", url, kwargs))
         return FakeResponse({"orderId": "D123", "orderStatus": "CANCELLED"})
 
+    def get(self, url, **kwargs):
+        self.calls.append(("GET", url, kwargs))
+        if "/orders/external/" in url:
+            return FakeResponse(self.external_order)
+        return FakeResponse([])
 
-def request():
+
+def request(client_order_id="TEST123"):
     return BrokerOrderRequest(
-        client_order_id="TEST123",
+        client_order_id=client_order_id,
         security_id="11536",
         exchange_segment="NSE_EQ",
         side="BUY",
@@ -51,7 +58,7 @@ def test_live_is_disabled_by_default():
         adapter.submit_order(request())
 
 
-def test_submit_maps_dhan_v2_request():
+def test_submit_maps_dhan_v2_request_and_correlation_id():
     transport = FakeTransport()
     adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
     result = adapter.submit_order(request())
@@ -63,6 +70,7 @@ def test_submit_maps_dhan_v2_request():
     assert kwargs["headers"]["access-token"] == "token"
     assert kwargs["json"]["dhanClientId"] == "client"
     assert kwargs["json"]["securityId"] == "11536"
+    assert kwargs["json"]["correlationId"] == "TEST123"
 
 
 def test_cancel_maps_dhan_response():
@@ -72,6 +80,23 @@ def test_cancel_maps_dhan_response():
     assert result.order_id == "D123"
     assert result.status == "CANCELLED"
     assert transport.calls[0][0] == "DELETE"
+
+
+def test_find_order_by_client_id_uses_dhan_external_lookup():
+    transport = FakeTransport()
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    result = adapter.find_order_by_client_id("TEST123")
+    assert result["orderId"] == "D123"
+    method, url, kwargs = transport.calls[0]
+    assert method == "GET"
+    assert url.endswith("/orders/external/TEST123")
+    assert kwargs["headers"]["access-token"] == "token"
+
+
+def test_find_order_by_client_id_rejects_overlong_correlation_id():
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), FakeTransport())
+    with pytest.raises(ValueError, match="30 characters"):
+        adapter.find_order_by_client_id("X" * 31)
 
 
 def test_credentials_are_required_before_transport():
