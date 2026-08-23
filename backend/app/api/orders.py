@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Order
+from app.safety_state import SafetyStateStore
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 
@@ -16,8 +17,14 @@ class OrderRequest(BaseModel):
     order_type: str = Field(default="MARKET", pattern="^(MARKET|LIMIT|SL)$")
 
 
+def require_trading_ready() -> None:
+    state = SafetyStateStore().load()
+    if state.trading_halted:
+        raise HTTPException(status_code=409, detail={"code": "TRADING_HALTED", "reason": state.halt_reason})
+
+
 @router.post("", status_code=201)
-def create_order(payload: OrderRequest, db: Session = Depends(get_db)):
+def create_order(payload: OrderRequest, db: Session = Depends(get_db), _: None = Depends(require_trading_ready)):
     import uuid
     order = Order(
         user_id=payload.user_id,
