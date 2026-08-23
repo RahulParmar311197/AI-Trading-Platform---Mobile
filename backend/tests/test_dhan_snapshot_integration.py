@@ -27,13 +27,11 @@ class FakeTransport:
 
 def test_dhan_snapshot_reads_and_maps_orders_and_positions():
     transport = FakeTransport()
-    adapter = DhanAdapter(
-        DhanConfig("client", "token", live_enabled=True), transport=transport
-    )
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport=transport)
 
     snapshot = adapter.get_snapshot()
 
-    assert snapshot.orders == [{"broker_order_id": "O-1", "client_order_id": "C-1", "status": "TRADED"}]
+    assert snapshot.orders == [{"broker_order_id": "O-1", "client_order_id": "C-1", "status": "FILLED"}]
     assert snapshot.positions == [{"symbol": "NIFTY", "quantity": 50.0}]
     assert [call[1].split("/v2")[-1] for call in transport.calls] == ["/orders", "/positions"]
     assert all(call[2]["access-token"] == "token" for call in transport.calls)
