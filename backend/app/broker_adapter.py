@@ -123,8 +123,11 @@ class PaperBrokerAdapter(BrokerAdapter):
             raise KeyError("order not found")
         return self.orders[broker_order_id].copy()
 
+    def get_orders(self) -> list[dict[str, Any]]:
+        return [order.copy() for order in self.orders.values()]
+
     def get_positions(self) -> list[dict[str, Any]]:
-        return list(self.positions.values())
+        return [position.copy() for position in self.positions.values()]
 
     def get_account(self) -> dict[str, Any]:
         return {"mode": "paper", "status": "READY"}
