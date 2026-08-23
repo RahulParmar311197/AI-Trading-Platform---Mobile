@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import uuid
-
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -29,12 +27,33 @@ def require_trading_ready() -> None:
 
 
 @router.post("", status_code=201)
-def create_order(payload: OrderRequest, db: Session = Depends(get_db), _: None = Depends(require_trading_ready)):
+def create_order(
+    payload: OrderRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_trading_ready),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
     from app.main import broker_router, execution_store, idempotency_store
     from app.order_execution_service import OrderExecutionService
     from app.order_lifecycle import OrderLifecycle
 
-    client_order_id = str(uuid.uuid4())
+    client_order_id = idempotency_key.strip() if idempotency_key else None
+    if not client_order_id:
+        import uuid
+        client_order_id = str(uuid.uuid4())
+    if len(client_order_id) > 128:
+        raise HTTPException(status_code=422, detail="Idempotency-Key must be at most 128 characters")
+
+    existing = db.query(Order).filter(Order.client_order_id == client_order_id).first()
+    if existing is not None:
+        return {
+            "id": existing.id,
+            "client_order_id": existing.client_order_id,
+            "broker_order_id": existing.broker_order_id,
+            "status": existing.status,
+            "message": "IDEMPOTENT_REPLAY",
+        }
+
     symbol = payload.symbol.upper()
     order = Order(
         user_id=payload.user_id,
