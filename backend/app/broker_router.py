@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from app.broker_adapter import BrokerAdapter, BrokerOrderRequest, BrokerOrderUpdate
 from app.broker_snapshot import BrokerSnapshot
+from app.trading_gate import TradingGate
 
 
 @dataclass(frozen=True)
@@ -13,9 +14,10 @@ class BrokerRoute:
 
 
 class BrokerRouter:
-    def __init__(self, routes: list[BrokerRoute], default_route: str):
+    def __init__(self, routes: list[BrokerRoute], default_route: str, trading_gate: TradingGate | None = None):
         self.routes = {r.name: r for r in routes}
         self.default_route = default_route
+        self.trading_gate = trading_gate
         if default_route not in self.routes:
             raise ValueError("default broker route is not configured")
 
@@ -25,7 +27,9 @@ class BrokerRouter:
             raise ValueError("broker route unavailable")
         return route
 
-    def submit(self, request: BrokerOrderRequest, route: str | None = None) -> BrokerOrderUpdate:
+    def submit(self, request: BrokerOrderRequest, route: str | None = None, trading_halted: bool = False) -> BrokerOrderUpdate:
+        if self.trading_gate is not None:
+            self.trading_gate.require_ready(trading_halted)
         return self.get(route).adapter.submit_order(request)
 
     def cancel(self, order_id: str, route: str | None = None) -> BrokerOrderUpdate:
