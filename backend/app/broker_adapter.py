@@ -23,34 +23,35 @@ class BrokerOrderRequest:
     price: float | None = None
     stop: float | None = None
     target: float | None = None
+    security_id: str = ""
+    exchange_segment: str = "NSE_EQ"
+    product_type: str = "CNC"
+    validity: str = "DAY"
+    trigger_price: float | None = None
 
 
 @dataclass(frozen=True)
 class BrokerOrderUpdate:
-    client_order_id: str
-    broker_order_id: str
-    status: BrokerOrderStatus
-    symbol: str
-    side: str
-    quantity: float
+    order_id: str
+    status: str
+    client_order_id: str | None = None
+    symbol: str | None = None
+    side: str | None = None
+    quantity: float | None = None
     price: float | None = None
     message: str | None = None
 
     def __getitem__(self, key: str):
-        value = getattr(self, key)
-        return value.value if isinstance(value, Enum) else value
+        return getattr(self, key)
 
     def get(self, key: str, default: Any = None):
-        try:
-            return self[key]
-        except (AttributeError, KeyError):
-            return default
+        return getattr(self, key, default)
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "order_id": self.order_id,
+            "status": self.status,
             "client_order_id": self.client_order_id,
-            "broker_order_id": self.broker_order_id,
-            "status": self.status.value,
             "symbol": self.symbol,
             "side": self.side,
             "quantity": self.quantity,
@@ -96,19 +97,13 @@ class PaperBrokerAdapter(BrokerAdapter):
     def submit_order(self, order: BrokerOrderRequest | BrokerOrder) -> BrokerOrderUpdate:
         if order.quantity <= 0:
             raise ValueError("quantity must be positive")
-
-        client_order_id = (
-            order.client_order_id
-            if isinstance(order, BrokerOrderRequest)
-            else f"client-{self.next_id}"
-        )
+        client_order_id = order.client_order_id if isinstance(order, BrokerOrderRequest) else f"client-{self.next_id}"
         oid = f"PAPER-{self.next_id}"
         self.next_id += 1
-
         record = {
+            "order_id": oid,
+            "status": BrokerOrderStatus.FILLED.value,
             "client_order_id": client_order_id,
-            "broker_order_id": oid,
-            "status": BrokerOrderStatus.FILLED,
             "symbol": order.symbol.upper(),
             "side": order.side.upper(),
             "quantity": order.quantity,
@@ -120,7 +115,7 @@ class PaperBrokerAdapter(BrokerAdapter):
     def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
         if broker_order_id not in self.orders:
             raise KeyError("order not found")
-        self.orders[broker_order_id]["status"] = BrokerOrderStatus.CANCELLED
+        self.orders[broker_order_id]["status"] = BrokerOrderStatus.CANCELLED.value
         return BrokerOrderUpdate(**self.orders[broker_order_id])
 
     def get_order(self, broker_order_id: str) -> dict[str, Any]:
