@@ -62,12 +62,15 @@ def create_order(
     from app.main import broker_router, execution_store, idempotency_store
     from app.order_execution_service import OrderExecutionService
     from app.order_lifecycle import OrderLifecycle
+    from app.startup_recovery import StartupRecoveryCoordinator
 
     resources = getattr(request.app.state, "resources", None)
     if resources is not None:
         broker_router = request.app.state.broker_router
         execution_store = resources.execution_store
         idempotency_store = resources.idempotency_store
+
+    recovery = getattr(request.app.state, "startup_recovery", None) or StartupRecoveryCoordinator()
 
     client_order_id = idempotency_key.strip() if idempotency_key else str(uuid.uuid4())
     if not client_order_id or len(client_order_id) > 128:
@@ -78,7 +81,7 @@ def create_order(
         if existing.note == "EXECUTION_PENDING_RECONCILIATION":
             lifecycle = OrderLifecycle()
             execution_store.load(lifecycle)
-            service = OrderExecutionService(broker_router, lifecycle, execution_store, idempotency_store)
+            service = OrderExecutionService(broker_router, lifecycle, execution_store, idempotency_store, recovery=recovery)
             result = service.submit(BrokerOrderRequest(client_order_id=client_order_id, symbol=existing.symbol, side=existing.side, quantity=existing.quantity, order_type=existing.order_type))
             existing.status = result.status
             existing.broker_order_id = result.broker_order_id
@@ -103,7 +106,7 @@ def create_order(
 
     lifecycle = OrderLifecycle()
     execution_store.load(lifecycle)
-    service = OrderExecutionService(broker_router, lifecycle, execution_store, idempotency_store)
+    service = OrderExecutionService(broker_router, lifecycle, execution_store, idempotency_store, recovery=recovery)
     result = service.submit(BrokerOrderRequest(client_order_id=client_order_id, symbol=symbol, side=payload.side, quantity=payload.quantity, order_type=payload.order_type))
 
     order.status = result.status
