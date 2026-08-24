@@ -15,7 +15,10 @@ class BrokerSnapshot:
 
     def fingerprint(self) -> str:
         """Return a deterministic identity for broker state used by risk authorization."""
-        payload = {"orders": self.orders, "positions": self.positions}
+        def canonical_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return sorted(rows, key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":"), default=str))
+
+        payload = {"orders": canonical_rows(self.orders), "positions": canonical_rows(self.positions)}
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
         return sha256(canonical.encode("utf-8")).hexdigest()
 
