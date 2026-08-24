@@ -10,6 +10,7 @@ from app.safety_state import SafetyStateStore
 from app.broker_factory import build_broker_router
 from app.broker_router import BrokerRouter
 from app.execution_authorization import ExecutionAuthorization
+from app.startup_execution_state import StartupExecutionStateMachine
 
 
 @dataclass
@@ -19,6 +20,7 @@ class AppResources:
     safety_store: SafetyStateStore
     authorization: ExecutionAuthorization | None = None
     session_local: object | None = None
+    startup_execution_state: StartupExecutionStateMachine | None = None
 
 
 def create_resources(*, execution_path="data/execution_state.json", idempotency_path="data/idempotency.sqlite3", safety_path="data/safety_state.json", database_url: str | None = None) -> AppResources:
@@ -32,6 +34,7 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
         safety_store=safety_store,
         authorization=ExecutionAuthorization(safety_store),
         session_local=session_local,
+        startup_execution_state=StartupExecutionStateMachine(),
     )
 
 
@@ -40,6 +43,7 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     app = FastAPI(title="AI Trading Platform", version="1.0.0")
     app.state.resources = resources
     app.state.broker_router = broker_router or build_broker_router(resources.safety_store)
+    app.state.startup_execution_state = resources.startup_execution_state
 
     @app.on_event("startup")
     async def startup() -> None:
