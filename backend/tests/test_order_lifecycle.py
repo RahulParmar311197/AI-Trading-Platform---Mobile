@@ -30,10 +30,30 @@ def test_partial_then_full_does_not_double_count_position():
     book.transition("o1", OrderStatus.FILLED, 10, 102.0)
     assert book.positions["NIFTY"].quantity == 10
     assert book.orders["o1"].applied_fill_quantity == 10
-
-    # Replaying the same broker snapshot must not create another 10-unit position.
     book.transition("o1", OrderStatus.FILLED, 10, 102.0)
     assert book.positions["NIFTY"].quantity == 10
+
+
+def test_execution_fill_events_use_weighted_average_price():
+    book = OrderLifecycle()
+    book.create("o1", "NIFTY", "BUY", 10)
+    book.apply_fill("o1", 4, 100.0)
+    book.apply_fill("o1", 3, 101.0)
+    book.apply_fill("o1", 3, 102.0)
+    assert book.orders["o1"].status == OrderStatus.FILLED
+    assert book.orders["o1"].filled_quantity == 10
+    assert book.orders["o1"].average_fill_price == pytest.approx(101.0)
+    assert book.positions["NIFTY"].quantity == 10
+    assert book.positions["NIFTY"].entry_price == pytest.approx(101.0)
+
+
+def test_execution_fill_replay_cannot_double_apply():
+    book = OrderLifecycle()
+    book.create("o1", "NIFTY", "BUY", 10)
+    book.apply_fill("o1", 4, 100.0)
+    with pytest.raises(ValueError, match="invalid filled quantity"):
+        book.apply_fill("o1", 7, 100.0)
+    assert book.positions["NIFTY"].quantity == 4
 
 
 def test_average_fill_price_reconciliation_applies_only_new_quantity():
