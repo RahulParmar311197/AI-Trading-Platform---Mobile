@@ -7,7 +7,7 @@ from app.app_factory import create_resources
 from app.broker_factory import build_broker_router
 from app.broker_recovery import BrokerStartupRecovery
 from app.config import get_settings
-from app.db import init_db
+from app.db import SessionLocal, init_db
 from app.order_lifecycle import OrderLifecycle
 from app.recovery_manager import StartupRecoveryManager
 from app.startup_reconciliation_gate import StartupReconciliationGate
@@ -15,6 +15,7 @@ from app.startup_execution_state import StartupExecutionState, StartupExecutionS
 from app.portfolio_reconciliation_service import PortfolioReconciliationService
 from app.emergency_halt import EmergencyHaltController
 from app.api.health import router as health_router
+from app.api_order_reconciliation import reconcile_api_order_projection
 
 settings=get_settings(); resources=create_resources(); execution_store=resources.execution_store; idempotency_store=resources.idempotency_store; safety_store=resources.safety_store
 execution_broker_router=build_broker_router(safety_store); recovery_manager=StartupRecoveryManager(execution_store,safety_store); broker_recovery=BrokerStartupRecovery(execution_broker_router,execution_store,safety_store,recovery_manager); startup_state=resources.startup_execution_state; emergency_halt_controller=resources.emergency_halt_controller; startup_gate=StartupReconciliationGate(startup_state,safety_store,PortfolioReconciliationService())
@@ -38,20 +39,26 @@ async def lifespan(app:FastAPI):
             startup_state.fail('broker startup recovery failed')
         else:
             startup_state.transition(StartupExecutionState.BROKER_RECONCILED, 'broker orders reconciled')
-            local_positions=_persisted_local_positions(lifecycle)
-            try: broker_positions=execution_broker_router.get_positions(); broker_error=None
-            except Exception as exc: broker_positions=None; broker_error=str(exc)
-            if broker_positions is None:
-                startup_state.fail(f'broker position snapshot unavailable: {broker_error or "unknown error"}')
-                app.state.startup_gate_result=None
+            with SessionLocal() as db:
+                api_order_reconciliation=reconcile_api_order_projection(db,lifecycle)
+            app.state.api_order_reconciliation=api_order_reconciliation
+            if api_order_reconciliation:
+                startup_state.fail('API order projection reconciliation unresolved')
             else:
-                gate_result=startup_gate.evaluate(local_positions,broker_positions); app.state.startup_gate_result=gate_result
-                if not gate_result.ready:
-                    startup_state.fail('portfolio reconciliation failed')
+                local_positions=_persisted_local_positions(lifecycle)
+                try: broker_positions=execution_broker_router.get_positions(); broker_error=None
+                except Exception as exc: broker_positions=None; broker_error=str(exc)
+                if broker_positions is None:
+                    startup_state.fail(f'broker position snapshot unavailable: {broker_error or "unknown error"}')
+                    app.state.startup_gate_result=None
                 else:
-                    startup_state.transition(StartupExecutionState.PORTFOLIO_RECONCILED, 'portfolio reconciled')
-                    startup_state.transition(StartupExecutionState.RISK_READY, 'risk readiness checks passed')
-                    startup_state.transition(StartupExecutionState.READY)
+                    gate_result=startup_gate.evaluate(local_positions,broker_positions); app.state.startup_gate_result=gate_result
+                    if not gate_result.ready:
+                        startup_state.fail('portfolio reconciliation failed')
+                    else:
+                        startup_state.transition(StartupExecutionState.PORTFOLIO_RECONCILED, 'portfolio reconciled')
+                        startup_state.transition(StartupExecutionState.RISK_READY, 'risk readiness checks passed')
+                        startup_state.transition(StartupExecutionState.READY)
     yield
 
 app=FastAPI(title='AI Trading Platform',version='1.0.0',lifespan=lifespan); app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=True,allow_methods=['*'],allow_headers=['*'])
