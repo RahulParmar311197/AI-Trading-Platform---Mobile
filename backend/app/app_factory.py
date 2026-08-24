@@ -43,5 +43,7 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
             init_db()
 
     from app.api.orders import router as orders_router
+    from app.api.ensemble import router as decision_router
     app.include_router(orders_router)
+    app.include_router(decision_router)
     return app
