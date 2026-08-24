@@ -43,7 +43,7 @@ class Broker:
 
 
 def request(symbol="NIFTY", side="BUY", quantity=5, security_id="NIFTY-SEC"):
-    return BrokerOrderRequest(client_order_id="risk-runtime-1", symbol=symbol, side=side, quantity=quantity, security_id=security_id)
+    return BrokerOrderRequest(client_order_id="risk-runtime-1", symbol=symbol, side=side, quantity=quantity, security_id=security_id, price=100, stop=95)
 
 
 def provider(tmp_path, positions=None, account=None, loss=10.0, snapshot=None, max_age=2.0):
@@ -52,7 +52,7 @@ def provider(tmp_path, positions=None, account=None, loss=10.0, snapshot=None, m
     broker = Broker(positions=positions, account=account, snapshot=snapshot)
     router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=safety)
     lifecycle = OrderLifecycle()
-    return RuntimeRiskSnapshotProvider(router, lifecycle, trading_day_timezone="Asia/Kolkata", projected_trade_loss_provider=lambda req: loss, max_snapshot_age_seconds=max_age)
+    return RuntimeRiskSnapshotProvider(router, lifecycle, trading_day_timezone="Asia/Kolkata", max_snapshot_age_seconds=max_age)
 
 
 def test_snapshot_uses_signed_broker_position(tmp_path):
@@ -60,7 +60,8 @@ def test_snapshot_uses_signed_broker_position(tmp_path):
     snapshot = p(request(side="SELL", quantity=2))
     assert snapshot.position_quantity == -8
     assert snapshot.broker_ready is True
-    assert snapshot.projected_trade_loss == 10.0
+    assert snapshot.projected_trade_loss == 25.0
+    assert snapshot.broker_snapshot_fingerprint
 
 
 def test_snapshot_rejects_blocked_broker(tmp_path):
@@ -69,18 +70,15 @@ def test_snapshot_rejects_blocked_broker(tmp_path):
     assert snapshot.broker_ready is False
 
 
-def test_snapshot_fails_closed_without_trade_loss_estimator(tmp_path):
-    safety = SafetyStateStore(str(tmp_path / "safety.json"))
-    safety.clear()
-    router = BrokerRouter([BrokerRoute("test", Broker())], "test", safety_store=safety)
-    p = RuntimeRiskSnapshotProvider(router, OrderLifecycle())
-    with pytest.raises(RuntimeError, match="projected trade loss provider"):
-        p(request())
+def test_snapshot_fails_closed_without_valid_entry_stop(tmp_path):
+    p = provider(tmp_path)
+    with pytest.raises(RuntimeError, match="entry price"):
+        p(BrokerOrderRequest(client_order_id="risk-runtime-2", symbol="NIFTY", side="BUY", quantity=5))
 
 
 def test_snapshot_rejects_stale_broker_snapshot(tmp_path):
     import time
-    stale = BrokerSnapshot(orders=[], positions=[], fetched_at=time() - 10)
+    stale = BrokerSnapshot(orders=[], positions=[], fetched_at=time.time() - 10)
     p = provider(tmp_path, snapshot=stale, max_age=2)
     with pytest.raises(RuntimeError, match="stale"):
         p(request())
@@ -88,7 +86,7 @@ def test_snapshot_rejects_stale_broker_snapshot(tmp_path):
 
 def test_snapshot_rejects_future_broker_snapshot(tmp_path):
     import time
-    future = BrokerSnapshot(orders=[], positions=[], fetched_at=time() + 10)
+    future = BrokerSnapshot(orders=[], positions=[], fetched_at=time.time() + 10)
     p = provider(tmp_path, snapshot=future, max_age=2)
     with pytest.raises(RuntimeError, match="stale"):
         p(request())
@@ -98,6 +96,18 @@ def test_snapshot_rejects_invalid_freshness_configuration(tmp_path):
     p = provider(tmp_path, max_age=0)
     with pytest.raises(RuntimeError, match="freshness configuration"):
         p(request())
+
+
+def test_snapshot_fingerprint_changes_when_position_changes():
+    first = BrokerSnapshot(orders=[], positions=[{"symbol": "NIFTY", "quantity": 5}])
+    second = BrokerSnapshot(orders=[], positions=[{"symbol": "NIFTY", "quantity": 6}])
+    assert first.fingerprint() != second.fingerprint()
+
+
+def test_snapshot_fingerprint_is_order_independent():
+    first = BrokerSnapshot(orders=[{"order_id": "2"}, {"order_id": "1"}], positions=[])
+    second = BrokerSnapshot(orders=[{"order_id": "1"}, {"order_id": "2"}], positions=[])
+    assert first.fingerprint() == second.fingerprint()
 
 
 def test_service_uses_request_scoped_broker_position_for_risk(tmp_path):
@@ -110,7 +120,7 @@ def test_service_uses_request_scoped_broker_position_for_risk(tmp_path):
     recovery.begin()
     recovery.state = recovery.state.READY
     gate = PreTradeRiskGate(RiskLimits(10, 20, 1000, 200))
-    snapshot_provider = RuntimeRiskSnapshotProvider(router, lifecycle, projected_trade_loss_provider=lambda req: 1.0)
+    snapshot_provider = RuntimeRiskSnapshotProvider(router, lifecycle)
     service = OrderExecutionService(
         router,
         lifecycle,
