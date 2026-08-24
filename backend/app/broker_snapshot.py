@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from hashlib import sha256
+import json
 from time import time
 from typing import Any
 
@@ -10,6 +12,12 @@ class BrokerSnapshot:
     orders: list[dict[str, Any]]
     positions: list[dict[str, Any]]
     fetched_at: float = field(default_factory=time)
+
+    def fingerprint(self) -> str:
+        """Return a deterministic identity for broker state used by risk authorization."""
+        payload = {"orders": self.orders, "positions": self.positions}
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        return sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def canonical_order_status(status: Any) -> str:
