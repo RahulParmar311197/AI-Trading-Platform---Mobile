@@ -1,6 +1,18 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.api.emergency_halt import router as emergency_halt_router
+from app.app_factory import create_resources
+from app.broker_factory import build_broker_router
+from app.broker_recovery import BrokerStartupRecovery
+from app.config import get_settings
+from app.db import init_db
+from app.order_lifecycle import OrderLifecycle
+from app.recovery_manager import StartupRecoveryManager
+from app.startup_reconciliation_gate import StartupReconciliationGate
+from app.startup_execution_state import StartupExecutionState, StartupExecutionStateMachine
+from app.portfolio_reconciliation_service import PortfolioReconciliationService
+from app.emergency_halt import EmergencyHaltController
 from app.ai_intelligence_api import router as ai_intelligence_router
 from app.api.ai import router as ai_router
 from app.api.ai_strategy import router as ai_strategy_router
@@ -58,19 +70,9 @@ from app.api.stream_pipeline import router as stream_pipeline_router
 from app.api.trade_risk import router as trade_risk_router
 from app.api.unified_backtest import router as unified_backtest_router
 from app.api.walk_forward import router as walk_forward_router
-from app.app_factory import create_resources
-from app.broker_factory import build_broker_router
-from app.broker_recovery import BrokerStartupRecovery
-from app.config import get_settings
-from app.db import init_db
-from app.order_lifecycle import OrderLifecycle
-from app.recovery_manager import StartupRecoveryManager
-from app.startup_reconciliation_gate import StartupReconciliationGate
-from app.startup_execution_state import StartupExecutionState, StartupExecutionStateMachine
-from app.portfolio_reconciliation_service import PortfolioReconciliationService
 
 settings=get_settings(); resources=create_resources(); execution_store=resources.execution_store; idempotency_store=resources.idempotency_store; safety_store=resources.safety_store
-execution_broker_router=build_broker_router(safety_store); recovery_manager=StartupRecoveryManager(execution_store,safety_store); broker_recovery=BrokerStartupRecovery(execution_broker_router,execution_store,safety_store,recovery_manager); startup_state=StartupExecutionStateMachine(); resources.startup_execution_state=startup_state; startup_gate=StartupReconciliationGate(startup_state,safety_store,PortfolioReconciliationService())
+execution_broker_router=build_broker_router(safety_store); recovery_manager=StartupRecoveryManager(execution_store,safety_store); broker_recovery=BrokerStartupRecovery(execution_broker_router,execution_store,safety_store,recovery_manager); startup_state=StartupExecutionStateMachine(); resources.startup_execution_state=startup_state; emergency_halt_controller=EmergencyHaltController(safety_store,startup_state); resources.emergency_halt_controller=emergency_halt_controller; startup_gate=StartupReconciliationGate(startup_state,safety_store,PortfolioReconciliationService())
 
 def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str,float]:
     positions={}
@@ -81,28 +83,24 @@ def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str,float]:
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
-    app.state.resources=resources; app.state.broker_router=execution_broker_router; init_db(); lifecycle=OrderLifecycle(); app.state.startup_execution_state=startup_state
-    startup_state.transition(StartupExecutionState.RECOVERING)
-    result=broker_recovery.run(lifecycle); app.state.recovery_result=result
-    if not result.ready:
-        startup_state.fail('broker startup recovery failed')
+    app.state.resources=resources; app.state.broker_router=execution_broker_router; app.state.startup_execution_state=startup_state; app.state.emergency_halt_controller=emergency_halt_controller; init_db(); lifecycle=OrderLifecycle()
+    if emergency_halt_controller.is_halted():
+        startup_state.halt(safety_store.load().halt_reason or 'persisted emergency halt')
     else:
-        startup_state.transition(StartupExecutionState.BROKER_RECONCILED)
-        local_positions=_persisted_local_positions(lifecycle)
-        try: broker_positions=execution_broker_router.get_positions()
-        except Exception as exc: broker_positions=None; broker_error=str(exc)
-        if broker_positions is None:
-            startup_state.fail(f'broker position snapshot unavailable: {locals().get("broker_error", "unknown error")}')
-            app.state.startup_gate_result=None
+        startup_state.transition(StartupExecutionState.RECOVERING)
+        result=broker_recovery.run(lifecycle); app.state.recovery_result=result
+        if not result.ready: startup_state.fail('broker startup recovery failed')
         else:
-            gate_result=startup_gate.evaluate(local_positions,broker_positions); app.state.startup_gate_result=gate_result
-            if not gate_result.ready:
-                startup_state.fail('portfolio reconciliation failed')
+            startup_state.transition(StartupExecutionState.BROKER_RECONCILED); local_positions=_persisted_local_positions(lifecycle)
+            try: broker_positions=execution_broker_router.get_positions(); broker_error=None
+            except Exception as exc: broker_positions=None; broker_error=str(exc)
+            if broker_positions is None: startup_state.fail(f'broker position snapshot unavailable: {broker_error or "unknown error"}'); app.state.startup_gate_result=None
             else:
-                startup_state.transition(StartupExecutionState.PORTFOLIO_RECONCILED)
-                startup_state.transition(StartupExecutionState.RISK_READY)
-                startup_state.transition(StartupExecutionState.READY)
+                gate_result=startup_gate.evaluate(local_positions,broker_positions); app.state.startup_gate_result=gate_result
+                if not gate_result.ready: startup_state.fail('portfolio reconciliation failed')
+                else:
+                    startup_state.transition(StartupExecutionState.PORTFOLIO_RECONCILED); startup_state.transition(StartupExecutionState.RISK_READY); startup_state.transition(StartupExecutionState.READY)
     yield
 
 app=FastAPI(title='AI Trading Platform',version='1.0.0',lifespan=lifespan); app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=True,allow_methods=['*'],allow_headers=['*'])
-for router in [ai_router,ai_strategy_router,ai_intelligence_router,analysis_router,auth_router,backtest_router,backtest_engine_router,broker_api_router,broker_accounts_router,broker_connection_router,broker_account_state_router,portfolio_state_router,upstox_oauth_router,upstox_oauth_complete_router,candle_builder_router,confluence_router,data_provider_router,ensemble_router,ensemble_v2_router,execution_lifecycle_router,historical_backfill_router,historical_market_store_router,health_router,ict_smc_router,ict_zones_router,journal_router,market_data_router,market_data_normalizer_router,markets_router,ml_trainer_router,ml_training_router,model_registry_router,mtf_aggregator_router,mtf_analysis_router,mtf_ensemble_router,notifications_router,options_router,orders_router,paper_router,paper_execution_router,portfolio_router,position_manager_router,protection_engine_router,realtime_market_stream_router,reconciliation_router,recovery_router,replay_router,risk_router,risk_engine_router,scanner_router,signals_router,strategy_backtest_router,stream_router,stream_pipeline_router,trade_risk_router,unified_backtest_router,walk_forward_router]: app.include_router(router)
+for router in [emergency_halt_router,ai_router,ai_strategy_router,ai_intelligence_router,analysis_router,auth_router,backtest_router,backtest_engine_router,broker_api_router,broker_accounts_router,broker_connection_router,broker_account_state_router,portfolio_state_router,upstox_oauth_router,upstox_oauth_complete_router,candle_builder_router,confluence_router,data_provider_router,ensemble_router,ensemble_v2_router,execution_lifecycle_router,historical_backfill_router,historical_market_store_router,health_router,ict_smc_router,ict_zones_router,journal_router,market_data_router,market_data_normalizer_router,markets_router,ml_trainer_router,ml_training_router,model_registry_router,mtf_aggregator_router,mtf_analysis_router,mtf_ensemble_router,notifications_router,options_router,orders_router,paper_router,paper_execution_router,portfolio_router,position_manager_router,protection_engine_router,realtime_market_stream_router,reconciliation_router,recovery_router,replay_router,risk_router,risk_engine_router,scanner_router,signals_router,strategy_backtest_router,stream_router,stream_pipeline_router,trade_risk_router,unified_backtest_router,walk_forward_router]: app.include_router(router)
