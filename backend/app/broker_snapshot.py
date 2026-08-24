@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from time import time
 from typing import Any
 
 
@@ -8,6 +9,7 @@ from typing import Any
 class BrokerSnapshot:
     orders: list[dict[str, Any]]
     positions: list[dict[str, Any]]
+    fetched_at: float = field(default_factory=time)
 
 
 def canonical_order_status(status: Any) -> str:
@@ -39,7 +41,7 @@ def map_dhan_position(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def dhan_snapshot(orders: list[dict[str, Any]], positions: list[dict[str, Any]]) -> BrokerSnapshot:
+def dhan_snapshot(orders: list[dict[str, Any]], positions: list[dict[str, Any]) -> BrokerSnapshot:
     return BrokerSnapshot(
         orders=[map_dhan_order(row) for row in orders],
         positions=[map_dhan_position(row) for row in positions],
