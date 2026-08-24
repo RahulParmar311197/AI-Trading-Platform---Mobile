@@ -23,6 +23,8 @@ class AppResources:
 
 def create_resources(*, execution_path="data/execution_state.json", idempotency_path="data/idempotency.sqlite3", safety_path="data/safety_state.json", database_url: str | None = None) -> AppResources:
     session_local = None
+    if database_url:
+        _, session_local = create_db_runtime(database_url)
     safety_store = SafetyStateStore(safety_path)
     return AppResources(
         execution_store=ExecutionStateStore(execution_path),
