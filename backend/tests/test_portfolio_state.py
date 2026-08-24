@@ -45,3 +45,34 @@ def test_malformed_top_level_payload_is_normalized_to_empty_state():
     assert state.holdings == []
     assert state.net_exposure == 0
     assert state.unrealized_pnl == 0
+
+
+def test_long_position_mark_to_market_and_gross_exposure():
+    state = normalize_portfolio(
+        1, {},
+        [{"symbol": "NIFTY", "quantity": 10, "average_price": 100, "last_price": 105}],
+        [],
+    )
+    assert state.positions[0].calculated_unrealized_pnl == 50
+    assert state.gross_exposure == 1050
+    assert state.calculated_unrealized_pnl == 50
+
+
+def test_short_position_mark_to_market_is_positive_when_price_falls():
+    state = normalize_portfolio(
+        1, {},
+        [{"symbol": "NIFTY", "quantity": -5, "average_price": 100, "last_price": 90}],
+        [],
+    )
+    assert state.positions[0].calculated_unrealized_pnl == 50
+    assert state.gross_exposure == 450
+    assert state.net_exposure == -450
+
+
+def test_mark_to_market_includes_holdings():
+    state = normalize_portfolio(
+        1, {}, [],
+        [{"symbol": "ABC", "quantity": 3, "average_price": 200, "ltp": 210}],
+    )
+    assert state.calculated_unrealized_pnl == 30
+    assert state.gross_exposure == 630
