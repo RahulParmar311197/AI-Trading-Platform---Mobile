@@ -72,7 +72,7 @@ from app.api.unified_backtest import router as unified_backtest_router
 from app.api.walk_forward import router as walk_forward_router
 
 settings=get_settings(); resources=create_resources(); execution_store=resources.execution_store; idempotency_store=resources.idempotency_store; safety_store=resources.safety_store
-execution_broker_router=build_broker_router(safety_store); recovery_manager=StartupRecoveryManager(execution_store,safety_store); broker_recovery=BrokerStartupRecovery(execution_broker_router,execution_store,safety_store,recovery_manager); startup_state=StartupExecutionStateMachine(); resources.startup_execution_state=startup_state; emergency_halt_controller=EmergencyHaltController(safety_store,startup_state); resources.emergency_halt_controller=emergency_halt_controller; startup_gate=StartupReconciliationGate(startup_state,safety_store,PortfolioReconciliationService())
+execution_broker_router=build_broker_router(safety_store); recovery_manager=StartupRecoveryManager(execution_store,safety_store); broker_recovery=BrokerStartupRecovery(execution_broker_router,execution_store,safety_store,recovery_manager); startup_state=resources.startup_execution_state; emergency_halt_controller=resources.emergency_halt_controller; startup_gate=StartupReconciliationGate(startup_state,safety_store,PortfolioReconciliationService())
 
 def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str,float]:
     positions={}
@@ -83,7 +83,7 @@ def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str,float]:
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
-    app.state.resources=resources; app.state.broker_router=execution_broker_router; app.state.startup_execution_state=startup_state; app.state.emergency_halt_controller=emergency_halt_controller; init_db(); lifecycle=OrderLifecycle()
+    app.state.resources=resources; app.state.broker_router=execution_broker_router; app.state.startup_execution_state=startup_state; app.state.emergency_halt_controller=emergency_halt_controller; app.state.trading_audit_log=resources.audit_log; init_db(); lifecycle=OrderLifecycle(resources.audit_log); app.state.order_lifecycle=lifecycle
     if emergency_halt_controller.is_halted():
         startup_state.halt(safety_store.load().halt_reason or 'persisted emergency halt')
     else:
