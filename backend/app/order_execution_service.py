@@ -84,15 +84,10 @@ class OrderExecutionService:
         return ExecutionResult(request.client_order_id,status.value,broker_id,message,execution_id)
     def _reconcile_ambiguous_submission(self,request,execution_id,original_error):
         self._audit("BROKER_SUBMISSION_AMBIGUOUS",execution_id,request,error=str(original_error))
-        try:
-            recovered=self._recover_broker_order(request.client_order_id)
-        except Exception as recovery_error:
-            self._audit("BROKER_RECOVERY_ERROR",execution_id,request,error=str(recovery_error))
-            return None
-        if recovered is not None:
-            return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED_AFTER_AMBIGUOUS_SUBMISSION",execution_id)
-        self._audit("BROKER_SUBMISSION_UNRESOLVED",execution_id,request,reason="no broker order found after ambiguous submission")
-        return None
+        try:recovered=self._recover_broker_order(request.client_order_id)
+        except Exception as recovery_error:self._audit("BROKER_RECOVERY_ERROR",execution_id,request,error=str(recovery_error));return None
+        if recovered is not None:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED_AFTER_AMBIGUOUS_SUBMISSION",execution_id)
+        self._audit("BROKER_SUBMISSION_UNRESOLVED",execution_id,request,reason="no broker order found after ambiguous submission");return None
     def submit(self,request):
         execution_id=str(uuid.uuid4());self._audit("EXECUTION_STARTED",execution_id,request);safety_result=self._assert_safety_ready()
         if safety_result is not None:self._audit("EXECUTION_BLOCKED",execution_id,request,reason=safety_result.message);return ExecutionResult(request.client_order_id,safety_result.status,message=safety_result.message,execution_id=execution_id)
@@ -104,10 +99,10 @@ class OrderExecutionService:
             existing=self.lifecycle.orders.get(request.client_order_id)
             if existing is not None and existing.status in {OrderStatus.FILLED,OrderStatus.CANCELLED,OrderStatus.REJECTED}:return ExecutionResult(request.client_order_id,existing.status.value,existing.broker_order_id,"IDEMPOTENT_REPLAY",execution_id)
             if not self.startup_state.execution_allowed:return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message=f"LIVE_EXECUTION_LOCKED_STARTUP_STATE_{self.startup_state.state.value}",execution_id=execution_id)
-            if self.idempotency_store is not None and not self.idempotency_store.claim(request.client_order_id):
-                recovered=self._recover_broker_order(request.client_order_id)
-                if recovered is not None:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED",execution_id)
-                return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message="EXECUTION_PENDING_RECONCILIATION",execution_id=execution_id)
+            if self.idempotency_store is not None and not self.idempotency_store.claim(request.client_order_id,execution_id):
+                claim=self.idempotency_store.get_claim(request.client_order_id);recovered=self._recover_broker_order(request.client_order_id)
+                if recovered is not None:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED_FROM_PERSISTED_CLAIM",execution_id)
+                return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message=f"EXECUTION_PENDING_RECONCILIATION_CLAIMED_BY_{claim.get('execution_id') if claim else 'UNKNOWN'}",execution_id=execution_id)
             recovered=self._recover_broker_order(request.client_order_id)
             if recovered is not None:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED",execution_id)
             self._create_lifecycle_record(request,execution_id);self.lifecycle.transition(request.client_order_id,OrderStatus.SUBMISSION_INTENT);self.store.save(self.lifecycle);self._audit("SUBMISSION_INTENT",execution_id,request)
