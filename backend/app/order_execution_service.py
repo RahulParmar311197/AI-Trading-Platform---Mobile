@@ -10,6 +10,7 @@ from app.idempotency_store import IdempotencyStore
 from app.order_lifecycle import OrderLifecycle, OrderStatus
 from app.risk_gate import PreTradeRiskGate, RiskSnapshot
 from app.startup_recovery import StartupRecoveryCoordinator
+from app.startup_execution_state import StartupExecutionStateMachine
 from app.safety_state import SafetyStateStore
 from app.execution_authorization import ExecutionAuthorization
 
@@ -19,8 +20,9 @@ class ExecutionResult:
 
 class OrderExecutionService:
     _claim_lock=Lock()
-    def __init__(self,router,lifecycle,store,idempotency_store=None,recovery=None,risk_gate=None,risk_snapshot_provider=None,safety_state_store=None,authorization=None):
+    def __init__(self,router,lifecycle,store,idempotency_store=None,recovery=None,risk_gate=None,risk_snapshot_provider=None,safety_state_store=None,authorization=None,startup_state=None):
         self.router=router; self.lifecycle=lifecycle; self.store=store; self.idempotency_store=idempotency_store; self.recovery=recovery or StartupRecoveryCoordinator(); self.risk_gate=risk_gate; self.risk_snapshot_provider=risk_snapshot_provider; self.safety_state_store=safety_state_store
+        self.startup_state: StartupExecutionStateMachine | None = startup_state
         self.authorization=authorization or ExecutionAuthorization(safety_state_store or SafetyStateStore(), risk_gate, risk_snapshot_provider)
         if self.risk_gate is not None:self.risk_gate.rebuild_from_lifecycle(self.lifecycle)
     def _authorize_execution(self, request):
@@ -31,6 +33,8 @@ class OrderExecutionService:
     def _assert_safety_ready(self):
         result=self.authorization.check_safety()
         if not result.allowed:return ExecutionResult("",OrderStatus.REJECTED.value,message=f"{result.code}: {result.reason or 'execution blocked'}")
+        if self.startup_state is not None and not self.startup_state.execution_allowed:
+            return ExecutionResult("",OrderStatus.REJECTED.value,message=f"STARTUP_EXECUTION_LOCKED: {self.startup_state.state.value}")
         return None
     def _recover_broker_order(self,client_order_id): return self.router.find_order_by_client_id(client_order_id)
     @staticmethod
@@ -39,7 +43,7 @@ class OrderExecutionService:
             value=recovered.get(key)
             if value is not None and str(value).upper()!=str(expected).upper(): raise RuntimeError(f"broker recovery returned an order for a different {key}")
         quantity=recovered.get("quantity",recovered.get("requested_quantity"))
-        if quantity is not None and abs(float(quantity)-float(request.quantity))>1e-9: raise RuntimeError("broker recovery returned an order with a different requested quantity")
+        if quantity is not None and abs(float(quantity)-float(request.quantity))>1e-9:raise RuntimeError("broker recovery returned an order with a different requested quantity")
     @staticmethod
     def _validate_submission_result(request,result):
         broker_id=getattr(result,"order_id",None)
@@ -120,7 +124,8 @@ class OrderExecutionService:
             if authorization_result is not None:return authorization_result
             existing=self.lifecycle.orders.get(request.client_order_id)
             if existing is not None and existing.status in {OrderStatus.FILLED,OrderStatus.CANCELLED,OrderStatus.REJECTED}:return ExecutionResult(request.client_order_id,existing.status.value,existing.broker_order_id,"IDEMPOTENT_REPLAY")
-            if self.recovery.state.value!="READY":return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message="LIVE_EXECUTION_LOCKED_STARTUP_RECOVERY_REQUIRED")
+            if self.startup_state is None and self.recovery.state.value!="READY":return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message="LIVE_EXECUTION_LOCKED_STARTUP_RECOVERY_REQUIRED")
+            if self.startup_state is not None and not self.startup_state.execution_allowed:return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message=f"LIVE_EXECUTION_LOCKED_STARTUP_STATE_{self.startup_state.state.value}")
             if self.idempotency_store is not None and not self.idempotency_store.claim(request.client_order_id):
                 recovered=self._recover_broker_order(request.client_order_id)
                 if recovered is not None:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED")
