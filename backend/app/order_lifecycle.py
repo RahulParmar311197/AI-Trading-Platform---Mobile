@@ -27,7 +27,27 @@ class OrderLifecycle:
         if order_id in self.orders: raise ValueError("duplicate order_id")
         allowed={k:v for k,v in metadata.items() if k in OrderRecord.__dataclass_fields__}
         self.orders[order_id]=OrderRecord(order_id,symbol.upper(),side.upper(),quantity,**allowed); return self.orders[order_id]
+
+    def apply_fill(self, order_id, quantity, price):
+        """Apply one new execution fill event exactly once by quantity/value accounting."""
+        order=self.orders[order_id]
+        quantity=float(quantity); price=float(price)
+        if quantity<=0: raise ValueError("fill quantity must be positive")
+        if price<=0: raise ValueError("fill price must be positive")
+        if order.filled_quantity + quantity > order.quantity: raise ValueError("invalid filled quantity")
+        new_filled=order.filled_quantity + quantity
+        new_value=order.applied_fill_value + quantity*price
+        order.filled_quantity=new_filled
+        order.average_fill_price=new_value/new_filled
+        order.applied_fill_quantity=new_filled
+        order.applied_fill_value=new_value
+        order.status=OrderStatus.FILLED if new_filled==order.quantity else OrderStatus.PARTIALLY_FILLED
+        order.updated_at=datetime.now(timezone.utc)
+        self._apply_position_delta(order,quantity,price)
+        return order
+
     def transition(self,order_id,status,filled_quantity=0.0,fill_price=None):
+        """Reconcile a broker snapshot where fill_price is the cumulative average price."""
         order=self.orders[order_id]
         if status in (OrderStatus.FILLED,OrderStatus.PARTIALLY_FILLED) and not 0<=filled_quantity<=order.quantity: raise ValueError("invalid filled quantity")
         if filled_quantity<order.applied_fill_quantity: raise ValueError("filled quantity cannot move backwards")
@@ -44,6 +64,7 @@ class OrderLifecycle:
             if delta_value<=0: raise ValueError("cumulative fill value cannot move backwards")
             self._apply_position_delta(order,delta_quantity,delta_value/delta_quantity); order.applied_fill_quantity=filled_quantity; order.applied_fill_value=cumulative_value
         return order
+
     def _record_realized_pnl(self,symbol,pnl,when=None):
         self.realized_pnl_by_symbol[symbol]=self.realized_pnl_by_symbol.get(symbol,0.0)+pnl; day=(when or datetime.now(timezone.utc)).astimezone(timezone.utc).date().isoformat(); self.realized_pnl_by_day[day]=self.realized_pnl_by_day.get(day,0.0)+pnl
     def _apply_position_delta(self,order,quantity,price):
