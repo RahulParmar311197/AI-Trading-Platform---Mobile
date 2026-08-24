@@ -17,7 +17,7 @@ class ExecutionStateStore:
         self.backup_path = self.path.with_suffix(self.path.suffix + ".bak")
 
     def _serialize(self, lifecycle: OrderLifecycle) -> dict:
-        payload = {"orders": {}, "positions": {}, "realized_pnl_by_symbol": {}}
+        payload = {"orders": {}, "positions": {}, "realized_pnl_by_symbol": {}, "realized_pnl_by_day": {}}
         for oid, order in lifecycle.orders.items():
             payload["orders"][oid] = {
                 **asdict(order),
@@ -27,10 +27,8 @@ class ExecutionStateStore:
             }
         for symbol, position in lifecycle.positions.items():
             payload["positions"][symbol] = {**asdict(position), "status": position.status.value}
-        payload["realized_pnl_by_symbol"] = {
-            str(symbol).upper(): float(value)
-            for symbol, value in lifecycle.realized_pnl_by_symbol.items()
-        }
+        payload["realized_pnl_by_symbol"] = {str(symbol).upper(): float(value) for symbol, value in lifecycle.realized_pnl_by_symbol.items()}
+        payload["realized_pnl_by_day"] = {str(day): float(value) for day, value in lifecycle.realized_pnl_by_day.items()}
         return payload
 
     def _write_atomic(self, target: Path, payload: dict) -> None:
@@ -65,6 +63,7 @@ class ExecutionStateStore:
         lifecycle.orders.clear()
         lifecycle.positions.clear()
         lifecycle.realized_pnl_by_symbol.clear()
+        lifecycle.realized_pnl_by_day.clear()
         from app.order_lifecycle import OrderRecord, PositionRecord
 
         for oid, raw in data.get("orders", {}).items():
@@ -91,11 +90,23 @@ class ExecutionStateStore:
                 raise ValueError(f"invalid realized pnl for {symbol}")
             lifecycle.realized_pnl_by_symbol[str(symbol).upper()] = pnl
 
+        raw_daily = data.get("realized_pnl_by_day", {})
+        if not isinstance(raw_daily, dict):
+            raise ValueError("realized_pnl_by_day must be an object")
+        for day, value in raw_daily.items():
+            try:
+                datetime.strptime(str(day), "%Y-%m-%d")
+                pnl = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid realized daily pnl for {day}") from exc
+            if not pnl == pnl or pnl in (float("inf"), float("-inf")):
+                raise ValueError(f"invalid realized daily pnl for {day}")
+            lifecycle.realized_pnl_by_day[str(day)] = pnl
+
     def load(self, lifecycle: OrderLifecycle) -> bool:
         candidates = [self.path, self.backup_path]
         if not any(candidate.exists() for candidate in candidates):
             return False
-
         last_error: Exception | None = None
         for candidate in candidates:
             if not candidate.exists():
@@ -108,5 +119,4 @@ class ExecutionStateStore:
                 return True
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 last_error = exc
-
         raise RuntimeError("execution state is unreadable") from last_error
