@@ -31,6 +31,14 @@ def get_order_db(request:Request,db:Session=Depends(get_db)):
     else: yield db
 def _order_response(order:Order,message:str|None=None,execution_id:str|None=None)->dict:return {"id":order.id,"client_order_id":order.client_order_id,"broker_order_id":order.broker_order_id,"status":order.status,"message":message,"execution_id":execution_id}
 def _set_execution_response_status(response:Response,status:str)->None:response.status_code=202 if status=="EXECUTION_PENDING_RECONCILIATION" else 201
+def _commit_execution_intent(db:Session,order:Order)->None:
+    """Durably commit the API order before any broker submission can occur."""
+    try:
+        db.commit()
+        db.refresh(order)
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=503,detail={"code":"ORDER_INTENT_PERSISTENCE_FAILED","reason":type(exc).__name__}) from exc
 def _execution_service(broker_router,execution_store,idempotency_store,recovery,resources):
     from app.order_execution_service import OrderExecutionService
     from app.order_lifecycle import OrderLifecycle
@@ -62,4 +70,7 @@ def create_order(payload:OrderRequest,request:Request,response:Response,db:Sessi
         db.rollback(); existing=db.query(Order).filter(Order.client_order_id==client_order_id).first()
         if existing is None:raise HTTPException(status_code=409,detail="ORDER_CREATION_CONFLICT")
         return _order_response(existing,"IDEMPOTENT_REPLAY")
+    # Establish a durable API-side execution intent before the broker can be touched.
+    # If this commit fails, no broker submission is attempted and the caller can retry safely.
+    _commit_execution_intent(db,order)
     service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources); result=service.submit(_broker_request(client_order_id,symbol,payload.side,payload.quantity,payload.order_type,payload.price,payload.stop,payload.security_id)); order.status=result.status; order.broker_order_id=result.broker_order_id; order.note=result.message; db.commit(); db.refresh(order); _set_execution_response_status(response,result.status); return _order_response(order,result.message,result.execution_id)
