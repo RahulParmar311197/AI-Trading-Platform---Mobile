@@ -1,17 +1,13 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from enum import Enum
-
 from app.order_lifecycle import OrderStatus
-
 
 class RecoveryState(str, Enum):
     LOCKED = "LOCKED"
     RECOVERING = "RECOVERING"
     READY = "READY"
     FAILED = "FAILED"
-
 
 @dataclass(frozen=True)
 class RecoveryResult:
@@ -20,10 +16,8 @@ class RecoveryResult:
     reason: str | None = None
     position_mismatches: tuple[str, ...] = ()
 
-
 class StartupRecoveryCoordinator:
     """Fail-closed startup gate for live execution."""
-
     def __init__(self):
         self.state = RecoveryState.LOCKED
         self.last_result: RecoveryResult | None = None
@@ -46,16 +40,10 @@ class StartupRecoveryCoordinator:
             if not symbol:
                 raise ValueError("broker position is missing symbol")
             side = str(raw.get("side", "")).strip().upper()
-            quantity = raw.get("quantity", raw.get("net_quantity", raw.get("netQty", 0)))
-            quantity = float(quantity or 0)
+            quantity = float(raw.get("quantity", raw.get("net_quantity", raw.get("netQty", 0))) or 0)
             if quantity < 0:
                 raise ValueError(f"negative broker position quantity: {symbol}")
-            if side in {"SELL", "SHORT"}:
-                signed = -quantity
-            elif side in {"BUY", "LONG"}:
-                signed = quantity
-            else:
-                signed = quantity if quantity >= 0 else -quantity
+            signed = -quantity if side in {"SELL", "SHORT"} else quantity
             if abs(signed) > 1e-12:
                 result[symbol] = result.get(symbol, 0.0) + signed
         return result
@@ -67,13 +55,13 @@ class StartupRecoveryCoordinator:
             quantity = float(position.quantity)
             local[str(symbol).upper()] = quantity if str(position.side).upper() == "BUY" else -quantity
         broker = cls._position_map(broker_positions)
-        mismatches = []
-        for symbol in sorted(set(local) | set(broker)):
-            if abs(local.get(symbol, 0.0) - broker.get(symbol, 0.0)) > tolerance:
-                mismatches.append(f"{symbol}: local={local.get(symbol, 0.0)} broker={broker.get(symbol, 0.0)}")
-        return tuple(mismatches)
+        return tuple(
+            f"{symbol}: local={local.get(symbol, 0.0)} broker={broker.get(symbol, 0.0)}"
+            for symbol in sorted(set(local) | set(broker))
+            if abs(local.get(symbol, 0.0) - broker.get(symbol, 0.0)) > tolerance
+        )
 
-    def recover(self, lifecycle, reconcile_order, broker_positions=None):
+    def recover(self, lifecycle, reconcile_order, broker_positions=None, broker_positions_provider=None):
         self.begin()
         unresolved: list[str] = []
         try:
@@ -87,19 +75,24 @@ class StartupRecoveryCoordinator:
                 self.state = RecoveryState.FAILED
                 self.last_result = RecoveryResult(RecoveryState.FAILED, tuple(unresolved), "unresolved orders")
                 return self.last_result
-            if broker_positions is not None:
-                mismatches = self.compare_positions(lifecycle.positions, broker_positions)
-                if mismatches:
-                    self.state = RecoveryState.FAILED
-                    self.last_result = RecoveryResult(RecoveryState.FAILED, (), "position reconciliation mismatch", mismatches)
-                    return self.last_result
+            if broker_positions_provider is not None:
+                broker_positions = broker_positions_provider()
+            if broker_positions is None:
+                self.state = RecoveryState.FAILED
+                self.last_result = RecoveryResult(RecoveryState.FAILED, (), "broker position snapshot unavailable")
+                return self.last_result
+            mismatches = self.compare_positions(lifecycle.positions, broker_positions)
+            if mismatches:
+                self.state = RecoveryState.FAILED
+                self.last_result = RecoveryResult(RecoveryState.FAILED, (), "position reconciliation mismatch", mismatches)
+                return self.last_result
             self.state = RecoveryState.READY
             self.last_result = RecoveryResult(RecoveryState.READY)
             return self.last_result
         except Exception as exc:
             self.state = RecoveryState.FAILED
             self.last_result = RecoveryResult(RecoveryState.FAILED, tuple(unresolved), str(exc))
-            raise
+            return self.last_result
 
     def require_execution_ready(self) -> None:
         if not self.execution_allowed:
