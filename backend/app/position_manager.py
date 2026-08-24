@@ -78,10 +78,43 @@ class PositionManager:
         return p
 
     def reconcile(self, broker_positions: list[dict]):
-        broker = {str(x["symbol"]).upper(): x for x in broker_positions}
-        drift=[]
-        for symbol, p in self.positions.items():
-            b=broker.get(symbol); broker_qty=float(b.get("quantity",0)) if b else 0.0
-            if not b or broker_qty != p.quantity:
-                drift.append({"symbol":symbol,"internal_quantity":p.quantity,"broker_quantity":broker_qty})
-        return {"ok":not drift,"drift":drift}
+        """Compare signed internal and broker exposure, including unexpected broker positions."""
+        broker: dict[str, float] = {}
+        for item in broker_positions:
+            symbol = str(item.get("symbol", "")).strip().upper()
+            if not symbol:
+                raise ValueError("broker position missing symbol")
+            if symbol in broker:
+                raise ValueError(f"duplicate broker position: {symbol}")
+            raw_quantity = float(item.get("quantity", 0))
+            if raw_quantity != raw_quantity or raw_quantity in (float("inf"), float("-inf")):
+                raise ValueError(f"invalid broker position quantity: {symbol}")
+            # Broker position quantities are signed: long > 0, short < 0.
+            broker[symbol] = raw_quantity
+
+        drift = []
+        internal_symbols: set[str] = set()
+        for symbol, position in self.positions.items():
+            if position.status != "OPEN":
+                continue
+            internal_symbols.add(symbol)
+            direction = 1.0 if position.side == "BUY" else -1.0
+            internal_qty = direction * position.quantity
+            broker_qty = broker.get(symbol, 0.0)
+            if broker_qty != internal_qty:
+                drift.append({
+                    "symbol": symbol,
+                    "internal_quantity": internal_qty,
+                    "broker_quantity": broker_qty,
+                })
+
+        # A broker-only position is just as dangerous as a missing internal position.
+        for symbol, broker_qty in broker.items():
+            if symbol not in internal_symbols and broker_qty != 0:
+                drift.append({
+                    "symbol": symbol,
+                    "internal_quantity": 0.0,
+                    "broker_quantity": broker_qty,
+                })
+
+        return {"ok": not drift, "drift": drift}
