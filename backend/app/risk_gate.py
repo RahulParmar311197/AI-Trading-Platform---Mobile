@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Lock
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.broker_adapter import BrokerOrderRequest
 from app.order_lifecycle import OrderStatus
@@ -112,10 +113,24 @@ class PreTradeRiskGate:
         return 0
 
     @staticmethod
-    def snapshot_from_lifecycle(lifecycle, position_quantity: float, broker_ready: bool, kill_switch: bool = False, projected_trade_loss: float = 0.0, trading_day: str | None = None) -> RiskSnapshot:
-        """Build the risk P&L component from the durable lifecycle ledger."""
+    def trading_day_key(now: datetime | None = None, timezone_name: str = "UTC") -> str:
+        """Return the calendar trading-day key in an explicit IANA timezone."""
+        try:
+            zone = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"invalid trading-day timezone: {timezone_name}") from exc
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        return current.astimezone(zone).date().isoformat()
+
+    @staticmethod
+    def snapshot_from_lifecycle(lifecycle, position_quantity: float, broker_ready: bool, kill_switch: bool = False, projected_trade_loss: float = 0.0, trading_day: str | None = None, trading_day_timezone: str = "UTC") -> RiskSnapshot:
+        """Build the durable daily-P&L component using an explicit trading-day timezone."""
         if trading_day is None:
-            trading_day = datetime.now(timezone.utc).date().isoformat()
+            trading_day = PreTradeRiskGate.trading_day_key(timezone_name=trading_day_timezone)
+        else:
+            PreTradeRiskGate.trading_day_key(timezone_name=trading_day_timezone)
         daily = lifecycle.realized_pnl_by_day.get(trading_day, 0.0)
         try:
             daily = float(daily)
@@ -123,13 +138,16 @@ class PreTradeRiskGate:
             raise RuntimeError("invalid persisted daily realized pnl") from exc
         if daily != daily or daily in (float("inf"), float("-inf")):
             raise RuntimeError("invalid persisted daily realized pnl")
-        return RiskSnapshot(
-            position_quantity=float(position_quantity),
-            daily_pnl=daily,
-            projected_trade_loss=float(projected_trade_loss),
-            kill_switch=bool(kill_switch),
-            broker_ready=bool(broker_ready),
-        )
+        try:
+            position = float(position_quantity)
+            trade_loss = float(projected_trade_loss)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("invalid risk snapshot numeric value") from exc
+        if position != position or position in (float("inf"), float("-inf")):
+            raise RuntimeError("invalid risk snapshot position")
+        if trade_loss != trade_loss or trade_loss in (float("inf"), float("-inf")):
+            raise RuntimeError("invalid risk snapshot trade loss")
+        return RiskSnapshot(position_quantity=position, daily_pnl=daily, projected_trade_loss=trade_loss, kill_switch=bool(kill_switch), broker_ready=bool(broker_ready))
 
     def evaluate(self, request: BrokerOrderRequest, snapshot: RiskSnapshot) -> RiskDecision:
         if snapshot.kill_switch:
