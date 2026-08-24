@@ -69,6 +69,9 @@ class OrderExecutionService:
         elif status==OrderStatus.PARTIALLY_FILLED:
             try:self.risk_gate.update_after_fill(request,filled_quantity,float(self._risk_snapshot(request).position_quantity))
             except Exception:return
+    def _finalize_idempotency(self,request,status):
+        if self.idempotency_store is None:return
+        if status in {OrderStatus.FILLED,OrderStatus.CANCELLED,OrderStatus.REJECTED}:self.idempotency_store.mark_completed(request.client_order_id)
     def _create_lifecycle_record(self,request,execution_id):
         if request.client_order_id in self.lifecycle.orders:
             order=self.lifecycle.orders[request.client_order_id]
@@ -79,8 +82,7 @@ class OrderExecutionService:
         self._validate_recovered_identity(request,recovered);broker_id=str(recovered.get("order_id",recovered.get("broker_order_id")))
         if broker_id=="None":raise RuntimeError("broker recovery returned an order without broker order id")
         status=self._map_broker_status(str(recovered.get("status","NEW")));filled=float(recovered.get("filled_quantity",recovered.get("filledQty",0)) or 0);average=recovered.get("average_price",recovered.get("averagePrice",recovered.get("price")))
-        self._create_lifecycle_record(request,execution_id);order=self.lifecycle.orders[request.client_order_id];order.broker_order_id=broker_id;self.lifecycle.transition(request.client_order_id,status,filled_quantity=filled if status in {OrderStatus.FILLED,OrderStatus.PARTIALLY_FILLED} else 0,fill_price=average);self.store.save(self.lifecycle);self._settle_risk_reservation(request,status,filled);self._audit("BROKER_ORDER_RECOVERED",execution_id,request,broker_order_id=broker_id,status=status.value,filled_quantity=filled)
-        if self.idempotency_store is not None and status!=OrderStatus.PARTIALLY_FILLED:self.idempotency_store.mark_completed(request.client_order_id)
+        self._create_lifecycle_record(request,execution_id);order=self.lifecycle.orders[request.client_order_id];order.broker_order_id=broker_id;self.lifecycle.transition(request.client_order_id,status,filled_quantity=filled if status in {OrderStatus.FILLED,OrderStatus.PARTIALLY_FILLED} else 0,fill_price=average);self.store.save(self.lifecycle);self._settle_risk_reservation(request,status,filled);self._audit("BROKER_ORDER_RECOVERED",execution_id,request,broker_order_id=broker_id,status=status.value,filled_quantity=filled);self._finalize_idempotency(request,status)
         return ExecutionResult(request.client_order_id,status.value,broker_id,message,execution_id)
     def _reconcile_ambiguous_submission(self,request,execution_id,original_error):
         self._audit("BROKER_SUBMISSION_AMBIGUOUS",execution_id,request,error=str(original_error))
@@ -107,7 +109,7 @@ class OrderExecutionService:
             if recovered is not None:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED",execution_id)
             self._create_lifecycle_record(request,execution_id);self.lifecycle.transition(request.client_order_id,OrderStatus.SUBMISSION_INTENT);self.store.save(self.lifecycle);self._audit("SUBMISSION_INTENT",execution_id,request)
             try:
-                result=self.router.submit(request);self._validate_submission_result(request,result);status=self._map_broker_status(str(result.status));filled=float(result.filled_quantity or 0) if result.filled_quantity is not None else 0.0;average=result.average_price if result.average_price is not None else result.price;self.lifecycle.transition(request.client_order_id,status,filled_quantity=filled,fill_price=average);self.lifecycle.orders[request.client_order_id].broker_order_id=result.order_id;self.store.save(self.lifecycle);self._audit("BROKER_SUBMISSION_RESULT",execution_id,request,broker_order_id=result.order_id,status=status.value,filled_quantity=filled,average_price=average);return ExecutionResult(request.client_order_id,status.value,result.order_id,None,execution_id)
+                result=self.router.submit(request);self._validate_submission_result(request,result);status=self._map_broker_status(str(result.status));filled=float(result.filled_quantity or 0) if result.filled_quantity is not None else 0.0;average=result.average_price if result.average_price is not None else result.price;self.lifecycle.transition(request.client_order_id,status,filled_quantity=filled,fill_price=average);self.lifecycle.orders[request.client_order_id].broker_order_id=result.order_id;self.store.save(self.lifecycle);self._settle_risk_reservation(request,status,filled);self._finalize_idempotency(request,status);self._audit("BROKER_SUBMISSION_RESULT",execution_id,request,broker_order_id=result.order_id,status=status.value,filled_quantity=filled,average_price=average);return ExecutionResult(request.client_order_id,status.value,result.order_id,None,execution_id)
             except Exception as exc:
                 recovered_result=self._reconcile_ambiguous_submission(request,execution_id,exc)
                 if recovered_result is not None:return recovered_result
