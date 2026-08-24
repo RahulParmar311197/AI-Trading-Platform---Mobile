@@ -5,6 +5,7 @@ from app.broker_router import BrokerRoute, BrokerRouter
 from app.execution_persistence import ExecutionStateStore
 from app.order_execution_service import OrderExecutionService
 from app.order_lifecycle import OrderLifecycle, OrderStatus
+from app.risk_gate import RiskDecision, RiskSnapshot
 from app.safety_state import SafetyStateStore
 from app.startup_execution_state import StartupExecutionState, StartupExecutionStateMachine
 
@@ -36,12 +37,12 @@ def ready_state():
     return state
 
 
-def service(tmp_path, status="FILLED"):
+def service(tmp_path, status="FILLED", risk_gate=None, risk_provider=None):
     safety = SafetyStateStore(str(tmp_path / "safety.json"))
     safety.clear()
     router = BrokerRouter([BrokerRoute("test", Broker(status))], "test", safety_store=safety)
     lifecycle = OrderLifecycle()
-    return OrderExecutionService(router, lifecycle, ExecutionStateStore(str(tmp_path / "execution.json")), startup_state=ready_state()), lifecycle
+    return OrderExecutionService(router, lifecycle, ExecutionStateStore(str(tmp_path / "execution.json")), risk_gate=risk_gate, risk_snapshot_provider=risk_provider, startup_state=ready_state()), lifecycle
 
 
 def test_filled_order_updates_lifecycle_and_persists(tmp_path):
@@ -80,3 +81,29 @@ def test_working_broker_status_maps_to_submitted(tmp_path, status):
     result = svc.submit(req())
     assert result.status == "SUBMITTED"
     assert lifecycle.orders["L-1"].status == OrderStatus.SUBMITTED
+
+
+def test_live_execution_reserves_exposure_after_revalidated_risk(tmp_path):
+    class Gate:
+        def __init__(self):
+            self.reserve_calls = 0
+            self.release_calls = 0
+        def rebuild_from_lifecycle(self, lifecycle):
+            pass
+        def evaluate(self, request, snapshot):
+            return RiskDecision(True, "RISK_OK")
+        def reserve(self, request, snapshot):
+            self.reserve_calls += 1
+            return RiskDecision(True, "RISK_OK")
+        def release(self, client_order_id):
+            self.release_calls += 1
+        def update_after_fill(self, request, filled_quantity, current_position):
+            return RiskDecision(True, "RISK_OK")
+
+    gate = Gate()
+    provider = lambda request: RiskSnapshot(broker_ready=True, broker_snapshot_fingerprint="A", position_quantity=0, projected_trade_loss=0)
+    svc, lifecycle = service(tmp_path, risk_gate=gate, risk_provider=provider)
+    result = svc.submit(req())
+    assert result.status == "FILLED"
+    assert gate.reserve_calls == 1
+    assert gate.release_calls == 1
