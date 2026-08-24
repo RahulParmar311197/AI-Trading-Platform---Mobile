@@ -5,6 +5,7 @@ from app.ensemble import decide
 from app.market_data import market_data
 from app.broker_adapter import BrokerOrderRequest
 from app.decision_execution_guard import execute_decision
+from app.safety_state import SafetyStateStore
 
 router = APIRouter(prefix="/api/decision", tags=["ai-decision"])
 
@@ -16,6 +17,14 @@ class DecisionExecuteRequest(BaseModel):
     quantity: float = Field(gt=0)
     client_order_id: str = Field(min_length=1, max_length=128)
     limit: int = Field(default=200, ge=2, le=5000)
+
+
+def require_trading_ready(request: Request) -> None:
+    resources = getattr(request.app.state, "resources", None)
+    safety_store = resources.safety_store if resources and hasattr(resources, "safety_store") else SafetyStateStore()
+    state = safety_store.load()
+    if state.trading_halted:
+        raise HTTPException(status_code=409, detail={"code": "TRADING_HALTED", "reason": state.halt_reason})
 
 
 @router.get("")
@@ -31,6 +40,7 @@ def decision(symbol: str, timeframe: str = "5m", limit: int = 200):
 @router.post("/execute")
 def execute(request: Request, payload: DecisionExecuteRequest):
     """Run the production ensemble and pass BUY/SELL only through the execution safety layer."""
+    require_trading_ready(request)
     try:
         candles = market_data.candles(payload.symbol, payload.timeframe, payload.limit)
         decision_result = decide(candles)
