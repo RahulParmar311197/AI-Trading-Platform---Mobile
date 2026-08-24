@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.emergency_halt import router as emergency_halt_router
+from app.api.orders import router as orders_router
 from app.app_factory import create_resources
 from app.broker_factory import build_broker_router
 from app.broker_recovery import BrokerStartupRecovery
@@ -54,4 +55,4 @@ async def lifespan(app:FastAPI):
     yield
 
 app=FastAPI(title='AI Trading Platform',version='1.0.0',lifespan=lifespan); app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=True,allow_methods=['*'],allow_headers=['*'])
-for router in [emergency_halt_router,health_router]: app.include_router(router)
+for router in [emergency_halt_router,health_router,orders_router]: app.include_router(router)
