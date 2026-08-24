@@ -49,6 +49,7 @@ class OrderLifecycle:
     def __init__(self):
         self.orders = {}
         self.positions = {}
+        self.realized_pnl_by_symbol = {}
 
     def create(self, order_id, symbol, side, quantity):
         if order_id in self.orders:
@@ -99,6 +100,7 @@ class OrderLifecycle:
         closing_qty = min(existing.quantity, quantity)
         pnl = (price - existing.entry_price) * closing_qty * (1 if existing.side == "BUY" else -1)
         existing.realized_pnl += pnl
+        self.realized_pnl_by_symbol[order.symbol] = self.realized_pnl_by_symbol.get(order.symbol, 0.0) + pnl
         remaining_order_qty = quantity - closing_qty
         existing.quantity -= closing_qty
 
