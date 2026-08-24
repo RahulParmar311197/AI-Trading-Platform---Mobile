@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from threading import Lock
 from typing import Callable
+import inspect
 
 from app.broker_adapter import BrokerOrderRequest
 from app.broker_router import BrokerRouter
@@ -24,7 +25,7 @@ class ExecutionResult:
 class OrderExecutionService:
     _claim_lock = Lock()
 
-    def __init__(self, router: BrokerRouter, lifecycle: OrderLifecycle, store: ExecutionStateStore, idempotency_store: IdempotencyStore | None = None, recovery: StartupRecoveryCoordinator | None = None, risk_gate: PreTradeRiskGate | None = None, risk_snapshot_provider: Callable[[], RiskSnapshot] | None = None):
+    def __init__(self, router: BrokerRouter, lifecycle: OrderLifecycle, store: ExecutionStateStore, idempotency_store: IdempotencyStore | None = None, recovery: StartupRecoveryCoordinator | None = None, risk_gate: PreTradeRiskGate | None = None, risk_snapshot_provider: Callable[..., RiskSnapshot] | None = None):
         self.router = router
         self.lifecycle = lifecycle
         self.store = store
@@ -135,6 +136,22 @@ class OrderExecutionService:
             return OrderStatus.REJECTED
         return OrderStatus.SUBMITTED
 
+    def _risk_snapshot(self, request: BrokerOrderRequest) -> RiskSnapshot:
+        if self.risk_snapshot_provider is None:
+            raise RuntimeError("risk snapshot provider unavailable")
+        provider = self.risk_snapshot_provider
+        try:
+            signature = inspect.signature(provider)
+            try:
+                signature.bind(request)
+            except TypeError:
+                signature.bind()
+                return provider()
+            return provider(request)
+        except (TypeError, ValueError):
+            # Do not reinterpret provider execution failures as an arity mismatch.
+            return provider(request)
+
     def _settle_risk_reservation(self, request: BrokerOrderRequest, status: OrderStatus, filled_quantity: float = 0.0) -> None:
         if self.risk_gate is None:
             return
@@ -142,13 +159,12 @@ class OrderExecutionService:
             self.risk_gate.release(request.client_order_id)
             return
         if status == OrderStatus.PARTIALLY_FILLED:
-            current_position = 0.0
-            if self.risk_snapshot_provider is not None:
-                try:
-                    current_position = float(self.risk_snapshot_provider().position_quantity)
-                except (TypeError, ValueError, AttributeError):
-                    return
-            self.risk_gate.update_after_fill(request, filled_quantity, current_position)
+            try:
+                current_position = float(self._risk_snapshot(request).position_quantity)
+                self.risk_gate.update_after_fill(request, filled_quantity, current_position)
+            except Exception:
+                # Keep the reservation until a fresh reconciliation can resolve it.
+                return
 
     def _save_recovered(self, request: BrokerOrderRequest, recovered: dict, message: str) -> ExecutionResult:
         self._validate_recovered_identity(request, recovered)
@@ -190,7 +206,7 @@ class OrderExecutionService:
         if self.risk_snapshot_provider is None:
             return ExecutionResult(request.client_order_id, OrderStatus.REJECTED.value, message="RISK_SNAPSHOT_UNAVAILABLE")
         try:
-            snapshot = self.risk_snapshot_provider()
+            snapshot = self._risk_snapshot(request)
             decision = self.risk_gate.reserve(request, snapshot)
         except Exception:
             return ExecutionResult(request.client_order_id, OrderStatus.REJECTED.value, message="RISK_GATE_ERROR")
