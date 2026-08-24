@@ -12,6 +12,7 @@ from app.api.broker import router as broker_router
 from app.api.broker_accounts import router as broker_accounts_router
 from app.api.broker_connection import router as broker_connection_router
 from app.api.upstox_oauth import router as upstox_oauth_router
+from app.api.upstox_oauth_complete import router as upstox_oauth_complete_router
 from app.api.candle_builder import router as candle_builder_router
 from app.api.confluence import router as confluence_router
 from app.api.data_provider import router as data_provider_router
@@ -65,10 +66,10 @@ from app.order_lifecycle import OrderLifecycle
 from app.recovery_manager import StartupRecoveryManager
 from app.safety_state import SafetyStateStore
 from app.startup_recovery import RecoveryState, StartupRecoveryCoordinator
-settings = get_settings(); execution_store = ExecutionStateStore(); idempotency_store = IdempotencyStore(); safety_store = SafetyStateStore(); recovery_manager = StartupRecoveryManager(execution_store, safety_store); broker_router = build_broker_router(safety_store); broker_recovery = BrokerStartupRecovery(broker_router, execution_store, safety_store, recovery_manager); startup_recovery = StartupRecoveryCoordinator()
+settings=get_settings(); execution_store=ExecutionStateStore(); idempotency_store=IdempotencyStore(); safety_store=SafetyStateStore(); recovery_manager=StartupRecoveryManager(execution_store,safety_store); broker_router=build_broker_router(safety_store); broker_recovery=BrokerStartupRecovery(broker_router,execution_store,safety_store,recovery_manager); startup_recovery=StartupRecoveryCoordinator()
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    init_db(); lifecycle = OrderLifecycle(); app.state.startup_recovery = startup_recovery; result = broker_recovery.run(lifecycle); startup_recovery.state = RecoveryState.READY if result.ready else RecoveryState.FAILED; app.state.recovery_result = result; app.state.execution_lifecycle = lifecycle; yield
-app = FastAPI(title="AI Trading Platform", version="1.0.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-for router in [ai_router, ai_strategy_router, ai_intelligence_router, analysis_router, auth_router, backtest_router, backtest_engine_router, broker_router, broker_accounts_router, broker_connection_router, upstox_oauth_router, candle_builder_router, confluence_router, data_provider_router, ensemble_router, ensemble_v2_router, execution_lifecycle_router, historical_backfill_router, historical_market_store_router, health_router, ict_smc_router, ict_zones_router, journal_router, market_data_router, market_data_normalizer_router, markets_router, ml_trainer_router, ml_training_router, model_registry_router, mtf_aggregator_router, mtf_analysis_router, mtf_ensemble_router, notifications_router, options_router, orders_router, paper_router, paper_execution_router, portfolio_router, position_manager_router, protection_engine_router, realtime_market_stream_router, reconciliation_router, recovery_router, replay_router, risk_router, risk_engine_router, scanner_router, signals_router, strategy_backtest_router, stream_router, stream_pipeline_router, trade_risk_router, unified_backtest_router, walk_forward_router]: app.include_router(router)
+async def lifespan(app:FastAPI):
+    init_db(); lifecycle=OrderLifecycle(); app.state.startup_recovery=startup_recovery; result=broker_recovery.run(lifecycle); startup_recovery.state=RecoveryState.READY if result.ready else RecoveryState.FAILED; app.state.recovery_result=result; app.state.execution_lifecycle=lifecycle; yield
+app=FastAPI(title="AI Trading Platform",version="1.0.0",lifespan=lifespan)
+app.add_middleware(CORSMiddleware,allow_origins=["*"],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
+for router in [ai_router,ai_strategy_router,ai_intelligence_router,analysis_router,auth_router,backtest_router,backtest_engine_router,broker_router,broker_accounts_router,broker_connection_router,upstox_oauth_router,upstox_oauth_complete_router,candle_builder_router,confluence_router,data_provider_router,ensemble_router,ensemble_v2_router,execution_lifecycle_router,historical_backfill_router,historical_market_store_router,health_router,ict_smc_router,ict_zones_router,journal_router,market_data_router,market_data_normalizer_router,markets_router,ml_trainer_router,ml_training_router,model_registry_router,mtf_aggregator_router,mtf_analysis_router,mtf_ensemble_router,notifications_router,options_router,orders_router,paper_router,paper_execution_router,portfolio_router,position_manager_router,protection_engine_router,realtime_market_stream_router,reconciliation_router,recovery_router,replay_router,risk_router,risk_engine_router,scanner_router,signals_router,strategy_backtest_router,stream_router,stream_pipeline_router,trade_risk_router,unified_backtest_router,walk_forward_router]: app.include_router(router)
