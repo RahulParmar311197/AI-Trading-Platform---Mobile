@@ -2,10 +2,8 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
-
     app_name: str = "AI Trading Platform API"
     app_version: str = "4.7.0"
     environment: str = Field(default="development", validation_alias="ENVIRONMENT")
@@ -14,16 +12,14 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
     jwt_secret: str = Field(default="change-me-in-production", validation_alias="JWT_SECRET")
     live_trading_enabled: bool = Field(default=False, validation_alias="LIVE_TRADING_ENABLED")
-
+    broker_credentials_key: str = Field(default="", validation_alias="BROKER_CREDENTIALS_KEY")
+    upstox_client_id: str = Field(default="", validation_alias="UPSTOX_CLIENT_ID")
+    upstox_client_secret: str = Field(default="", validation_alias="UPSTOX_CLIENT_SECRET")
+    upstox_redirect_uri: str = Field(default="", validation_alias="UPSTOX_REDIRECT_URI")
     @property
-    def cors_origin_list(self) -> list[str]:
-        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
-
+    def cors_origin_list(self) -> list[str]: return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
     @property
-    def is_production(self) -> bool:
-        return self.environment.lower() == "production"
-
+    def is_production(self) -> bool: return self.environment.lower() == "production"
 
 @lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    return Settings()
+def get_settings() -> Settings: return Settings()
