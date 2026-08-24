@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import { SafeAreaView, Text, TouchableOpacity, View, StyleSheet } from 'react-native';
 import AiDashboardScreen from '../screens/AiDashboardScreen';
 import AiPerformanceScreen from '../screens/AiPerformanceScreen';
+import AiTradeExplanationScreen from '../screens/AiTradeExplanationScreen';
 
-const screens = { Dashboard: AiDashboardScreen, Performance: AiPerformanceScreen };
+const screens = { Dashboard: AiDashboardScreen, Performance: AiPerformanceScreen, 'Trade Explain': AiTradeExplanationScreen };
 
 export default function AiNavigator() {
   const [route, setRoute] = useState('Dashboard');
@@ -13,4 +14,4 @@ export default function AiNavigator() {
     <View style={styles.screen}><Screen /></View>
   </SafeAreaView>;
 }
-const styles = StyleSheet.create({root:{flex:1},screen:{flex:1},nav:{flexDirection:'row',borderBottomWidth:1,borderBottomColor:'#ddd'},tab:{flex:1,padding:14,alignItems:'center'},active:{borderBottomWidth:2,borderBottomColor:'#111'},tabText:{fontWeight:'700'}});
+const styles = StyleSheet.create({root:{flex:1},screen:{flex:1},nav:{flexDirection:'row',borderBottomWidth:1,borderBottomColor:'#ddd'},tab:{flex:1,padding:12,alignItems:'center'},active:{borderBottomWidth:2,borderBottomColor:'#111'},tabText:{fontWeight:'700',fontSize:12}});
