@@ -28,6 +28,7 @@ class BrokerOrderRequest:
     product_type: str = "CNC"
     validity: str = "DAY"
     trigger_price: float | None = None
+    owner_user_id: int | None = None
 
 @dataclass(frozen=True)
 class BrokerOrderUpdate:
