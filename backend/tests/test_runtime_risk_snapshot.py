@@ -121,14 +121,42 @@ def test_service_uses_request_scoped_broker_position_for_risk(tmp_path):
     recovery.state = recovery.state.READY
     gate = PreTradeRiskGate(RiskLimits(10, 20, 1000, 200))
     snapshot_provider = RuntimeRiskSnapshotProvider(router, lifecycle)
-    service = OrderExecutionService(
-        router,
-        lifecycle,
-        ExecutionStateStore(str(tmp_path / "state.json")),
-        recovery=recovery,
-        risk_gate=gate,
-        risk_snapshot_provider=snapshot_provider,
-    )
+    service = OrderExecutionService(router, lifecycle, ExecutionStateStore(str(tmp_path / "state.json")), recovery=recovery, risk_gate=gate, risk_snapshot_provider=snapshot_provider)
     result = service.submit(request(quantity=5))
     assert result.status == "REJECTED"
     assert result.message == "RISK_MAX_POSITION_QUANTITY"
+
+
+def test_service_blocks_when_broker_state_changes_after_reservation(tmp_path):
+    class ChangingBroker(Broker):
+        def __init__(self):
+            super().__init__(account={"status": "READY"})
+            self.snapshots = [
+                BrokerSnapshot(orders=[], positions=[{"symbol": "NIFTY", "quantity": 0}]),
+                BrokerSnapshot(orders=[], positions=[{"symbol": "NIFTY", "quantity": 8}]),
+            ]
+            self.submit_calls = 0
+
+        def get_snapshot(self):
+            return self.snapshots.pop(0) if len(self.snapshots) > 1 else self.snapshots[0]
+
+        def submit_order(self, request):
+            self.submit_calls += 1
+            raise AssertionError("submission must be blocked after broker state change")
+
+    safety = SafetyStateStore(str(tmp_path / "safety.json"))
+    safety.clear()
+    broker = ChangingBroker()
+    router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=safety)
+    lifecycle = OrderLifecycle()
+    recovery = StartupRecoveryCoordinator()
+    recovery.begin()
+    recovery.state = recovery.state.READY
+    gate = PreTradeRiskGate(RiskLimits(10, 20, 1000, 200))
+    snapshot_provider = RuntimeRiskSnapshotProvider(router, lifecycle)
+    service = OrderExecutionService(router, lifecycle, ExecutionStateStore(str(tmp_path / "state.json")), recovery=recovery, risk_gate=gate, risk_snapshot_provider=snapshot_provider)
+    result = service.submit(request(quantity=5))
+    assert result.status == "REJECTED"
+    assert result.message == "RISK_BROKER_SNAPSHOT_CHANGED"
+    assert broker.submit_calls == 0
+    assert gate.reservations.get("risk-runtime-1") is None
