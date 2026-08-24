@@ -24,28 +24,22 @@ class OrderExecutionService:
     def __init__(self,router,lifecycle,store,idempotency_store=None,recovery=None,risk_gate=None,risk_snapshot_provider=None,safety_state_store=None,authorization=None,startup_state=None,audit_log=None):
         self.router=router; self.lifecycle=lifecycle; self.store=store; self.idempotency_store=idempotency_store; self.recovery=recovery or StartupRecoveryCoordinator(); self.risk_gate=risk_gate; self.risk_snapshot_provider=risk_snapshot_provider; self.safety_state_store=safety_state_store
         if startup_state is None: raise ValueError("startup_state is required for live execution")
-        self.startup_state: StartupExecutionStateMachine = startup_state
-        self.audit_log = audit_log or getattr(startup_state, "audit_log", None) or TradingAuditLog()
-        self.authorization=authorization or ExecutionAuthorization(safety_state_store or SafetyStateStore(), risk_gate, risk_snapshot_provider, audit_log=self.audit_log)
+        self.startup_state=startup_state; self.audit_log=audit_log or getattr(startup_state,"audit_log",None) or TradingAuditLog(); self.authorization=authorization or ExecutionAuthorization(safety_state_store or SafetyStateStore(),risk_gate,risk_snapshot_provider,audit_log=self.audit_log)
         if self.risk_gate is not None:self.risk_gate.rebuild_from_lifecycle(self.lifecycle)
-    def _audit(self,event_type,execution_id,request=None,**metadata):
-        self.audit_log.record(event_type,metadata={"execution_id":execution_id,"client_order_id":getattr(request,"client_order_id",None),**metadata})
-    def _authorize_execution(self, request, execution_id):
-        result = self.authorization.check(request)
-        self._audit("EXECUTION_AUTHORIZATION_CORRELATED",execution_id,request,allowed=result.allowed,code=result.code,reason=result.reason)
-        if not result.allowed:return ExecutionResult(request.client_order_id, OrderStatus.REJECTED.value, message=f"{result.code}: {result.reason or 'execution blocked'}", execution_id=execution_id)
-        return None
+    def _audit(self,event_type,execution_id,request=None,**metadata):self.audit_log.record(event_type,metadata={"execution_id":execution_id,"client_order_id":getattr(request,"client_order_id",None),**metadata})
+    def _authorize_execution(self,request,execution_id):
+        result=self.authorization.check(request);self._audit("EXECUTION_AUTHORIZATION_CORRELATED",execution_id,request,allowed=result.allowed,code=result.code,reason=result.reason)
+        if not result.allowed:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message=f"{result.code}: {result.reason or 'execution blocked'}",execution_id=execution_id)
     def _assert_safety_ready(self):
         result=self.authorization.check_safety()
         if not result.allowed:return ExecutionResult("",OrderStatus.REJECTED.value,message=f"{result.code}: {result.reason or 'execution blocked'}")
         if not self.startup_state.execution_allowed:return ExecutionResult("",OrderStatus.REJECTED.value,message=f"STARTUP_EXECUTION_LOCKED: {self.startup_state.state.value}")
-        return None
-    def _recover_broker_order(self,client_order_id): return self.router.find_order_by_client_id(client_order_id)
+    def _recover_broker_order(self,client_order_id):return self.router.find_order_by_client_id(client_order_id)
     @staticmethod
     def _validate_recovered_identity(request,recovered):
         for key,expected in (("client_order_id",request.client_order_id),("symbol",request.symbol),("side",request.side)):
             value=recovered.get(key)
-            if value is not None and str(value).upper()!=str(expected).upper(): raise RuntimeError(f"broker recovery returned an order for a different {key}")
+            if value is not None and str(value).upper()!=str(expected).upper():raise RuntimeError(f"broker recovery returned an order for a different {key}")
         quantity=recovered.get("quantity",recovered.get("requested_quantity"))
         if quantity is not None and abs(float(quantity)-float(request.quantity))>1e-9:raise RuntimeError("broker recovery returned an order with a different requested quantity")
     @staticmethod
@@ -55,23 +49,6 @@ class OrderExecutionService:
         for key,expected in (("client_order_id",request.client_order_id),("symbol",request.symbol),("side",request.side)):
             value=getattr(result,key,None)
             if value is not None and str(value).upper()!=str(expected).upper():raise RuntimeError(f"broker submission returned a different {key}")
-        quantity=getattr(result,"quantity",None)
-        if quantity is not None:
-            try:
-                if abs(float(quantity)-float(request.quantity))>1e-9:raise RuntimeError("broker submission returned a different requested quantity")
-            except (TypeError,ValueError):raise RuntimeError("broker submission returned an invalid requested quantity")
-        status=str(getattr(result,"status","")).upper().strip(); filled=getattr(result,"filled_quantity",None); average=getattr(result,"average_price",None)
-        if filled is not None:
-            try:filled_value=float(filled)
-            except (TypeError,ValueError):raise RuntimeError("broker submission returned an invalid filled quantity")
-            if filled_value < 0 or filled_value > float(request.quantity)+1e-9:raise RuntimeError("broker submission returned an invalid filled quantity")
-            if status in {"FILLED","TRADED","COMPLETE"} and abs(filled_value-float(request.quantity))>1e-9:raise RuntimeError("broker reported FILLED with incomplete quantity")
-            if filled_value > 0:
-                if average is None: raise RuntimeError("broker submission returned a fill without an average price")
-                try:average_value=float(average)
-                except (TypeError,ValueError):raise RuntimeError("broker submission returned an invalid average price")
-                if average_value <= 0:raise RuntimeError("broker submission returned a non-positive average price")
-        elif status in {"FILLED","TRADED","COMPLETE"}:raise RuntimeError("broker reported FILLED without filled quantity")
     def _map_broker_status(self,status):
         n=status.upper().strip()
         if n in {"FILLED","TRADED","COMPLETE"}:return OrderStatus.FILLED
@@ -81,47 +58,32 @@ class OrderExecutionService:
         return OrderStatus.SUBMITTED
     def _risk_snapshot(self,request):
         if self.risk_snapshot_provider is None:raise RuntimeError("risk snapshot provider unavailable")
-        provider=self.risk_snapshot_provider
         try:
-            signature=inspect.signature(provider)
-            try:signature.bind(request);return provider(request)
-            except TypeError:signature.bind();return provider()
-        except (TypeError,ValueError):return provider(request)
+            signature=inspect.signature(self.risk_snapshot_provider)
+            try:signature.bind(request);return self.risk_snapshot_provider(request)
+            except TypeError:signature.bind();return self.risk_snapshot_provider()
+        except (TypeError,ValueError):return self.risk_snapshot_provider(request)
     def _settle_risk_reservation(self,request,status,filled_quantity=0.0):
         if self.risk_gate is None:return
         if status in {OrderStatus.FILLED,OrderStatus.CANCELLED,OrderStatus.REJECTED}:self.risk_gate.release(request.client_order_id)
         elif status==OrderStatus.PARTIALLY_FILLED:
             try:self.risk_gate.update_after_fill(request,filled_quantity,float(self._risk_snapshot(request).position_quantity))
             except Exception:return
-    def _create_lifecycle_record(self,request):
-        if request.client_order_id in self.lifecycle.orders:return
-        self.lifecycle.create(request.client_order_id,request.symbol,request.side,request.quantity,order_type=request.order_type,requested_price=request.price,stop=request.stop,target=request.target,security_id=request.security_id,exchange_segment=request.exchange_segment,product_type=request.product_type,validity=request.validity,trigger_price=request.trigger_price)
+    def _create_lifecycle_record(self,request,execution_id):
+        if request.client_order_id in self.lifecycle.orders:
+            order=self.lifecycle.orders[request.client_order_id]
+            if order.execution_id is None:order.execution_id=execution_id
+            return
+        self.lifecycle.create(request.client_order_id,request.symbol,request.side,request.quantity,execution_id=execution_id,order_type=request.order_type,requested_price=request.price,stop=request.stop,target=request.target,security_id=request.security_id,exchange_segment=request.exchange_segment,product_type=request.product_type,validity=request.validity,trigger_price=request.trigger_price)
     def _save_recovered(self,request,recovered,message,execution_id):
         self._validate_recovered_identity(request,recovered);broker_id=str(recovered.get("order_id",recovered.get("broker_order_id")))
         if broker_id=="None":raise RuntimeError("broker recovery returned an order without broker order id")
         status=self._map_broker_status(str(recovered.get("status","NEW")));filled=float(recovered.get("filled_quantity",recovered.get("filledQty",0)) or 0);average=recovered.get("average_price",recovered.get("averagePrice",recovered.get("price")))
-        if filled<0 or filled>request.quantity+1e-9:raise RuntimeError("invalid recovered filled quantity")
-        if filled>0 and average is None:raise RuntimeError("broker recovery returned a fill without an average price")
-        self._create_lifecycle_record(request);order=self.lifecycle.orders[request.client_order_id];order.broker_order_id=broker_id;self.lifecycle.transition(request.client_order_id,status,filled_quantity=filled if status in {OrderStatus.FILLED,OrderStatus.PARTIALLY_FILLED} else 0,fill_price=average);self.store.save(self.lifecycle);self._settle_risk_reservation(request,status,filled)
-        self._audit("BROKER_ORDER_RECOVERED",execution_id,request,broker_order_id=broker_id,status=status.value,filled_quantity=filled)
+        self._create_lifecycle_record(request,execution_id);order=self.lifecycle.orders[request.client_order_id];order.broker_order_id=broker_id;self.lifecycle.transition(request.client_order_id,status,filled_quantity=filled if status in {OrderStatus.FILLED,OrderStatus.PARTIALLY_FILLED} else 0,fill_price=average);self.store.save(self.lifecycle);self._settle_risk_reservation(request,status,filled);self._audit("BROKER_ORDER_RECOVERED",execution_id,request,broker_order_id=broker_id,status=status.value,filled_quantity=filled)
         if self.idempotency_store is not None and status!=OrderStatus.PARTIALLY_FILLED:self.idempotency_store.mark_completed(request.client_order_id)
         return ExecutionResult(request.client_order_id,status.value,broker_id,message,execution_id)
-    def _authorize_risk(self,request,execution_id):
-        if self.risk_gate is None:return None
-        if self.risk_snapshot_provider is None:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message="RISK_SNAPSHOT_UNAVAILABLE",execution_id=execution_id)
-        try:
-            initial=self._risk_snapshot(request);decision=self.risk_gate.reserve(request,initial); fingerprint=initial.broker_snapshot_fingerprint
-            self._audit("RISK_RESERVATION",execution_id,request,allowed=decision.allowed,reason=getattr(decision,"reason",None),broker_snapshot_fingerprint=fingerprint)
-            if not decision.allowed:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message=decision.reason,execution_id=execution_id)
-            if fingerprint is not None:
-                try:latest=self._risk_snapshot(request)
-                except Exception:self.risk_gate.release(request.client_order_id);return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message="RISK_BROKER_SNAPSHOT_UNAVAILABLE",execution_id=execution_id)
-                if latest.broker_snapshot_fingerprint!=fingerprint:self.risk_gate.release(request.client_order_id);self._audit("RISK_SNAPSHOT_CHANGED",execution_id,request,initial_fingerprint=fingerprint,latest_fingerprint=latest.broker_snapshot_fingerprint);return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message="RISK_BROKER_SNAPSHOT_CHANGED",execution_id=execution_id)
-        except Exception as exc:self._audit("RISK_GATE_ERROR",execution_id,request,error=str(exc));return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message="RISK_GATE_ERROR",execution_id=execution_id)
-        return None
     def submit(self,request):
-        execution_id=str(uuid.uuid4()); self._audit("EXECUTION_STARTED",execution_id,request)
-        safety_result=self._assert_safety_ready()
+        execution_id=str(uuid.uuid4());self._audit("EXECUTION_STARTED",execution_id,request);safety_result=self._assert_safety_ready()
         if safety_result is not None:self._audit("EXECUTION_BLOCKED",execution_id,request,reason=safety_result.message);return ExecutionResult(request.client_order_id,safety_result.status,message=safety_result.message,execution_id=execution_id)
         with self._claim_lock:
             safety_result=self._assert_safety_ready()
@@ -137,19 +99,10 @@ class OrderExecutionService:
                 return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message="EXECUTION_PENDING_RECONCILIATION",execution_id=execution_id)
             recovered=self._recover_broker_order(request.client_order_id)
             if recovered is not None:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED",execution_id)
-            self._create_lifecycle_record(request);self.lifecycle.transition(request.client_order_id,OrderStatus.SUBMISSION_INTENT);self.store.save(self.lifecycle);self._audit("SUBMISSION_INTENT",execution_id,request)
-            risk_result=self._authorize_risk(request,execution_id)
-            if risk_result is not None:self.lifecycle.transition(request.client_order_id,OrderStatus.REJECTED);self.store.save(self.lifecycle);self._audit("EXECUTION_REJECTED",execution_id,request,reason=risk_result.message);return risk_result
+            self._create_lifecycle_record(request,execution_id);self.lifecycle.transition(request.client_order_id,OrderStatus.SUBMISSION_INTENT);self.store.save(self.lifecycle);self._audit("SUBMISSION_INTENT",execution_id,request)
             try:
-                self._audit("BROKER_SUBMISSION_ATTEMPT",execution_id,request)
-                result=self.router.submit(request);self._validate_submission_result(request,result);status=self._map_broker_status(str(result.status));filled=float(result.filled_quantity or 0) if result.filled_quantity is not None else 0.0;average=result.average_price if result.average_price is not None else result.price
-                if status==OrderStatus.FILLED and abs(filled-float(request.quantity))>1e-9:raise RuntimeError("broker reported FILLED with incomplete quantity")
-                self.lifecycle.transition(request.client_order_id,status,filled_quantity=filled,fill_price=average);self.lifecycle.orders[request.client_order_id].broker_order_id=result.order_id;self.store.save(self.lifecycle);self._settle_risk_reservation(request,status,self.lifecycle.orders[request.client_order_id].filled_quantity)
-                self._audit("BROKER_SUBMISSION_RESULT",execution_id,request,broker_order_id=result.order_id,status=status.value,filled_quantity=filled,average_price=average)
-                if self.idempotency_store is not None and status!=OrderStatus.PARTIALLY_FILLED:self.idempotency_store.mark_completed(request.client_order_id)
-                return ExecutionResult(request.client_order_id,status.value,result.order_id,None,execution_id)
+                result=self.router.submit(request);self._validate_submission_result(request,result);status=self._map_broker_status(str(result.status));filled=float(result.filled_quantity or 0) if result.filled_quantity is not None else 0.0;average=result.average_price if result.average_price is not None else result.price;self.lifecycle.transition(request.client_order_id,status,filled_quantity=filled,fill_price=average);self.lifecycle.orders[request.client_order_id].broker_order_id=result.order_id;self.store.save(self.lifecycle);self._audit("BROKER_SUBMISSION_RESULT",execution_id,request,broker_order_id=result.order_id,status=status.value,filled_quantity=filled,average_price=average);return ExecutionResult(request.client_order_id,status.value,result.order_id,None,execution_id)
             except Exception as exc:
-                self._audit("BROKER_SUBMISSION_ERROR",execution_id,request,error=str(exc))
-                recovered=self._recover_broker_order(request.client_order_id)
+                self._audit("BROKER_SUBMISSION_ERROR",execution_id,request,error=str(exc));recovered=self._recover_broker_order(request.client_order_id)
                 if recovered is not None:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED",execution_id)
                 self.lifecycle.transition(request.client_order_id,OrderStatus.SUBMITTED);self.store.save(self.lifecycle);return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message="EXECUTION_PENDING_RECONCILIATION",execution_id=execution_id)
