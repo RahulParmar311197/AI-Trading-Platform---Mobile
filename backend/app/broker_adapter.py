@@ -38,6 +38,7 @@ class BrokerOrderUpdate:
     quantity: float | None = None
     filled_quantity: float | None = None
     price: float | None = None
+    average_price: float | None = None
     message: str | None = None
     def __getitem__(self, key: str): return getattr(self, key)
     def get(self, key: str, default: Any = None): return getattr(self, key, default)
@@ -67,7 +68,9 @@ class BrokerAdapter(ABC):
     def find_order_by_client_id(self, client_order_id: str):
         get_orders = getattr(self, "get_orders", None)
         if get_orders is None: raise NotImplementedError("broker does not support client-order reconciliation")
-        return next((dict(o) for o in get_orders() if str(o.get("client_order_id", "")) == client_order_id), None)
+        matches = [dict(o) for o in get_orders() if str(o.get("client_order_id", "")) == client_order_id]
+        if len(matches) > 1: raise RuntimeError(f"ambiguous broker order identity for client_order_id: {client_order_id}")
+        return matches[0] if matches else None
 
 class PaperBrokerAdapter(BrokerAdapter):
     """Deterministic stateful paper broker: NEW -> PARTIALLY_FILLED -> FILLED/CANCELLED/REJECTED."""
@@ -79,14 +82,19 @@ class PaperBrokerAdapter(BrokerAdapter):
         existing = self.find_order_by_client_id(cid)
         if existing: return BrokerOrderUpdate(**existing)
         oid = f"PAPER-{self.next_id}"; self.next_id += 1
-        record = {"order_id": oid, "status": "NEW", "client_order_id": cid, "symbol": order.symbol.upper(), "side": order.side.upper(), "quantity": order.quantity, "filled_quantity": 0, "price": order.price}
+        record = {"order_id": oid, "status": "NEW", "client_order_id": cid, "symbol": order.symbol.upper(), "side": order.side.upper(), "quantity": order.quantity, "filled_quantity": 0, "price": order.price, "average_price": order.price}
         self.orders[oid] = record
         return BrokerOrderUpdate(**record)
     def fill_order(self, broker_order_id, filled_quantity, price=None):
         record = self._open(broker_order_id)
         remaining = record["quantity"] - record["filled_quantity"]
         if filled_quantity <= 0 or filled_quantity > remaining: raise ValueError("invalid fill quantity")
-        record["filled_quantity"] += filled_quantity; record["price"] = price if price is not None else record["price"]
+        old_qty = record["filled_quantity"]
+        old_avg = record.get("average_price") or 0
+        new_price = price if price is not None else record.get("price")
+        record["filled_quantity"] += filled_quantity
+        record["price"] = new_price
+        record["average_price"] = ((old_qty * old_avg) + (filled_quantity * new_price)) / record["filled_quantity"] if record["filled_quantity"] > 0 and new_price is not None else old_avg
         record["status"] = "FILLED" if record["filled_quantity"] == record["quantity"] else "PARTIALLY_FILLED"
         pos = self.positions.setdefault(record["symbol"], {"symbol": record["symbol"], "quantity": 0})
         pos["quantity"] += filled_quantity if record["side"] == "BUY" else -filled_quantity
