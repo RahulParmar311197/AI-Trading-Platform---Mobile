@@ -21,13 +21,22 @@ class RiskLimits:
 
 
 def evaluate(*, equity: float, daily_pnl: float, proposed_risk: float, proposed_exposure: float,
-             open_positions: int, recent_losses: int = 0, limits: RiskLimits | None = None) -> RiskDecision:
+             open_positions: int, recent_losses: int = 0, limits: RiskLimits | None = None,
+             current_exposure: float = 0.0, unrealized_pnl: float = 0.0) -> RiskDecision:
+    """Evaluate pre-trade risk using authoritative equity and portfolio metrics.
+
+    ``proposed_exposure`` is the post-trade exposure. ``current_exposure`` and
+    ``unrealized_pnl`` are accepted as observability inputs so callers can keep
+    risk decisions tied to the current portfolio state. Daily P&L remains the
+    authoritative loss-limit input; callers should aggregate realized and
+    unrealized P&L according to their broker/account semantics before calling.
+    """
     limits = limits or RiskLimits()
     reasons: list[str] = []
     if equity <= 0:
         return RiskDecision(False, ["invalid equity"], 0, 0)
     risk_pct = proposed_risk / equity * 100
-    exposure_pct = proposed_exposure / equity * 100
+    exposure_pct = abs(proposed_exposure) / equity * 100
     daily_loss_pct = max(0, -daily_pnl / equity * 100)
     if risk_pct > limits.max_risk_percent:
         reasons.append("trade risk exceeds limit")
