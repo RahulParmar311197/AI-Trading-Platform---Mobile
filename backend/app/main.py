@@ -1,8 +1,6 @@
 from contextlib import asynccontextmanager
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
 from app.ai_intelligence_api import router as ai_intelligence_router
 from app.api.ai import router as ai_router
 from app.api.ai_strategy import router as ai_strategy_router
@@ -12,6 +10,7 @@ from app.api.backtest import router as backtest_router
 from app.api.backtest_engine import router as backtest_engine_router
 from app.api.broker import router as broker_router
 from app.api.broker_accounts import router as broker_accounts_router
+from app.api.broker_connection import router as broker_connection_router
 from app.api.candle_builder import router as candle_builder_router
 from app.api.confluence import router as confluence_router
 from app.api.data_provider import router as data_provider_router
@@ -89,16 +88,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AI Trading Platform", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-for router in [
-    ai_router, ai_strategy_router, ai_intelligence_router, analysis_router, auth_router, backtest_router, backtest_engine_router,
-    broker_router, broker_accounts_router, candle_builder_router, confluence_router, data_provider_router, ensemble_router,
-    ensemble_v2_router, execution_lifecycle_router, historical_backfill_router, historical_market_store_router,
-    health_router, ict_smc_router, ict_zones_router, journal_router, market_data_router,
-    market_data_normalizer_router, markets_router, ml_trainer_router, ml_training_router, model_registry_router,
-    mtf_aggregator_router, mtf_analysis_router, mtf_ensemble_router, notifications_router, options_router,
-    orders_router, paper_router, paper_execution_router, portfolio_router, position_manager_router,
-    protection_engine_router, realtime_market_stream_router, reconciliation_router, recovery_router,
-    replay_router, risk_router, risk_engine_router, scanner_router, signals_router, strategy_backtest_router,
-    stream_router, stream_pipeline_router, trade_risk_router, unified_backtest_router, walk_forward_router,
-]:
+for router in [ai_router, ai_strategy_router, ai_intelligence_router, analysis_router, auth_router, backtest_router, backtest_engine_router,
+    broker_router, broker_accounts_router, broker_connection_router, candle_builder_router, confluence_router, data_provider_router, ensemble_router,
+    ensemble_v2_router, execution_lifecycle_router, historical_backfill_router, historical_market_store_router, health_router, ict_smc_router,
+    ict_zones_router, journal_router, market_data_router, market_data_normalizer_router, markets_router, ml_trainer_router, ml_training_router,
+    model_registry_router, mtf_aggregator_router, mtf_analysis_router, mtf_ensemble_router, notifications_router, options_router, orders_router,
+    paper_router, paper_execution_router, portfolio_router, position_manager_router, protection_engine_router, realtime_market_stream_router,
+    reconciliation_router, recovery_router, replay_router, risk_router, risk_engine_router, scanner_router, signals_router, strategy_backtest_router,
+    stream_router, stream_pipeline_router, trade_risk_router, unified_backtest_router, walk_forward_router]:
     app.include_router(router)
