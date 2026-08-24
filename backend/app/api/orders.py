@@ -38,7 +38,7 @@ def _execution_service(broker_router,execution_store,idempotency_store,recovery,
     gate=PreTradeRiskGate(RiskLimits(settings.risk_max_order_quantity,settings.risk_max_position_quantity,settings.risk_max_daily_loss,settings.risk_max_trade_loss)); provider=RuntimeRiskSnapshotProvider(broker_router,lifecycle,settings.risk_trading_day_timezone,settings.risk_max_snapshot_age_seconds)
     authorization=ExecutionAuthorization(resources.safety_store,gate,provider)
     startup_state=getattr(resources,"startup_execution_state",None)
-    return OrderExecutionService(broker_router,lifecycle,execution_store,idempotency_store,recovery=recovery,risk_gate=gate,risk_snapshot_provider=provider,safety_state_store=resources.safety_store,authorization=authorization,startup_execution_state=startup_state)
+    return OrderExecutionService(broker_router,lifecycle,execution_store,idempotency_store,recovery=recovery,risk_gate=gate,risk_snapshot_provider=provider,safety_state_store=resources.safety_store,authorization=authorization,startup_state=startup_state)
 def _broker_request(client_order_id,symbol,side,quantity,order_type="MARKET",price=None,stop=None,security_id=""):return BrokerOrderRequest(client_order_id=client_order_id,symbol=symbol,side=side,quantity=quantity,order_type=order_type,price=price,stop=stop,security_id=security_id)
 @router.post("")
 def create_order(payload:OrderRequest,request:Request,response:Response,db:Session=Depends(get_order_db),_:None=Depends(require_trading_ready),idempotency_key:str|None=Header(default=None,alias="Idempotency-Key")):
