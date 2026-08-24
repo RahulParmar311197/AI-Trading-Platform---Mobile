@@ -1,6 +1,3 @@
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
-
 from app.execution_orchestrator import ExecutionOrchestrator
 from app.order_intent import OrderIntent
 from app.order_lifecycle import OrderLifecycle
@@ -39,32 +36,31 @@ def test_risk_rejection_stops_execution():
     assert len(book.orders) == 0
 
 
-def test_live_and_kill_switch_are_required():
+def test_legacy_live_execution_is_disabled_even_when_enabled_and_armed():
     broker = FakeBroker()
-    orchestrator = ExecutionOrchestrator(broker=broker, live_enabled=False)
-    result = orchestrator.submit(make_plan(), kill_switch_armed=True)
+    result = ExecutionOrchestrator(broker=broker, live_enabled=True).submit(make_plan(), kill_switch_armed=True)
+    assert not result.accepted
+    assert result.reason == "LEGACY_DIRECT_BROKER_EXECUTION_DISABLED"
+    assert broker.calls == 0
+
+
+def test_live_execution_requires_feature_flag_and_kill_switch():
+    broker = FakeBroker()
+    result = ExecutionOrchestrator(broker=broker, live_enabled=False).submit(make_plan(), kill_switch_armed=True)
     assert not result.accepted
     assert result.reason == "LIVE_EXECUTION_DISABLED"
     assert broker.calls == 0
-    orchestrator = ExecutionOrchestrator(broker=broker, live_enabled=True)
-    result = orchestrator.submit(make_plan(), kill_switch_armed=False)
+    result = ExecutionOrchestrator(broker=broker, live_enabled=True).submit(make_plan(), kill_switch_armed=False)
     assert not result.accepted
     assert result.reason == "KILL_SWITCH_BLOCKED"
     assert broker.calls == 0
 
 
-def test_valid_plan_reaches_broker():
+def test_expired_plan_is_blocked_before_legacy_submission():
     broker = FakeBroker()
-    result = ExecutionOrchestrator(broker=broker, live_enabled=True).submit(make_plan(), kill_switch_armed=True)
-    assert result.accepted
-    assert result.order_id == "TEST-ORDER-1"
-    assert broker.calls == 1
-
-
-def test_expired_plan_is_blocked():
-    broker = FakeBroker()
-    valid = make_plan(1)
-    expired = replace(valid, expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    from dataclasses import replace
+    from datetime import datetime, timedelta, timezone
+    expired = replace(make_plan(1), expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
     result = ExecutionOrchestrator(broker=broker, live_enabled=True).submit(expired, kill_switch_armed=True)
     assert not result.accepted
     assert result.reason == "TRADE_PLAN_EXPIRED"
