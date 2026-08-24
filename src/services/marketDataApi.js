@@ -11,5 +11,6 @@ export const marketDataApi = {
   markets: (baseUrl) => getJson('/markets', baseUrl),
   candles: (symbol = 'NIFTY', limit = 200, baseUrl) => getJson(`/candles?symbol=${encodeURIComponent(symbol)}&limit=${limit}`, baseUrl),
   normalizedCandles: (symbol = 'NIFTY', timeframe = '5m', limit = 200, baseUrl) => getJson(`/api/market-data/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`, baseUrl),
+  evidence: (symbol = 'NIFTY', timeframe = '5m', limit = 200, baseUrl) => getJson(`/api/market-data/evidence?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`, baseUrl),
   marketAnalysis: (symbol = 'NIFTY', limit = 200, baseUrl) => getJson(`/analysis?symbol=${encodeURIComponent(symbol)}&limit=${limit}`, baseUrl),
 };
