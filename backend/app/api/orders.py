@@ -14,6 +14,7 @@ from app.safety_state import SafetyStateStore
 from app.execution_authorization import ExecutionAuthorization
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
+
 class OrderRequest(BaseModel):
     user_id:int|None=Field(default=None,gt=0)
     symbol:str=Field(min_length=1,max_length=64)
@@ -23,6 +24,7 @@ class OrderRequest(BaseModel):
     price:float|None=Field(default=None,gt=0)
     stop:float|None=Field(default=None,gt=0)
     security_id:str=Field(default="",max_length=128)
+
 def require_trading_ready(request:Request)->None:
     resources=getattr(request.app.state,"resources",None); safety_store=resources.safety_store if resources else SafetyStateStore(); state=safety_store.load()
     if state.trading_halted: raise HTTPException(status_code=409,detail={"code":"TRADING_HALTED","reason":state.halt_reason})
@@ -30,6 +32,7 @@ def require_trading_ready(request:Request)->None:
     if startup_state is None and resources is not None: startup_state=resources.startup_execution_state
     if startup_state is not None and not startup_state.execution_allowed:
         raise HTTPException(status_code=409,detail={"code":"STARTUP_EXECUTION_LOCKED","reason":startup_state.status.reason or startup_state.state.value})
+
 def get_order_db(request:Request,db:Session=Depends(get_db)):
     resources=getattr(request.app.state,"resources",None)
     if resources and resources.session_local is not None:
@@ -37,8 +40,10 @@ def get_order_db(request:Request,db:Session=Depends(get_db)):
         try: yield session
         finally: session.close()
     else: yield db
+
 def _order_response(order:Order,message:str|None=None,execution_id:str|None=None)->dict:return {"id":order.id,"client_order_id":order.client_order_id,"broker_order_id":order.broker_order_id,"status":order.status,"message":message,"execution_id":execution_id}
 def _set_execution_response_status(response:Response,status:str)->None:response.status_code=202 if status=="EXECUTION_PENDING_RECONCILIATION" else 201
+
 def _commit_execution_intent(db:Session,order:Order)->None:
     """Durably commit the API order before any broker submission can occur."""
     try:
@@ -47,6 +52,7 @@ def _commit_execution_intent(db:Session,order:Order)->None:
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=503,detail={"code":"ORDER_INTENT_PERSISTENCE_FAILED","reason":type(exc).__name__}) from exc
+
 def _execution_service(broker_router,execution_store,idempotency_store,recovery,resources):
     from app.order_execution_service import OrderExecutionService
     from app.order_lifecycle import OrderLifecycle
@@ -56,7 +62,10 @@ def _execution_service(broker_router,execution_store,idempotency_store,recovery,
     if authorization is None: authorization=ExecutionAuthorization(resources.safety_store,gate,provider,audit_log=resources.audit_log)
     startup_state=resources.startup_execution_state
     return OrderExecutionService(broker_router,lifecycle,execution_store,idempotency_store,recovery=recovery,risk_gate=gate,risk_snapshot_provider=provider,safety_state_store=resources.safety_store,authorization=authorization,startup_state=startup_state,audit_log=resources.audit_log)
-def _broker_request(client_order_id,symbol,side,quantity,order_type="MARKET",price=None,stop=None,security_id="",owner_user_id=None):return BrokerOrderRequest(client_order_id=client_order_id,symbol=symbol,side=side,quantity=quantity,order_type=order_type,price=price,stop=stop,security_id=security_id,owner_user_id=owner_user_id)
+
+def _broker_request(client_order_id,symbol,side,quantity,order_type="MARKET",price=None,stop=None,security_id="",owner_user_id=None):
+    return BrokerOrderRequest(client_order_id=client_order_id,symbol=symbol,side=side,quantity=quantity,order_type=order_type,price=price,stop=stop,security_id=security_id,owner_user_id=owner_user_id)
+
 @router.post("")
 def create_order(payload:OrderRequest,request:Request,response:Response,db:Session=Depends(get_order_db),_:None=Depends(require_trading_ready),current_user:User=Depends(get_current_user),idempotency_key:str|None=Header(default=None,alias="Idempotency-Key")):
     from app.startup_recovery import StartupRecoveryCoordinator
@@ -73,9 +82,11 @@ def create_order(payload:OrderRequest,request:Request,response:Response,db:Sessi
     existing=db.query(Order).filter(Order.client_order_id==client_order_id,Order.user_id==user_id).first()
     if existing is not None:
         if existing.status in {"PENDING","SUBMISSION_INTENT","SUBMITTED","PARTIALLY_FILLED"} or existing.note=="EXECUTION_PENDING_RECONCILIATION":
-            service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources); result=service.submit(_broker_request(client_order_id,existing.symbol,existing.side,existing.quantity,existing.order_type,owner_user_id=existing.user_id)); existing.status=result.status; existing.broker_order_id=result.broker_order_id; existing.note=result.message; db.commit(); db.refresh(existing); _set_execution_response_status(response,result.status); return _order_response(existing,result.message,result.execution_id)
+            service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources)
+            result=service.submit(_broker_request(client_order_id,existing.symbol,existing.side,existing.quantity,existing.order_type,existing.price,existing.stop,existing.security_id,existing.user_id))
+            existing.status=result.status; existing.broker_order_id=result.broker_order_id; existing.note=result.message; db.commit(); db.refresh(existing); _set_execution_response_status(response,result.status); return _order_response(existing,result.message,result.execution_id)
         return _order_response(existing,"IDEMPOTENT_REPLAY")
-    symbol=payload.symbol.upper(); order=Order(user_id=user_id,client_order_id=client_order_id,symbol=symbol,side=payload.side,quantity=payload.quantity,order_type=payload.order_type,status="PENDING"); db.add(order)
+    symbol=payload.symbol.upper(); order=Order(user_id=user_id,client_order_id=client_order_id,symbol=symbol,side=payload.side,quantity=payload.quantity,order_type=payload.order_type,price=payload.price,stop=payload.stop,security_id=payload.security_id,status="PENDING"); db.add(order)
     try:db.flush()
     except IntegrityError:
         db.rollback(); existing=db.query(Order).filter(Order.client_order_id==client_order_id,Order.user_id==user_id).first()
