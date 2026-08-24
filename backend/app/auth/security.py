@@ -9,7 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.config import get_settings
 from app.db import get_db
 from app.models.user import User
 
@@ -26,8 +26,6 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, password_hash: str) -> bool:
     if not password or not password_hash:
         return False
-    # Existing installations used unsalted SHA-256. Accept it once and let login
-    # callers upgrade the stored hash to bcrypt.
     if len(password_hash) == 64 and all(c in "0123456789abcdef" for c in password_hash.lower()):
         return hmac.compare_digest(sha256(password.encode()).hexdigest(), password_hash.lower())
     try:
@@ -41,7 +39,8 @@ def needs_password_upgrade(password_hash: str) -> bool:
 
 
 def create_access_token(subject: str, expires_minutes: int | None = None) -> str:
-    if settings.environment.lower() == "production" and settings.jwt_secret in {"change-me", "change-me-in-production", ""}:
+    settings = get_settings()
+    if settings.is_production and settings.jwt_secret in {"change-me", "change-me-in-production", ""}:
         raise RuntimeError("JWT_SECRET must be configured in production")
     exp = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes or settings.jwt_exp_minutes)
     payload = {"sub": str(subject), "exp": int(exp.timestamp())}
@@ -51,6 +50,7 @@ def create_access_token(subject: str, expires_minutes: int | None = None) -> str
 
 
 def decode_access_token(token: str) -> dict:
+    settings = get_settings()
     try:
         raw, signature = token.split(".", 1)
         expected = hmac.new(settings.jwt_secret.encode(), raw.encode(), sha256).hexdigest()
