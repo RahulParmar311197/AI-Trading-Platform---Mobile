@@ -61,7 +61,7 @@ def create_order(payload:OrderRequest,request:Request,response:Response,db:Sessi
     if not client_order_id or len(client_order_id)>128:raise HTTPException(status_code=422,detail="Idempotency-Key must be at most 128 characters")
     existing=db.query(Order).filter(Order.client_order_id==client_order_id).first()
     if existing is not None:
-        if existing.note=="EXECUTION_PENDING_RECONCILIATION":
+        if existing.status in {"PENDING","SUBMISSION_INTENT","SUBMITTED","PARTIALLY_FILLED"} or existing.note=="EXECUTION_PENDING_RECONCILIATION":
             service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources); result=service.submit(_broker_request(client_order_id,existing.symbol,existing.side,existing.quantity,existing.order_type)); existing.status=result.status; existing.broker_order_id=result.broker_order_id; existing.note=result.message; db.commit(); db.refresh(existing); _set_execution_response_status(response,result.status); return _order_response(existing,result.message,result.execution_id)
         return _order_response(existing,"IDEMPOTENT_REPLAY")
     symbol=payload.symbol.upper(); order=Order(user_id=payload.user_id,client_order_id=client_order_id,symbol=symbol,side=payload.side,quantity=payload.quantity,order_type=payload.order_type,status="PENDING"); db.add(order)
