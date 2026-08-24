@@ -50,6 +50,7 @@ class OrderLifecycle:
         self.orders = {}
         self.positions = {}
         self.realized_pnl_by_symbol = {}
+        self.realized_pnl_by_day = {}
 
     def create(self, order_id, symbol, side, quantity):
         if order_id in self.orders:
@@ -86,6 +87,12 @@ class OrderLifecycle:
             order.applied_fill_value = cumulative_value
         return order
 
+    def _record_realized_pnl(self, symbol: str, pnl: float, when: datetime | None = None) -> None:
+        self.realized_pnl_by_symbol[symbol] = self.realized_pnl_by_symbol.get(symbol, 0.0) + pnl
+        event_time = when or datetime.now(timezone.utc)
+        day = event_time.astimezone(timezone.utc).date().isoformat()
+        self.realized_pnl_by_day[day] = self.realized_pnl_by_day.get(day, 0.0) + pnl
+
     def _apply_position_delta(self, order, quantity, price):
         existing = self.positions.get(order.symbol)
         if existing is None:
@@ -100,7 +107,7 @@ class OrderLifecycle:
         closing_qty = min(existing.quantity, quantity)
         pnl = (price - existing.entry_price) * closing_qty * (1 if existing.side == "BUY" else -1)
         existing.realized_pnl += pnl
-        self.realized_pnl_by_symbol[order.symbol] = self.realized_pnl_by_symbol.get(order.symbol, 0.0) + pnl
+        self._record_realized_pnl(order.symbol, pnl)
         remaining_order_qty = quantity - closing_qty
         existing.quantity -= closing_qty
 
