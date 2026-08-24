@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.ai_intelligence_api import router as ai_intelligence_router
 from app.api.ai import router as ai_router
 from app.api.ai_strategy import router as ai_strategy_router
 from app.api.analysis import router as analysis_router
@@ -90,7 +91,7 @@ app = FastAPI(title="AI Trading Platform", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 for router in [
-    ai_router, ai_strategy_router, analysis_router, auth_router, backtest_router, backtest_engine_router,
+    ai_router, ai_strategy_router, ai_intelligence_router, analysis_router, auth_router, backtest_router, backtest_engine_router,
     broker_router, candle_builder_router, confluence_router, data_provider_router, ensemble_router,
     ensemble_v2_router, execution_lifecycle_router, historical_backfill_router, historical_market_store_router,
     health_router, ict_smc_router, ict_zones_router, journal_router, market_data_router,
