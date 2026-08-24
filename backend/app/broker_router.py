@@ -29,12 +29,18 @@ class BrokerRouter:
             raise ValueError("broker route unavailable")
         return route
 
-    def submit(self, request: BrokerOrderRequest, route: str | None = None) -> BrokerOrderUpdate:
+    def _require_execution_ready(self) -> None:
         halted = self.safety_store.load().trading_halted if self.safety_store else True
         self.trading_gate.require_ready(halted)
+
+    def submit(self, request: BrokerOrderRequest, route: str | None = None) -> BrokerOrderUpdate:
+        self._require_execution_ready()
         return self.get(route).adapter.submit_order(request)
 
     def cancel(self, order_id: str, route: str | None = None) -> BrokerOrderUpdate:
+        self._require_execution_ready()
+        if not str(order_id).strip():
+            raise ValueError("order_id is required")
         return self.get(route).adapter.cancel_order(order_id)
 
     def get_order(self, order_id: str, route: str | None = None) -> dict:
@@ -48,19 +54,11 @@ class BrokerRouter:
         return get_orders()
 
     def find_order_by_client_id(self, client_order_id: str, route: str | None = None) -> dict | None:
-        """Resolve a client id only when it maps to exactly one broker order.
-
-        Ambiguous identity is a hard reconciliation failure; returning the first
-        match could attach the wrong broker order and create a duplicate trade.
-        """
+        """Resolve a client id only when it maps to exactly one broker order."""
         adapter = self.get(route)
         get_orders = getattr(adapter, "get_orders", None)
         if get_orders is not None:
-            matches = [
-                dict(order)
-                for order in get_orders()
-                if str(order.get("client_order_id", "")) == str(client_order_id)
-            ]
+            matches = [dict(order) for order in get_orders() if str(order.get("client_order_id", "")) == str(client_order_id)]
             if len(matches) > 1:
                 raise RuntimeError(f"ambiguous broker order identity for client_order_id: {client_order_id}")
             return matches[0] if matches else None
@@ -77,7 +75,4 @@ class BrokerRouter:
         get_snapshot = getattr(adapter, "get_snapshot", None)
         if get_snapshot is not None:
             return get_snapshot()
-        return BrokerSnapshot(
-            orders=self.get_orders(route),
-            positions=self.get_positions(route),
-        )
+        return BrokerSnapshot(orders=self.get_orders(route), positions=self.get_positions(route))
