@@ -47,6 +47,22 @@ class OrderExecutionService:
             try:
                 if abs(float(quantity)-float(request.quantity))>1e-9:raise RuntimeError("broker submission returned a different requested quantity")
             except (TypeError,ValueError):raise RuntimeError("broker submission returned an invalid requested quantity")
+        status=str(getattr(result,"status","")).upper().strip()
+        filled=getattr(result,"filled_quantity",None)
+        average=getattr(result,"average_price",None)
+        if filled is not None:
+            try:filled_value=float(filled)
+            except (TypeError,ValueError):raise RuntimeError("broker submission returned an invalid filled quantity")
+            if filled_value < 0 or filled_value > float(request.quantity)+1e-9:raise RuntimeError("broker submission returned an invalid filled quantity")
+            if status in {"FILLED","TRADED","COMPLETE"} and abs(filled_value-float(request.quantity))>1e-9:raise RuntimeError("broker reported FILLED with incomplete quantity")
+            if filled_value > 0:
+                if average is None: raise RuntimeError("broker submission returned a fill without an average price")
+                try:
+                    average_value=float(average)
+                except (TypeError,ValueError):raise RuntimeError("broker submission returned an invalid average price")
+                if average_value <= 0:raise RuntimeError("broker submission returned a non-positive average price")
+        elif status in {"FILLED","TRADED","COMPLETE"}:
+            raise RuntimeError("broker reported FILLED without filled quantity")
     def _map_broker_status(self,status):
         n=status.upper().strip()
         if n in {"FILLED","TRADED","COMPLETE"}:return OrderStatus.FILLED
@@ -112,7 +128,9 @@ class OrderExecutionService:
             risk_result=self._authorize_risk(request)
             if risk_result is not None:self.lifecycle.transition(request.client_order_id,OrderStatus.REJECTED);self.store.save(self.lifecycle);return risk_result
             try:
-                result=self.router.submit(request);self._validate_submission_result(request,result);status=self._map_broker_status(str(result.status));self.lifecycle.transition(request.client_order_id,status,filled_quantity=request.quantity if status==OrderStatus.FILLED else 0,fill_price=result.price);self.lifecycle.orders[request.client_order_id].broker_order_id=result.order_id;self.store.save(self.lifecycle);self._settle_risk_reservation(request,status,self.lifecycle.orders[request.client_order_id].filled_quantity)
+                result=self.router.submit(request);self._validate_submission_result(request,result);status=self._map_broker_status(str(result.status));filled=float(result.filled_quantity or 0) if result.filled_quantity is not None else 0.0;average=result.average_price if result.average_price is not None else result.price
+                if status==OrderStatus.FILLED and abs(filled-float(request.quantity))>1e-9:raise RuntimeError("broker reported FILLED with incomplete quantity")
+                self.lifecycle.transition(request.client_order_id,status,filled_quantity=filled,fill_price=average);self.lifecycle.orders[request.client_order_id].broker_order_id=result.order_id;self.store.save(self.lifecycle);self._settle_risk_reservation(request,status,self.lifecycle.orders[request.client_order_id].filled_quantity)
                 if self.idempotency_store is not None and status!=OrderStatus.PARTIALLY_FILLED:self.idempotency_store.mark_completed(request.client_order_id)
                 return ExecutionResult(request.client_order_id,status.value,result.order_id)
             except Exception:
