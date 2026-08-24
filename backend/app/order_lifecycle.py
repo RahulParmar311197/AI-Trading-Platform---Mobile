@@ -13,7 +13,7 @@ class OrderRecord:
     order_id:str; symbol:str; side:str; quantity:float
     status:OrderStatus=OrderStatus.CREATED; filled_quantity:float=0.0; average_fill_price:float|None=None
     applied_fill_quantity:float=0.0; applied_fill_value:float=0.0; broker_order_id:str|None=None
-    execution_id:str|None=None
+    execution_id:str|None=None; owner_user_id:int|None=None
     order_type:str="MARKET"; requested_price:float|None=None; stop:float|None=None; target:float|None=None
     security_id:str=""; exchange_segment:str="NSE_EQ"; product_type:str="CNC"; validity:str="DAY"; trigger_price:float|None=None
     risk_amount:float|None=None; risk_source:str|None=None; risk_confidence:float|None=None; risk_reason:str|None=None
@@ -28,8 +28,12 @@ class OrderLifecycle:
         self.orders={}; self.positions={}; self.realized_pnl_by_symbol={}; self.realized_pnl_by_day={}; self._applied_fill_ids=set(); self.audit_log=audit_log or TradingAuditLog()
     def create(self,order_id,symbol,side,quantity,**metadata):
         if order_id in self.orders: raise ValueError("duplicate order_id")
-        allowed={k:v for k,v in metadata.items() if k in OrderRecord.__dataclass_fields__}; order=OrderRecord(order_id,symbol.upper(),side.upper(),quantity,**allowed); self.orders[order_id]=order
-        self.audit_log.record("ORDER_CREATED",metadata={"order_id":order_id,"symbol":order.symbol,"side":order.side,"quantity":quantity,"execution_id":order.execution_id}); return order
+        allowed={k:v for k,v in metadata.items() if k in OrderRecord.__dataclass_fields__}; order=OrderRecord(order_id,symbol.upper(),side.upper(),quantity,**allowed)
+        if order.owner_user_id is not None:
+            order.owner_user_id=int(order.owner_user_id)
+            if order.owner_user_id<=0: raise ValueError("owner_user_id must be positive")
+        self.orders[order_id]=order
+        self.audit_log.record("ORDER_CREATED",metadata={"order_id":order_id,"symbol":order.symbol,"side":order.side,"quantity":quantity,"execution_id":order.execution_id,"owner_user_id":order.owner_user_id}); return order
     def apply_fill(self,order_id,quantity,price,fill_id=None):
         if fill_id is not None and fill_id in self._applied_fill_ids:return self.orders[order_id]
         order=self.orders[order_id]; quantity=float(quantity); price=float(price)
