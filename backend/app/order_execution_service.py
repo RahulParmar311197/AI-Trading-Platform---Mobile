@@ -11,6 +11,7 @@ from app.order_lifecycle import OrderLifecycle, OrderStatus
 from app.risk_gate import PreTradeRiskGate, RiskSnapshot
 from app.startup_recovery import StartupRecoveryCoordinator
 from app.safety_state import SafetyStateStore
+from app.execution_authorization import ExecutionAuthorization
 
 @dataclass(frozen=True)
 class ExecutionResult:
@@ -18,13 +19,13 @@ class ExecutionResult:
 
 class OrderExecutionService:
     _claim_lock=Lock()
-    def __init__(self,router,lifecycle,store,idempotency_store=None,recovery=None,risk_gate=None,risk_snapshot_provider=None,safety_state_store=None):
+    def __init__(self,router,lifecycle,store,idempotency_store=None,recovery=None,risk_gate=None,risk_snapshot_provider=None,safety_state_store=None,authorization=None):
         self.router=router; self.lifecycle=lifecycle; self.store=store; self.idempotency_store=idempotency_store; self.recovery=recovery or StartupRecoveryCoordinator(); self.risk_gate=risk_gate; self.risk_snapshot_provider=risk_snapshot_provider; self.safety_state_store=safety_state_store
+        self.authorization=authorization or ExecutionAuthorization(safety_state_store or SafetyStateStore(), risk_gate, risk_snapshot_provider)
         if self.risk_gate is not None:self.risk_gate.rebuild_from_lifecycle(self.lifecycle)
     def _assert_safety_ready(self):
-        if self.safety_state_store is None:return None
-        state=self.safety_state_store.load()
-        if state.trading_halted:return ExecutionResult("",OrderStatus.REJECTED.value,message=f"TRADING_HALTED: {state.halt_reason or 'safety state active'}")
+        result=self.authorization.check_safety()
+        if not result.allowed:return ExecutionResult("",OrderStatus.REJECTED.value,message=f"{result.code}: {result.reason or 'execution blocked'}")
         return None
     def _recover_broker_order(self,client_order_id): return self.router.find_order_by_client_id(client_order_id)
     @staticmethod
