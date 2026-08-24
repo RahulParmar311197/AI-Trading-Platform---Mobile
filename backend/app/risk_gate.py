@@ -24,6 +24,7 @@ class RiskSnapshot:
     projected_trade_loss: float = 0.0
     kill_switch: bool = False
     broker_ready: bool = False
+    broker_snapshot_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,7 +126,7 @@ class PreTradeRiskGate:
         return current.astimezone(zone).date().isoformat()
 
     @staticmethod
-    def snapshot_from_lifecycle(lifecycle, position_quantity: float, broker_ready: bool, kill_switch: bool = False, projected_trade_loss: float = 0.0, trading_day: str | None = None, trading_day_timezone: str = "UTC") -> RiskSnapshot:
+    def snapshot_from_lifecycle(lifecycle, position_quantity: float, broker_ready: bool, kill_switch: bool = False, projected_trade_loss: float = 0.0, trading_day: str | None = None, trading_day_timezone: str = "UTC", broker_snapshot_fingerprint: str | None = None) -> RiskSnapshot:
         """Build the durable daily-P&L component using an explicit trading-day timezone."""
         if trading_day is None:
             trading_day = PreTradeRiskGate.trading_day_key(timezone_name=trading_day_timezone)
@@ -147,7 +148,9 @@ class PreTradeRiskGate:
             raise RuntimeError("invalid risk snapshot position")
         if trade_loss != trade_loss or trade_loss in (float("inf"), float("-inf")):
             raise RuntimeError("invalid risk snapshot trade loss")
-        return RiskSnapshot(position_quantity=position, daily_pnl=daily, projected_trade_loss=trade_loss, kill_switch=bool(kill_switch), broker_ready=bool(broker_ready))
+        if broker_snapshot_fingerprint is not None and not str(broker_snapshot_fingerprint).strip():
+            raise RuntimeError("invalid broker snapshot fingerprint")
+        return RiskSnapshot(position_quantity=position, daily_pnl=daily, projected_trade_loss=trade_loss, kill_switch=bool(kill_switch), broker_ready=bool(broker_ready), broker_snapshot_fingerprint=broker_snapshot_fingerprint)
 
     def evaluate(self, request: BrokerOrderRequest, snapshot: RiskSnapshot) -> RiskDecision:
         if snapshot.kill_switch:
