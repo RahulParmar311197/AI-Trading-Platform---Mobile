@@ -84,10 +84,15 @@ def test_working_broker_status_maps_to_submitted(tmp_path, status):
 
 
 def test_live_execution_reserves_exposure_after_revalidated_risk(tmp_path):
+    class Reservations:
+        def get(self, client_order_id):
+            return 1.0
+
     class Gate:
         def __init__(self):
             self.reserve_calls = 0
             self.release_calls = 0
+            self.reservations = Reservations()
         def rebuild_from_lifecycle(self, lifecycle):
             pass
         def evaluate(self, request, snapshot):
