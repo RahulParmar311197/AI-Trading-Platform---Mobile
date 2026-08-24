@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     database_url: str = Field(default="sqlite:///./trading.db", validation_alias="DATABASE_URL")
     redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
     jwt_secret: str = Field(default="change-me-in-production", validation_alias="JWT_SECRET")
+    jwt_exp_minutes: int = Field(default=60, validation_alias="JWT_EXP_MINUTES")
     live_trading_enabled: bool = Field(default=False, validation_alias="LIVE_TRADING_ENABLED")
     broker_credentials_key: str = Field(default="", validation_alias="BROKER_CREDENTIALS_KEY")
     upstox_client_id: str = Field(default="", validation_alias="UPSTOX_CLIENT_ID")
