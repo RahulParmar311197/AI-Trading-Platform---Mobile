@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import asdict,dataclass
 from app.market_data import Candle
+
 @dataclass(frozen=True)
 class Swing: index:int; price:float; kind:str
 @dataclass(frozen=True)
@@ -61,6 +62,24 @@ def dealing_range(candles:list[Candle])->dict:
     location='PREMIUM' if price>eq else 'DISCOUNT' if price<eq else 'EQUILIBRIUM'
     return {'high':hi,'low':lo,'equilibrium':eq,'location':location,'range':hi-lo}
 
+def _session(hour:int)->str:
+    if 0<=hour<7:return 'ASIA'
+    if 7<=hour<13:return 'LONDON'
+    if 13<=hour<21:return 'NEW_YORK'
+    return 'OFF_SESSION'
+
+def _kill_zone(hour:int)->str|None:
+    if 7<=hour<10:return 'LONDON_OPEN'
+    if 13<=hour<16:return 'NEW_YORK_OPEN'
+    return None
+
+def ict_context(candles:list[Candle])->dict:
+    if not candles:raise ValueError('candles are required')
+    dr=dealing_range(candles); hi=dr.get('high');lo=dr.get('low');span=(hi-lo) if hi is not None and lo is not None else 0
+    price=candles[-1].close; ote_low=lo+span*0.62 if lo is not None else None; ote_high=lo+span*0.79 if lo is not None else None
+    target=hi if hi is not None and price<dr.get('equilibrium',price) else lo
+    return {**dr,'session':_session(candles[-1].timestamp.hour),'kill_zone':_kill_zone(candles[-1].timestamp.hour),'ote_low':ote_low,'ote_high':ote_high,'ote_mid':((ote_low+ote_high)/2 if ote_low is not None else None),'liquidity_target':target}
+
 def structure(candles:list[Candle])->dict:
     sw=swings(candles); highs=[x for x in sw if x.kind=='HIGH']; lows=[x for x in sw if x.kind=='LOW']; labels=[]
     for seq in (highs,lows):
@@ -72,4 +91,4 @@ def structure(candles:list[Candle])->dict:
         if hh and hl:bos=bias='BULLISH'
         elif lh and ll:bos=bias='BEARISH'
     pools=liquidity_pools(candles); sweeps=liquidity_sweeps(candles,pools); fvg=fair_value_gaps(candles); obs=order_blocks(candles)
-    return {'bias':bias,'bos':bos,'choch':choch,'swings':[asdict(x) for x in sw],'structure_labels':labels,'fvg':[asdict(x) for x in fvg],'liquidity_pools':[asdict(x) for x in pools],'liquidity_sweeps':sweeps,'order_blocks':[asdict(x) for x in obs],'dealing_range':dealing_range(candles)}
+    return {'bias':bias,'bos':bos,'choch':choch,'swings':[asdict(x) for x in sw],'structure_labels':labels,'fvg':[asdict(x) for x in fvg],'liquidity_pools':[asdict(x) for x in pools],'liquidity_sweeps':sweeps,'order_blocks':[asdict(x) for x in obs],'dealing_range':dealing_range(candles),'ict':ict_context(candles)}
