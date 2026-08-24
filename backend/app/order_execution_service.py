@@ -67,8 +67,8 @@ class OrderExecutionService:
         if self.risk_gate is None:return
         if status in {OrderStatus.FILLED,OrderStatus.CANCELLED,OrderStatus.REJECTED}:self.risk_gate.release(request.client_order_id)
         elif status==OrderStatus.PARTIALLY_FILLED:
-            try:self.risk_gate.update_after_fill(request,filled_quantity,float(self._risk_snapshot(request).position_quantity))
-            except Exception:return
+            decision=self.risk_gate.update_after_fill(request,filled_quantity,float(self._risk_snapshot(request).position_quantity))
+            if not decision.allowed:raise RuntimeError(decision.reason)
     def _finalize_idempotency(self,request,status):
         if self.idempotency_store is None:return
         if status in {OrderStatus.FILLED,OrderStatus.CANCELLED,OrderStatus.REJECTED}:self.idempotency_store.mark_completed(request.client_order_id)
@@ -98,11 +98,25 @@ class OrderExecutionService:
         with self._claim_lock:
             safety_result=self._assert_safety_ready()
             if safety_result is not None:self._audit("EXECUTION_BLOCKED",execution_id,request,reason=safety_result.message);return ExecutionResult(request.client_order_id,safety_result.status,message=safety_result.message,execution_id=execution_id)
-            authorization_result=self._authorize_execution(request,execution_id)
-            if authorization_result is not None:return authorization_result
+            authorization_result=self.authorization.check(request)
+            self._audit("EXECUTION_AUTHORIZATION_CORRELATED",execution_id,request,allowed=authorization_result.allowed,code=authorization_result.code,reason=authorization_result.reason)
+            if not authorization_result.allowed:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message=f"{authorization_result.code}: {authorization_result.reason or 'execution blocked'}",execution_id=execution_id)
+            if self.risk_gate is not None:
+                snapshot=authorization_result.risk_snapshot
+                if snapshot is None:
+                    return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message="RISK_SNAPSHOT_UNAVAILABLE: authorized execution has no risk snapshot",execution_id=execution_id)
+                reservation=self.risk_gate.reserve(request,snapshot)
+                if not reservation.allowed:
+                    self._audit("RISK_EXPOSURE_RESERVATION_REJECTED",execution_id,request,reason=reservation.reason)
+                    return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message=reservation.reason,execution_id=execution_id)
+                self._audit("RISK_EXPOSURE_RESERVED",execution_id,request,signed_quantity=self.risk_gate.reservations.get(request.client_order_id))
             existing=self.lifecycle.orders.get(request.client_order_id)
-            if existing is not None and existing.status in {OrderStatus.FILLED,OrderStatus.CANCELLED,OrderStatus.REJECTED}:return ExecutionResult(request.client_order_id,existing.status.value,existing.broker_order_id,"IDEMPOTENT_REPLAY",execution_id)
-            if not self.startup_state.execution_allowed:return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message=f"LIVE_EXECUTION_LOCKED_STARTUP_STATE_{self.startup_state.state.value}",execution_id=execution_id)
+            if existing is not None and existing.status in {OrderStatus.FILLED,OrderStatus.CANCELLED,OrderStatus.REJECTED}:
+                if self.risk_gate is not None:self.risk_gate.release(request.client_order_id)
+                return ExecutionResult(request.client_order_id,existing.status.value,existing.broker_order_id,"IDEMPOTENT_REPLAY",execution_id)
+            if not self.startup_state.execution_allowed:
+                if self.risk_gate is not None:self.risk_gate.release(request.client_order_id)
+                return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message=f"LIVE_EXECUTION_LOCKED_STARTUP_STATE_{self.startup_state.state.value}",execution_id=execution_id)
             if self.idempotency_store is not None and not self.idempotency_store.claim(request.client_order_id,execution_id):
                 claim=self.idempotency_store.get_claim(request.client_order_id);recovered=self._recover_broker_order(request.client_order_id)
                 if recovered is not None:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED_FROM_PERSISTED_CLAIM",execution_id)
