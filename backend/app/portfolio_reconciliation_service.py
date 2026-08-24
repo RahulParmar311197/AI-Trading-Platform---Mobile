@@ -15,15 +15,33 @@ class ReconciliationResult:
     mismatches: tuple[PositionMismatch, ...]
 
 
+def _signed_quantity(position: dict) -> float:
+    if "signed_quantity" in position:
+        return float(position.get("signed_quantity") or 0)
+    quantity = float(position.get("quantity", position.get("net_quantity", position.get("netQty", 0))) or 0)
+    side = str(position.get("side", "")).strip().upper()
+    if side in {"SELL", "SHORT", "S", "-1"}:
+        return -abs(quantity)
+    if side in {"BUY", "LONG", "B", "1"}:
+        return abs(quantity)
+    return quantity
+
+
 class PortfolioReconciliationService:
-    """Compare broker and local positions and fail closed on exposure mismatch."""
+    """Compare normalized broker and local positions and fail closed on exposure mismatch."""
 
     def compare(self, local_positions: Mapping[str, float], broker_positions: list[dict]) -> ReconciliationResult:
-        remote = {str(p.get("symbol", "")).upper(): float(p.get("quantity", 0) or 0) for p in broker_positions if p.get("symbol")}
-        symbols = set(local_positions) | set(remote)
+        remote: dict[str, float] = {}
+        for position in broker_positions:
+            symbol = str(position.get("symbol", position.get("trading_symbol", ""))).strip().upper()
+            if not symbol:
+                continue
+            remote[symbol] = remote.get(symbol, 0.0) + _signed_quantity(position)
+        local = {str(symbol).strip().upper(): float(quantity) for symbol, quantity in local_positions.items() if str(symbol).strip()}
+        symbols = set(local) | set(remote)
         mismatches = tuple(
-            PositionMismatch(symbol=s, local_quantity=float(local_positions.get(s, 0)), broker_quantity=remote.get(s, 0.0))
+            PositionMismatch(symbol=s, local_quantity=local.get(s, 0.0), broker_quantity=remote.get(s, 0.0))
             for s in sorted(symbols)
-            if float(local_positions.get(s, 0)) != remote.get(s, 0.0)
+            if abs(local.get(s, 0.0) - remote.get(s, 0.0)) > 1e-9
         )
         return ReconciliationResult(matched=not mismatches, mismatches=mismatches)
