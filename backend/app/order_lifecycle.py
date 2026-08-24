@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime, timezone
+from app.trading_audit import TradingAuditLog
 
 class OrderStatus(str, Enum):
     CREATED="CREATED"; SUBMISSION_INTENT="SUBMISSION_INTENT"; SUBMITTED="SUBMITTED"; PARTIALLY_FILLED="PARTIALLY_FILLED"; FILLED="FILLED"; CANCELLED="CANCELLED"; REJECTED="REJECTED"
@@ -22,11 +23,14 @@ class PositionRecord:
     symbol:str; side:str; quantity:float; entry_price:float; status:PositionStatus=PositionStatus.OPEN; exit_price:float|None=None; realized_pnl:float=0.0
 
 class OrderLifecycle:
-    def __init__(self): self.orders={}; self.positions={}; self.realized_pnl_by_symbol={}; self.realized_pnl_by_day={}; self._applied_fill_ids=set()
+    def __init__(self, audit_log:TradingAuditLog|None=None):
+        self.orders={}; self.positions={}; self.realized_pnl_by_symbol={}; self.realized_pnl_by_day={}; self._applied_fill_ids=set(); self.audit_log=audit_log or TradingAuditLog()
     def create(self,order_id,symbol,side,quantity,**metadata):
         if order_id in self.orders: raise ValueError("duplicate order_id")
         allowed={k:v for k,v in metadata.items() if k in OrderRecord.__dataclass_fields__}
-        self.orders[order_id]=OrderRecord(order_id,symbol.upper(),side.upper(),quantity,**allowed); return self.orders[order_id]
+        order=OrderRecord(order_id,symbol.upper(),side.upper(),quantity,**allowed); self.orders[order_id]=order
+        self.audit_log.record("ORDER_CREATED", metadata={"order_id":order_id,"symbol":order.symbol,"side":order.side,"quantity":quantity})
+        return order
 
     def apply_fill(self, order_id, quantity, price, fill_id=None):
         """Apply one execution fill event; repeated fill_id values are ignored."""
@@ -40,11 +44,12 @@ class OrderLifecycle:
         order.status=OrderStatus.FILLED if new_filled==order.quantity else OrderStatus.PARTIALLY_FILLED; order.updated_at=datetime.now(timezone.utc)
         self._apply_position_delta(order,quantity,price)
         if fill_id is not None: self._applied_fill_ids.add(fill_id)
+        self.audit_log.record("ORDER_FILL", metadata={"order_id":order_id,"fill_id":fill_id,"quantity":quantity,"price":price,"cumulative_filled":new_filled,"status":order.status.value})
         return order
 
     def transition(self,order_id,status,filled_quantity=0.0,fill_price=None):
         """Reconcile a broker snapshot where fill_price is the cumulative average price."""
-        order=self.orders[order_id]
+        order=self.orders[order_id]; previous=order.status
         if status in (OrderStatus.FILLED,OrderStatus.PARTIALLY_FILLED) and not 0<=filled_quantity<=order.quantity: raise ValueError("invalid filled quantity")
         if filled_quantity<order.applied_fill_quantity: raise ValueError("filled quantity cannot move backwards")
         order.status=status; order.filled_quantity=filled_quantity
@@ -58,6 +63,9 @@ class OrderLifecycle:
             cumulative_value=filled_quantity*order.average_fill_price; delta_value=cumulative_value-order.applied_fill_value
             if delta_value<=0: raise ValueError("cumulative fill value cannot move backwards")
             self._apply_position_delta(order,delta_quantity,delta_value/delta_quantity); order.applied_fill_quantity=filled_quantity; order.applied_fill_value=cumulative_value
+            self.audit_log.record("ORDER_FILL_RECONCILED", metadata={"order_id":order_id,"quantity":delta_quantity,"price":delta_value/delta_quantity,"cumulative_filled":filled_quantity})
+        if previous != status:
+            self.audit_log.record("ORDER_STATE_CHANGE", from_state=previous.value, to_state=status.value, metadata={"order_id":order_id,"filled_quantity":filled_quantity})
         return order
 
     def _record_realized_pnl(self,symbol,pnl,when=None):
