@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import isfinite
+from time import time
 from typing import Callable
 
 from app.broker_adapter import BrokerOrderRequest
@@ -17,6 +18,7 @@ class RuntimeRiskSnapshotProvider:
     lifecycle: object
     trading_day_timezone: str = "UTC"
     projected_trade_loss_provider: Callable[[BrokerOrderRequest], float] | None = None
+    max_snapshot_age_seconds: float = 2.0
 
     @staticmethod
     def _signed_position(row: dict) -> float:
@@ -44,10 +46,8 @@ class RuntimeRiskSnapshotProvider:
             row_security = str(row.get("security_id", row.get("securityId", row.get("instrument_token", row.get("instrumentToken", "")))))
             if row_symbol == symbol or (security_id and row_security == security_id):
                 matches.append(cls._signed_position(row))
-        if len(matches) > 1 and security_id:
-            # Multiple records are valid only when they represent the same net position.
-            if max(matches) - min(matches) > 1e-9:
-                raise RuntimeError("ambiguous broker position for requested instrument")
+        if len(matches) > 1 and security_id and max(matches) - min(matches) > 1e-9:
+            raise RuntimeError("ambiguous broker position for requested instrument")
         return sum(matches)
 
     @staticmethod
@@ -59,6 +59,19 @@ class RuntimeRiskSnapshotProvider:
             return False
         return status in {"READY", "ACTIVE", "CONNECTED", "OK", ""}
 
+    def _validate_freshness(self, snapshot) -> None:
+        if not isfinite(float(self.max_snapshot_age_seconds)) or self.max_snapshot_age_seconds <= 0:
+            raise RuntimeError("invalid broker snapshot freshness configuration")
+        fetched_at = getattr(snapshot, "fetched_at", None)
+        if fetched_at is None:
+            raise RuntimeError("broker snapshot has no freshness timestamp")
+        try:
+            age = time() - float(fetched_at)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("invalid broker snapshot freshness timestamp") from exc
+        if not isfinite(age) or age < -0.5 or age > self.max_snapshot_age_seconds:
+            raise RuntimeError("broker risk snapshot is stale")
+
     def __call__(self, request: BrokerOrderRequest) -> RiskSnapshot:
         if self.router.safety_store is not None and self.router.safety_store.load().trading_halted:
             return RiskSnapshot(kill_switch=True, broker_ready=False)
@@ -66,6 +79,7 @@ class RuntimeRiskSnapshotProvider:
             raise RuntimeError("projected trade loss provider is not configured")
         try:
             snapshot = self.router.get_snapshot()
+            self._validate_freshness(snapshot)
             account = self.router.get_account()
             projected_loss = float(self.projected_trade_loss_provider(request))
         except Exception as exc:
