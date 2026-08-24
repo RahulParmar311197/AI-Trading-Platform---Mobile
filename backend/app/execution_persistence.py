@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict
-from datetime import datetime
 from pathlib import Path
+from datetime import datetime
 
 from app.order_lifecycle import OrderLifecycle, OrderStatus, PositionStatus
 
 
 class ExecutionStateStore:
-    """Atomic JSON execution-state store with a last-known-good recovery copy."""
+    """Atomic JSON execution-state store with last-known-good recovery copy."""
 
     def __init__(self, path: str = "data/execution_state.json"):
         self.path = Path(path)
@@ -19,12 +19,11 @@ class ExecutionStateStore:
     def _serialize(self, lifecycle: OrderLifecycle) -> dict:
         payload = {"orders": {}, "positions": {}, "realized_pnl_by_symbol": {}, "realized_pnl_by_day": {}}
         for oid, order in lifecycle.orders.items():
-            payload["orders"][oid] = {
-                **asdict(order),
-                "status": order.status.value,
-                "created_at": order.created_at.isoformat(),
-                "updated_at": order.updated_at.isoformat(),
-            }
+            raw = asdict(order)
+            raw["status"] = order.status.value
+            raw["created_at"] = order.created_at.isoformat()
+            raw["updated_at"] = order.updated_at.isoformat()
+            payload["orders"][oid] = raw
         for symbol, position in lifecycle.positions.items():
             payload["positions"][symbol] = {**asdict(position), "status": position.status.value}
         payload["realized_pnl_by_symbol"] = {str(symbol).upper(): float(value) for symbol, value in lifecycle.realized_pnl_by_symbol.items()}
@@ -60,63 +59,35 @@ class ExecutionStateStore:
         self._write_atomic(self.path, payload)
 
     def _deserialize_into(self, lifecycle: OrderLifecycle, data: dict) -> None:
-        lifecycle.orders.clear()
-        lifecycle.positions.clear()
-        lifecycle.realized_pnl_by_symbol.clear()
-        lifecycle.realized_pnl_by_day.clear()
+        lifecycle.orders.clear(); lifecycle.positions.clear(); lifecycle.realized_pnl_by_symbol.clear(); lifecycle.realized_pnl_by_day.clear()
         from app.order_lifecycle import OrderRecord, PositionRecord
-
         for oid, raw in data.get("orders", {}).items():
-            value = dict(raw)
-            value["status"] = OrderStatus(value["status"])
-            value["created_at"] = datetime.fromisoformat(value["created_at"])
-            value["updated_at"] = datetime.fromisoformat(value["updated_at"])
+            value = dict(raw); value["status"] = OrderStatus(value["status"]); value["created_at"] = datetime.fromisoformat(value["created_at"]); value["updated_at"] = datetime.fromisoformat(value["updated_at"])
             lifecycle.orders[oid] = OrderRecord(**value)
-
         for symbol, raw in data.get("positions", {}).items():
-            value = dict(raw)
-            value["status"] = PositionStatus(value["status"])
-            lifecycle.positions[symbol] = PositionRecord(**value)
-
+            value = dict(raw); value["status"] = PositionStatus(value["status"]); lifecycle.positions[symbol] = PositionRecord(**value)
         raw_pnl = data.get("realized_pnl_by_symbol", {})
-        if not isinstance(raw_pnl, dict):
-            raise ValueError("realized_pnl_by_symbol must be an object")
+        if not isinstance(raw_pnl, dict): raise ValueError("realized_pnl_by_symbol must be an object")
         for symbol, value in raw_pnl.items():
-            try:
-                pnl = float(value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"invalid realized pnl for {symbol}") from exc
-            if not pnl == pnl or pnl in (float("inf"), float("-inf")):
-                raise ValueError(f"invalid realized pnl for {symbol}")
+            pnl = float(value)
+            if not pnl == pnl or pnl in (float("inf"), float("-inf")): raise ValueError(f"invalid realized pnl for {symbol}")
             lifecycle.realized_pnl_by_symbol[str(symbol).upper()] = pnl
-
         raw_daily = data.get("realized_pnl_by_day", {})
-        if not isinstance(raw_daily, dict):
-            raise ValueError("realized_pnl_by_day must be an object")
+        if not isinstance(raw_daily, dict): raise ValueError("realized_pnl_by_day must be an object")
         for day, value in raw_daily.items():
-            try:
-                datetime.strptime(str(day), "%Y-%m-%d")
-                pnl = float(value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"invalid realized daily pnl for {day}") from exc
-            if not pnl == pnl or pnl in (float("inf"), float("-inf")):
-                raise ValueError(f"invalid realized daily pnl for {day}")
+            datetime.strptime(str(day), "%Y-%m-%d"); pnl = float(value)
+            if not pnl == pnl or pnl in (float("inf"), float("-inf")): raise ValueError(f"invalid realized daily pnl for {day}")
             lifecycle.realized_pnl_by_day[str(day)] = pnl
 
     def load(self, lifecycle: OrderLifecycle) -> bool:
         candidates = [self.path, self.backup_path]
-        if not any(candidate.exists() for candidate in candidates):
-            return False
+        if not any(candidate.exists() for candidate in candidates): return False
         last_error: Exception | None = None
         for candidate in candidates:
-            if not candidate.exists():
-                continue
+            if not candidate.exists(): continue
             try:
-                data = json.loads(candidate.read_text(encoding="utf-8"))
-                self._deserialize_into(lifecycle, data)
-                if candidate == self.backup_path:
-                    self._write_atomic(self.path, data)
+                data = json.loads(candidate.read_text(encoding="utf-8")); self._deserialize_into(lifecycle, data)
+                if candidate == self.backup_path: self._write_atomic(self.path, data)
                 return True
-            except (OSError, ValueError, TypeError, KeyError) as exc:
-                last_error = exc
+            except (OSError, ValueError, TypeError, KeyError) as exc: last_error = exc
         raise RuntimeError("execution state is unreadable") from last_error
