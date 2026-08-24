@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from app.trading_audit import TradingAuditLog
+
 
 class StartupExecutionState(str, Enum):
     LOCKED = "LOCKED"
@@ -35,8 +37,9 @@ class StartupExecutionStateMachine:
         StartupExecutionState.HALTED: {StartupExecutionState.RECOVERING},
     }
 
-    def __init__(self) -> None:
+    def __init__(self, audit_log: TradingAuditLog | None = None) -> None:
         self._status = StartupExecutionStatus(StartupExecutionState.LOCKED)
+        self.audit_log = audit_log or TradingAuditLog()
 
     @property
     def state(self) -> StartupExecutionState:
@@ -51,11 +54,18 @@ class StartupExecutionStateMachine:
         return self.state == StartupExecutionState.READY
 
     def transition(self, new_state: StartupExecutionState, reason: str | None = None) -> StartupExecutionStatus:
-        if new_state not in self._allowed[self.state]:
-            raise RuntimeError(f"invalid startup transition {self.state.value}->{new_state.value}")
+        previous = self.state
+        if new_state not in self._allowed[previous]:
+            raise RuntimeError(f"invalid startup transition {previous.value}->{new_state.value}")
         if new_state == StartupExecutionState.READY and reason:
             raise RuntimeError("READY cannot carry a failure reason")
         self._status = StartupExecutionStatus(new_state, reason)
+        self.audit_log.record(
+            "STARTUP_STATE_CHANGE",
+            reason=reason,
+            from_state=previous.value,
+            to_state=new_state.value,
+        )
         return self._status
 
     def fail(self, reason: str) -> StartupExecutionStatus:
