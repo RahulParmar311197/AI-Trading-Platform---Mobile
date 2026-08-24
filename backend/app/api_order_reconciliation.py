@@ -5,18 +5,15 @@ from sqlalchemy.orm import Session
 from app.models import Order
 from app.order_lifecycle import OrderLifecycle
 
-
-_TERMINAL_STATUSES = {"FILLED", "CANCELLED", "REJECTED"}
 _NON_TERMINAL_API_STATUSES = {"PENDING", "SUBMISSION_INTENT", "SUBMITTED", "PARTIALLY_FILLED"}
 
 
 def reconcile_api_order_projection(db: Session, lifecycle: OrderLifecycle) -> list[str]:
-    """Reconcile the SQL Order projection from durable execution lifecycle state.
+    """Repair the SQL Order projection from durable execution lifecycle state.
 
-    This function never submits, cancels, or mutates a broker order. It only repairs
-    existing API Order rows whose client_order_id is present in the authoritative
-    execution lifecycle. A non-terminal SQL order missing from the lifecycle is
-    returned as unresolved so startup can fail closed rather than guessing.
+    This is deliberately broker-side-effect free: it never submits or cancels an
+    order. Non-terminal SQL orders missing from the lifecycle are returned as
+    unresolved so startup can fail closed instead of guessing.
     """
     unresolved: list[str] = []
     changed = False
@@ -42,11 +39,6 @@ def reconcile_api_order_projection(db: Session, lifecycle: OrderLifecycle) -> li
             changed = True
         if api_order.broker_order_id != broker_order_id:
             api_order.broker_order_id = broker_order_id
-            changed = True
-
-        note = getattr(execution_order, "message", None)
-        if note is not None and api_order.note != note:
-            api_order.note = note
             changed = True
 
     if changed:
