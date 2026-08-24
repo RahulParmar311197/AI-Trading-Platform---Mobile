@@ -1,6 +1,13 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+
+def _mtm_pnl(quantity: float, average_price: float, last_price: float) -> float:
+    if quantity >= 0:
+        return (last_price - average_price) * quantity
+    return (average_price - last_price) * abs(quantity)
+
+
 @dataclass
 class NormalizedPosition:
     symbol: str
@@ -11,6 +18,15 @@ class NormalizedPosition:
     side: str = "LONG"
     raw: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def gross_exposure(self) -> float:
+        return abs(self.quantity * self.last_price)
+
+    @property
+    def calculated_unrealized_pnl(self) -> float:
+        return _mtm_pnl(self.quantity, self.average_price, self.last_price)
+
+
 @dataclass
 class NormalizedHolding:
     symbol: str
@@ -19,6 +35,15 @@ class NormalizedHolding:
     last_price: float = 0.0
     pnl: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def gross_exposure(self) -> float:
+        return abs(self.quantity * self.last_price)
+
+    @property
+    def calculated_unrealized_pnl(self) -> float:
+        return _mtm_pnl(self.quantity, self.average_price, self.last_price)
+
 
 @dataclass
 class PortfolioState:
@@ -34,8 +59,17 @@ class PortfolioState:
         return sum(p.quantity * p.last_price for p in self.positions)
 
     @property
+    def gross_exposure(self) -> float:
+        return sum(p.gross_exposure for p in self.positions) + sum(h.gross_exposure for h in self.holdings)
+
+    @property
     def unrealized_pnl(self) -> float:
         return sum(p.pnl for p in self.positions) + sum(h.pnl for h in self.holdings)
+
+    @property
+    def calculated_unrealized_pnl(self) -> float:
+        return sum(p.calculated_unrealized_pnl for p in self.positions) + sum(h.calculated_unrealized_pnl for h in self.holdings)
+
 
 def _rows(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, list): return [x for x in payload if isinstance(x, dict)]
@@ -43,6 +77,7 @@ def _rows(payload: Any) -> list[dict[str, Any]]:
         data = payload.get("data", payload.get("results", []))
         if isinstance(data, list): return [x for x in data if isinstance(x, dict)]
     return []
+
 
 def normalize_portfolio(account_id: int, profile: Any, positions: Any, holdings: Any) -> PortfolioState:
     ps=[]
