@@ -9,6 +9,7 @@ from app.idempotency_store import IdempotencyStore
 from app.safety_state import SafetyStateStore
 from app.broker_factory import build_broker_router
 from app.broker_router import BrokerRouter
+from app.execution_authorization import ExecutionAuthorization
 
 
 @dataclass
@@ -16,17 +17,18 @@ class AppResources:
     execution_store: ExecutionStateStore
     idempotency_store: IdempotencyStore
     safety_store: SafetyStateStore
+    authorization: ExecutionAuthorization | None = None
     session_local: object | None = None
 
 
 def create_resources(*, execution_path="data/execution_state.json", idempotency_path="data/idempotency.sqlite3", safety_path="data/safety_state.json", database_url: str | None = None) -> AppResources:
     session_local = None
-    if database_url:
-        _, session_local = create_db_runtime(database_url)
+    safety_store = SafetyStateStore(safety_path)
     return AppResources(
         execution_store=ExecutionStateStore(execution_path),
         idempotency_store=IdempotencyStore(idempotency_path),
-        safety_store=SafetyStateStore(safety_path),
+        safety_store=safety_store,
+        authorization=ExecutionAuthorization(safety_store),
         session_local=session_local,
     )
 
