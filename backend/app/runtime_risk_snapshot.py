@@ -53,4 +53,4 @@ class RuntimeRiskSnapshotProvider:
         if request.price is None: raise RuntimeError("entry price is required to calculate projected trade loss")
         projected_loss=abs(float(request.price)-float(request.stop))*float(request.quantity)
         if not isfinite(projected_loss) or projected_loss<0: raise RuntimeError("invalid projected trade loss")
-        return PreTradeRiskGate.snapshot_from_lifecycle(self.lifecycle,position_quantity=position,broker_ready=self._broker_ready(account),kill_switch=False,projected_trade_loss=projected_loss,trading_day_timezone=self.trading_day_timezone)
+        return PreTradeRiskGate.snapshot_from_lifecycle(self.lifecycle,position_quantity=position,broker_ready=self._broker_ready(account),kill_switch=False,projected_trade_loss=projected_loss,trading_day_timezone=self.trading_day_timezone,broker_snapshot_fingerprint=snapshot.fingerprint())
