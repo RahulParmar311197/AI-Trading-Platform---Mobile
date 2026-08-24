@@ -53,6 +53,15 @@ def _commit_execution_intent(db:Session,order:Order)->None:
         db.rollback()
         raise HTTPException(status_code=503,detail={"code":"ORDER_INTENT_PERSISTENCE_FAILED","reason":type(exc).__name__}) from exc
 
+def _commit_execution_projection(db:Session,order:Order)->None:
+    """Persist broker execution state without hiding a projection/reconciliation failure."""
+    try:
+        db.commit()
+        db.refresh(order)
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=503,detail={"code":"EXECUTION_PROJECTION_PERSISTENCE_FAILED","reason":type(exc).__name__,"client_order_id":order.client_order_id,"reconciliation_required":True}) from exc
+
 def _execution_service(broker_router,execution_store,idempotency_store,recovery,resources):
     from app.order_execution_service import OrderExecutionService
     from app.order_lifecycle import OrderLifecycle
@@ -84,7 +93,7 @@ def create_order(payload:OrderRequest,request:Request,response:Response,db:Sessi
         if existing.status in {"PENDING","SUBMISSION_INTENT","SUBMITTED","PARTIALLY_FILLED"} or existing.note=="EXECUTION_PENDING_RECONCILIATION":
             service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources)
             result=service.submit(_broker_request(client_order_id,existing.symbol,existing.side,existing.quantity,existing.order_type,existing.price,existing.stop,existing.security_id,existing.user_id))
-            existing.status=result.status; existing.broker_order_id=result.broker_order_id; existing.note=result.message; db.commit(); db.refresh(existing); _set_execution_response_status(response,result.status); return _order_response(existing,result.message,result.execution_id)
+            existing.status=result.status; existing.broker_order_id=result.broker_order_id; existing.note=result.message; _commit_execution_projection(db,existing); _set_execution_response_status(response,result.status); return _order_response(existing,result.message,result.execution_id)
         return _order_response(existing,"IDEMPOTENT_REPLAY")
     symbol=payload.symbol.upper(); order=Order(user_id=user_id,client_order_id=client_order_id,symbol=symbol,side=payload.side,quantity=payload.quantity,order_type=payload.order_type,price=payload.price,stop=payload.stop,security_id=payload.security_id,status="PENDING"); db.add(order)
     try:db.flush()
@@ -93,4 +102,4 @@ def create_order(payload:OrderRequest,request:Request,response:Response,db:Sessi
         if existing is None:raise HTTPException(status_code=409,detail="ORDER_CREATION_CONFLICT")
         return _order_response(existing,"IDEMPOTENT_REPLAY")
     _commit_execution_intent(db,order)
-    service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources); result=service.submit(_broker_request(client_order_id,symbol,payload.side,payload.quantity,payload.order_type,payload.price,payload.stop,payload.security_id,user_id)); order.status=result.status; order.broker_order_id=result.broker_order_id; order.note=result.message; db.commit(); db.refresh(order); _set_execution_response_status(response,result.status); return _order_response(order,result.message,result.execution_id)
+    service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources); result=service.submit(_broker_request(client_order_id,symbol,payload.side,payload.quantity,payload.order_type,payload.price,payload.stop,payload.security_id,user_id)); order.status=result.status; order.broker_order_id=result.broker_order_id; order.note=result.message; _commit_execution_projection(db,order); _set_execution_response_status(response,result.status); return _order_response(order,result.message,result.execution_id)
