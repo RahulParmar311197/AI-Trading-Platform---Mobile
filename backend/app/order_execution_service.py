@@ -120,6 +120,7 @@ class OrderExecutionService:
             if self.idempotency_store is not None and not self.idempotency_store.claim(request.client_order_id,execution_id):
                 claim=self.idempotency_store.get_claim(request.client_order_id);recovered=self._recover_broker_order(request.client_order_id)
                 if recovered is not None:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED_FROM_PERSISTED_CLAIM",execution_id)
+                if self.risk_gate is not None:self.risk_gate.release(request.client_order_id)
                 return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message=f"EXECUTION_PENDING_RECONCILIATION_CLAIMED_BY_{claim.get('execution_id') if claim else 'UNKNOWN'}",execution_id=execution_id)
             recovered=self._recover_broker_order(request.client_order_id)
             if recovered is not None:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED",execution_id)
