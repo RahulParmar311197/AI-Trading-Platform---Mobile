@@ -23,6 +23,11 @@ class OrderExecutionService:
         self.router=router; self.lifecycle=lifecycle; self.store=store; self.idempotency_store=idempotency_store; self.recovery=recovery or StartupRecoveryCoordinator(); self.risk_gate=risk_gate; self.risk_snapshot_provider=risk_snapshot_provider; self.safety_state_store=safety_state_store
         self.authorization=authorization or ExecutionAuthorization(safety_state_store or SafetyStateStore(), risk_gate, risk_snapshot_provider)
         if self.risk_gate is not None:self.risk_gate.rebuild_from_lifecycle(self.lifecycle)
+    def _authorize_execution(self, request):
+        result = self.authorization.check(request)
+        if not result.allowed:
+            return ExecutionResult(request.client_order_id, OrderStatus.REJECTED.value, message=f"{result.code}: {result.reason or 'execution blocked'}")
+        return None
     def _assert_safety_ready(self):
         result=self.authorization.check_safety()
         if not result.allowed:return ExecutionResult("",OrderStatus.REJECTED.value,message=f"{result.code}: {result.reason or 'execution blocked'}")
@@ -47,9 +52,7 @@ class OrderExecutionService:
             try:
                 if abs(float(quantity)-float(request.quantity))>1e-9:raise RuntimeError("broker submission returned a different requested quantity")
             except (TypeError,ValueError):raise RuntimeError("broker submission returned an invalid requested quantity")
-        status=str(getattr(result,"status","")).upper().strip()
-        filled=getattr(result,"filled_quantity",None)
-        average=getattr(result,"average_price",None)
+        status=str(getattr(result,"status","")).upper().strip(); filled=getattr(result,"filled_quantity",None); average=getattr(result,"average_price",None)
         if filled is not None:
             try:filled_value=float(filled)
             except (TypeError,ValueError):raise RuntimeError("broker submission returned an invalid filled quantity")
@@ -57,12 +60,10 @@ class OrderExecutionService:
             if status in {"FILLED","TRADED","COMPLETE"} and abs(filled_value-float(request.quantity))>1e-9:raise RuntimeError("broker reported FILLED with incomplete quantity")
             if filled_value > 0:
                 if average is None: raise RuntimeError("broker submission returned a fill without an average price")
-                try:
-                    average_value=float(average)
+                try:average_value=float(average)
                 except (TypeError,ValueError):raise RuntimeError("broker submission returned an invalid average price")
                 if average_value <= 0:raise RuntimeError("broker submission returned a non-positive average price")
-        elif status in {"FILLED","TRADED","COMPLETE"}:
-            raise RuntimeError("broker reported FILLED without filled quantity")
+        elif status in {"FILLED","TRADED","COMPLETE"}:raise RuntimeError("broker reported FILLED without filled quantity")
     def _map_broker_status(self,status):
         n=status.upper().strip()
         if n in {"FILLED","TRADED","COMPLETE"}:return OrderStatus.FILLED
@@ -115,6 +116,8 @@ class OrderExecutionService:
         with self._claim_lock:
             safety_result=self._assert_safety_ready()
             if safety_result is not None:return ExecutionResult(request.client_order_id,safety_result.status,message=safety_result.message)
+            authorization_result=self._authorize_execution(request)
+            if authorization_result is not None:return authorization_result
             existing=self.lifecycle.orders.get(request.client_order_id)
             if existing is not None and existing.status in {OrderStatus.FILLED,OrderStatus.CANCELLED,OrderStatus.REJECTED}:return ExecutionResult(request.client_order_id,existing.status.value,existing.broker_order_id,"IDEMPOTENT_REPLAY")
             if self.recovery.state.value!="READY":return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message="LIVE_EXECUTION_LOCKED_STARTUP_RECOVERY_REQUIRED")
