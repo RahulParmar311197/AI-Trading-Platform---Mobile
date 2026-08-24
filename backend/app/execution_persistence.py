@@ -17,7 +17,7 @@ class ExecutionStateStore:
         self.backup_path = self.path.with_suffix(self.path.suffix + ".bak")
 
     def _serialize(self, lifecycle: OrderLifecycle) -> dict:
-        payload = {"orders": {}, "positions": {}}
+        payload = {"orders": {}, "positions": {}, "realized_pnl_by_symbol": {}}
         for oid, order in lifecycle.orders.items():
             payload["orders"][oid] = {
                 **asdict(order),
@@ -27,6 +27,10 @@ class ExecutionStateStore:
             }
         for symbol, position in lifecycle.positions.items():
             payload["positions"][symbol] = {**asdict(position), "status": position.status.value}
+        payload["realized_pnl_by_symbol"] = {
+            str(symbol).upper(): float(value)
+            for symbol, value in lifecycle.realized_pnl_by_symbol.items()
+        }
         return payload
 
     def _write_atomic(self, target: Path, payload: dict) -> None:
@@ -45,15 +49,11 @@ class ExecutionStateStore:
             finally:
                 os.close(directory_fd)
         except OSError:
-            # Some platforms/filesystems do not allow directory fsync; the
-            # atomic replace is still the primary integrity guarantee.
             pass
 
     def save(self, lifecycle: OrderLifecycle) -> None:
         payload = self._serialize(lifecycle)
         if self.path.exists():
-            # Preserve the previous complete snapshot before replacing the
-            # live file, so a torn/corrupt latest file remains recoverable.
             backup_tmp = self.backup_path.with_suffix(self.backup_path.suffix + ".tmp")
             backup_tmp.write_bytes(self.path.read_bytes())
             with backup_tmp.open("rb") as handle:
@@ -64,6 +64,7 @@ class ExecutionStateStore:
     def _deserialize_into(self, lifecycle: OrderLifecycle, data: dict) -> None:
         lifecycle.orders.clear()
         lifecycle.positions.clear()
+        lifecycle.realized_pnl_by_symbol.clear()
         from app.order_lifecycle import OrderRecord, PositionRecord
 
         for oid, raw in data.get("orders", {}).items():
@@ -78,6 +79,18 @@ class ExecutionStateStore:
             value["status"] = PositionStatus(value["status"])
             lifecycle.positions[symbol] = PositionRecord(**value)
 
+        raw_pnl = data.get("realized_pnl_by_symbol", {})
+        if not isinstance(raw_pnl, dict):
+            raise ValueError("realized_pnl_by_symbol must be an object")
+        for symbol, value in raw_pnl.items():
+            try:
+                pnl = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid realized pnl for {symbol}") from exc
+            if not pnl == pnl or pnl in (float("inf"), float("-inf")):
+                raise ValueError(f"invalid realized pnl for {symbol}")
+            lifecycle.realized_pnl_by_symbol[str(symbol).upper()] = pnl
+
     def load(self, lifecycle: OrderLifecycle) -> bool:
         candidates = [self.path, self.backup_path]
         if not any(candidate.exists() for candidate in candidates):
@@ -91,7 +104,6 @@ class ExecutionStateStore:
                 data = json.loads(candidate.read_text(encoding="utf-8"))
                 self._deserialize_into(lifecycle, data)
                 if candidate == self.backup_path:
-                    # Restore the last-known-good snapshot as the active file.
                     self._write_atomic(self.path, data)
                 return True
             except (OSError, ValueError, TypeError, KeyError) as exc:
