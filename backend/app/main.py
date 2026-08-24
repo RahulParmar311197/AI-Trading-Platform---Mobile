@@ -70,7 +70,7 @@ from app.startup_execution_state import StartupExecutionState, StartupExecutionS
 from app.portfolio_reconciliation_service import PortfolioReconciliationService
 
 settings=get_settings(); resources=create_resources(); execution_store=resources.execution_store; idempotency_store=resources.idempotency_store; safety_store=resources.safety_store
-execution_broker_router=build_broker_router(safety_store); recovery_manager=StartupRecoveryManager(execution_store,safety_store); broker_recovery=BrokerStartupRecovery(execution_broker_router,execution_store,safety_store,recovery_manager); startup_state=StartupExecutionStateMachine(); startup_gate=StartupReconciliationGate(startup_state,safety_store,PortfolioReconciliationService())
+execution_broker_router=build_broker_router(safety_store); recovery_manager=StartupRecoveryManager(execution_store,safety_store); broker_recovery=BrokerStartupRecovery(execution_broker_router,execution_store,safety_store,recovery_manager); startup_state=StartupExecutionStateMachine(); resources.startup_execution_state=startup_state; startup_gate=StartupReconciliationGate(startup_state,safety_store,PortfolioReconciliationService())
 
 def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str,float]:
     positions={}
