@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from threading import Lock
 
 from app.broker_adapter import BrokerOrderRequest
@@ -32,7 +33,6 @@ class RiskDecision:
 
 class ExposureReservationBook:
     """Atomic reservations rebuilt from durable lifecycle state after restart."""
-
     def __init__(self):
         self._lock = Lock()
         self._reservations: dict[str, float] = {}
@@ -64,7 +64,6 @@ class ExposureReservationBook:
             return True
 
     def rebuild_from_lifecycle(self, lifecycle) -> None:
-        """Reconstruct only unresolved exposure from durable order records."""
         rebuilt: dict[str, float] = {}
         for order_id, order in lifecycle.orders.items():
             if order.status in {OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED}:
@@ -95,7 +94,6 @@ class ExposureReservationBook:
 
 class PreTradeRiskGate:
     """Fail-closed authorization immediately before broker submission."""
-
     def __init__(self, limits: RiskLimits, reservations: ExposureReservationBook | None = None):
         if limits.max_order_quantity <= 0 or limits.max_position_quantity <= 0:
             raise ValueError("risk quantity limits must be positive")
@@ -112,6 +110,26 @@ class PreTradeRiskGate:
         if normalized in {"SELL", "S", "SHORT"}:
             return -1
         return 0
+
+    @staticmethod
+    def snapshot_from_lifecycle(lifecycle, position_quantity: float, broker_ready: bool, kill_switch: bool = False, projected_trade_loss: float = 0.0, trading_day: str | None = None) -> RiskSnapshot:
+        """Build the risk P&L component from the durable lifecycle ledger."""
+        if trading_day is None:
+            trading_day = datetime.now(timezone.utc).date().isoformat()
+        daily = lifecycle.realized_pnl_by_day.get(trading_day, 0.0)
+        try:
+            daily = float(daily)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("invalid persisted daily realized pnl") from exc
+        if daily != daily or daily in (float("inf"), float("-inf")):
+            raise RuntimeError("invalid persisted daily realized pnl")
+        return RiskSnapshot(
+            position_quantity=float(position_quantity),
+            daily_pnl=daily,
+            projected_trade_loss=float(projected_trade_loss),
+            kill_switch=bool(kill_switch),
+            broker_ready=bool(broker_ready),
+        )
 
     def evaluate(self, request: BrokerOrderRequest, snapshot: RiskSnapshot) -> RiskDecision:
         if snapshot.kill_switch:
