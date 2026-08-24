@@ -71,51 +71,29 @@ from app.startup_recovery import RecoveryState, StartupRecoveryCoordinator
 from app.startup_reconciliation_gate import StartupReconciliationGate
 from app.portfolio_reconciliation_service import PortfolioReconciliationService
 
-settings=get_settings()
-execution_store=ExecutionStateStore()
-idempotency_store=IdempotencyStore()
-safety_store=SafetyStateStore()
-recovery_manager=StartupRecoveryManager(execution_store,safety_store)
-broker_router=build_broker_router(safety_store)
-broker_recovery=BrokerStartupRecovery(broker_router,execution_store,safety_store,recovery_manager)
-startup_recovery=StartupRecoveryCoordinator()
-startup_gate=StartupReconciliationGate(startup_recovery,safety_store,PortfolioReconciliationService())
+settings=get_settings(); execution_store=ExecutionStateStore(); idempotency_store=IdempotencyStore(); safety_store=SafetyStateStore(); recovery_manager=StartupRecoveryManager(execution_store,safety_store); broker_router=build_broker_router(safety_store); broker_recovery=BrokerStartupRecovery(broker_router,execution_store,safety_store,recovery_manager); startup_recovery=StartupRecoveryCoordinator(); startup_gate=StartupReconciliationGate(startup_recovery,safety_store,PortfolioReconciliationService())
 
-
-def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str, float]:
-    positions: dict[str, float] = {}
-    for symbol, position in lifecycle.positions.items():
-        quantity = float(position.quantity or 0.0)
-        side = str(position.side or "").upper()
-        signed = -abs(quantity) if side in {"SELL", "SHORT"} else abs(quantity)
-        positions[str(symbol).strip().upper()] = positions.get(str(symbol).strip().upper(), 0.0) + signed
-    return {symbol: quantity for symbol, quantity in positions.items() if abs(quantity) > 1e-9}
-
+def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str,float]:
+    positions:dict[str,float]={}
+    for symbol,position in lifecycle.positions.items():
+        quantity=float(position.quantity or 0.0); side=str(position.side or '').upper(); signed=-abs(quantity) if side in {'SELL','SHORT'} else abs(quantity); key=str(symbol).strip().upper()
+        if key: positions[key]=positions.get(key,0.0)+signed
+    return {symbol:quantity for symbol,quantity in positions.items() if abs(quantity)>1e-9}
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
-    init_db()
-    lifecycle=OrderLifecycle()
-    app.state.startup_recovery=startup_recovery
-    result=broker_recovery.run(lifecycle)
-    startup_recovery.state=RecoveryState.READY if result.ready else RecoveryState.FAILED
-    app.state.recovery_result=result
-    app.state.execution_lifecycle=lifecycle
+    init_db(); lifecycle=OrderLifecycle(); app.state.startup_recovery=startup_recovery
+    result=broker_recovery.run(lifecycle); startup_recovery.state=RecoveryState.READY if result.ready else RecoveryState.FAILED; app.state.recovery_result=result; app.state.execution_lifecycle=lifecycle
     local_positions=_persisted_local_positions(lifecycle)
-    try:
-        broker_positions=broker_router.get_positions()
-    except Exception:
-        broker_positions=None
+    try: broker_positions=broker_router.get_positions()
+    except Exception: broker_positions=None
     if broker_positions is None:
-        startup_recovery.state=RecoveryState.FAILED
-        app.state.startup_gate_result=None
+        startup_recovery.state=RecoveryState.FAILED; app.state.startup_gate_result=None
     else:
-        gate_result=startup_gate.evaluate(local_positions,broker_positions)
-        app.state.startup_gate_result=gate_result
-        if not gate_result.ready:
-            startup_recovery.state=RecoveryState.FAILED
+        gate_result=startup_gate.evaluate(local_positions,broker_positions); app.state.startup_gate_result=gate_result
+        if not gate_result.ready: startup_recovery.state=RecoveryState.FAILED
     yield
 
-app=FastAPI(title="AI Trading Platform",version="1.0.0",lifespan=lifespan)
-app.add_middleware(CORSMiddleware,allow_origins=["*"],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
+app=FastAPI(title='AI Trading Platform',version='1.0.0',lifespan=lifespan)
+app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=True,allow_methods=['*'],allow_headers=['*'])
 for router in [ai_router,ai_strategy_router,ai_intelligence_router,analysis_router,auth_router,backtest_router,backtest_engine_router,broker_router,broker_accounts_router,broker_connection_router,broker_account_state_router,portfolio_state_router,upstox_oauth_router,upstox_oauth_complete_router,candle_builder_router,confluence_router,data_provider_router,ensemble_router,ensemble_v2_router,execution_lifecycle_router,historical_backfill_router,historical_market_store_router,health_router,ict_smc_router,ict_zones_router,journal_router,market_data_router,market_data_normalizer_router,markets_router,ml_trainer_router,ml_training_router,model_registry_router,mtf_aggregator_router,mtf_analysis_router,mtf_ensemble_router,notifications_router,options_router,orders_router,paper_router,paper_execution_router,portfolio_router,position_manager_router,protection_engine_router,realtime_market_stream_router,reconciliation_router,recovery_router,replay_router,risk_router,risk_engine_router,scanner_router,signals_router,strategy_backtest_router,stream_router,stream_pipeline_router,trade_risk_router,unified_backtest_router,walk_forward_router]: app.include_router(router)
