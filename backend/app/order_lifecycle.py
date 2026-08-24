@@ -22,28 +22,24 @@ class PositionRecord:
     symbol:str; side:str; quantity:float; entry_price:float; status:PositionStatus=PositionStatus.OPEN; exit_price:float|None=None; realized_pnl:float=0.0
 
 class OrderLifecycle:
-    def __init__(self): self.orders={}; self.positions={}; self.realized_pnl_by_symbol={}; self.realized_pnl_by_day={}
+    def __init__(self): self.orders={}; self.positions={}; self.realized_pnl_by_symbol={}; self.realized_pnl_by_day={}; self._applied_fill_ids=set()
     def create(self,order_id,symbol,side,quantity,**metadata):
         if order_id in self.orders: raise ValueError("duplicate order_id")
         allowed={k:v for k,v in metadata.items() if k in OrderRecord.__dataclass_fields__}
         self.orders[order_id]=OrderRecord(order_id,symbol.upper(),side.upper(),quantity,**allowed); return self.orders[order_id]
 
-    def apply_fill(self, order_id, quantity, price):
-        """Apply one new execution fill event exactly once by quantity/value accounting."""
-        order=self.orders[order_id]
-        quantity=float(quantity); price=float(price)
+    def apply_fill(self, order_id, quantity, price, fill_id=None):
+        """Apply one execution fill event; repeated fill_id values are ignored."""
+        if fill_id is not None and fill_id in self._applied_fill_ids: return self.orders[order_id]
+        order=self.orders[order_id]; quantity=float(quantity); price=float(price)
         if quantity<=0: raise ValueError("fill quantity must be positive")
         if price<=0: raise ValueError("fill price must be positive")
         if order.filled_quantity + quantity > order.quantity: raise ValueError("invalid filled quantity")
-        new_filled=order.filled_quantity + quantity
-        new_value=order.applied_fill_value + quantity*price
-        order.filled_quantity=new_filled
-        order.average_fill_price=new_value/new_filled
-        order.applied_fill_quantity=new_filled
-        order.applied_fill_value=new_value
-        order.status=OrderStatus.FILLED if new_filled==order.quantity else OrderStatus.PARTIALLY_FILLED
-        order.updated_at=datetime.now(timezone.utc)
+        new_filled=order.filled_quantity + quantity; new_value=order.applied_fill_value + quantity*price
+        order.filled_quantity=new_filled; order.average_fill_price=new_value/new_filled; order.applied_fill_quantity=new_filled; order.applied_fill_value=new_value
+        order.status=OrderStatus.FILLED if new_filled==order.quantity else OrderStatus.PARTIALLY_FILLED; order.updated_at=datetime.now(timezone.utc)
         self._apply_position_delta(order,quantity,price)
+        if fill_id is not None: self._applied_fill_ids.add(fill_id)
         return order
 
     def transition(self,order_id,status,filled_quantity=0.0,fill_price=None):
@@ -56,8 +52,7 @@ class OrderLifecycle:
             fill_price=float(fill_price)
             if fill_price<=0: raise ValueError("fill price must be positive")
             order.average_fill_price=fill_price
-        order.updated_at=datetime.now(timezone.utc)
-        delta_quantity=filled_quantity-order.applied_fill_quantity
+        order.updated_at=datetime.now(timezone.utc); delta_quantity=filled_quantity-order.applied_fill_quantity
         if delta_quantity>0:
             if order.average_fill_price is None: raise ValueError("fill price is required when applying a fill")
             cumulative_value=filled_quantity*order.average_fill_price; delta_value=cumulative_value-order.applied_fill_value
