@@ -1,6 +1,6 @@
 import React from 'react';
-import AiDashboardScreen from './screens/AiDashboardScreen';
+import AiNavigator from './navigation/AiNavigator';
 
 export default function App() {
-  return <AiDashboardScreen />;
+  return <AiNavigator />;
 }
