@@ -11,6 +11,7 @@ class AuthorizationResult:
     allowed: bool
     code: str = "OK"
     reason: str | None = None
+    risk_snapshot: Any = None
 
 
 class ExecutionAuthorization:
@@ -60,11 +61,25 @@ class ExecutionAuthorization:
         if self.risk_snapshot_provider is None:
             return self._result(AuthorizationResult(False, "RISK_SNAPSHOT_UNAVAILABLE", "risk snapshot provider unavailable"), request)
         try:
-            snapshot = self.risk_snapshot_provider(request)
-            fingerprint = getattr(snapshot, "broker_snapshot_fingerprint", None)
-            decision = self.risk_gate.authorize(request, snapshot)
-            if not decision.allowed:
-                return self._result(AuthorizationResult(False, "RISK_REJECTED", decision.reason), request, {"broker_snapshot_fingerprint": fingerprint})
-            return self._result(AuthorizationResult(True), request, {"broker_snapshot_fingerprint": fingerprint})
+            first_snapshot = self.risk_snapshot_provider(request)
+            first_fingerprint = getattr(first_snapshot, "broker_snapshot_fingerprint", None)
+            first_decision = self.risk_gate.authorize(request, first_snapshot) if hasattr(self.risk_gate, "authorize") else self.risk_gate.evaluate(request, first_snapshot)
+            if not first_decision.allowed:
+                return self._result(AuthorizationResult(False, "RISK_REJECTED", first_decision.reason), request, {"broker_snapshot_fingerprint": first_fingerprint})
+
+            # Re-read broker state immediately before reservation/submission. Freshness
+            # alone cannot protect against an external order changing exposure after
+            # the first risk snapshot was authorized.
+            second_snapshot = self.risk_snapshot_provider(request)
+            second_fingerprint = getattr(second_snapshot, "broker_snapshot_fingerprint", None)
+            if first_fingerprint is None or second_fingerprint is None:
+                return self._result(AuthorizationResult(False, "RISK_BROKER_SNAPSHOT_UNVERIFIABLE", "broker snapshot fingerprint unavailable"), request)
+            if str(first_fingerprint) != str(second_fingerprint):
+                return self._result(AuthorizationResult(False, "RISK_BROKER_SNAPSHOT_CHANGED", "broker state changed during authorization"), request, {"first_broker_snapshot_fingerprint": first_fingerprint, "second_broker_snapshot_fingerprint": second_fingerprint})
+
+            second_decision = self.risk_gate.authorize(request, second_snapshot) if hasattr(self.risk_gate, "authorize") else self.risk_gate.evaluate(request, second_snapshot)
+            if not second_decision.allowed:
+                return self._result(AuthorizationResult(False, "RISK_REJECTED", second_decision.reason), request, {"broker_snapshot_fingerprint": second_fingerprint})
+            return self._result(AuthorizationResult(True, risk_snapshot=second_snapshot), request, {"broker_snapshot_fingerprint": second_fingerprint})
         except Exception as exc:
             return self._result(AuthorizationResult(False, "RISK_GATE_ERROR", str(exc)), request)
