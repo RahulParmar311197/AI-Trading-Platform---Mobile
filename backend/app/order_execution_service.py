@@ -62,9 +62,20 @@ class OrderExecutionService:
     def _authorize_risk(self,request):
         if self.risk_gate is None:return None
         if self.risk_snapshot_provider is None:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message="RISK_SNAPSHOT_UNAVAILABLE")
-        try:decision=self.risk_gate.reserve(request,self._risk_snapshot(request))
+        try:
+            initial=self._risk_snapshot(request)
+            decision=self.risk_gate.reserve(request,initial)
+            if not decision.allowed:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message=decision.reason)
+            fingerprint=initial.broker_snapshot_fingerprint
+            if fingerprint is not None:
+                try: latest=self._risk_snapshot(request)
+                except Exception:
+                    self.risk_gate.release(request.client_order_id)
+                    return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message="RISK_BROKER_SNAPSHOT_UNAVAILABLE")
+                if latest.broker_snapshot_fingerprint != fingerprint:
+                    self.risk_gate.release(request.client_order_id)
+                    return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message="RISK_BROKER_SNAPSHOT_CHANGED")
         except Exception:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message="RISK_GATE_ERROR")
-        if not decision.allowed:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message=decision.reason)
         return None
     def submit(self,request):
         with self._claim_lock:
