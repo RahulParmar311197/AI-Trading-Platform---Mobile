@@ -18,6 +18,10 @@ class OrderRequest(BaseModel):
 def require_trading_ready(request:Request)->None:
     resources=getattr(request.app.state,"resources",None); safety_store=resources.safety_store if resources else SafetyStateStore(); state=safety_store.load()
     if state.trading_halted: raise HTTPException(status_code=409,detail={"code":"TRADING_HALTED","reason":state.halt_reason})
+    startup_state=getattr(request.app.state,"startup_execution_state",None)
+    if startup_state is None and resources is not None: startup_state=resources.startup_execution_state
+    if startup_state is not None and not startup_state.execution_allowed:
+        raise HTTPException(status_code=409,detail={"code":"STARTUP_EXECUTION_LOCKED","reason":startup_state.status.reason or startup_state.state.value})
 def get_order_db(request:Request,db:Session=Depends(get_db)):
     resources=getattr(request.app.state,"resources",None)
     if resources and resources.session_local is not None:
@@ -32,8 +36,9 @@ def _execution_service(broker_router,execution_store,idempotency_store,recovery,
     from app.order_lifecycle import OrderLifecycle
     lifecycle=OrderLifecycle(); execution_store.load(lifecycle); settings=__import__("app.config",fromlist=["get_settings"]).get_settings()
     gate=PreTradeRiskGate(RiskLimits(settings.risk_max_order_quantity,settings.risk_max_position_quantity,settings.risk_max_daily_loss,settings.risk_max_trade_loss)); provider=RuntimeRiskSnapshotProvider(broker_router,lifecycle,settings.risk_trading_day_timezone,settings.risk_max_snapshot_age_seconds)
-    authorization=resources.authorization or ExecutionAuthorization(resources.safety_store,gate,provider)
-    return OrderExecutionService(broker_router,lifecycle,execution_store,idempotency_store,recovery=recovery,risk_gate=gate,risk_snapshot_provider=provider,safety_state_store=resources.safety_store,authorization=authorization)
+    authorization=ExecutionAuthorization(resources.safety_store,gate,provider)
+    startup_state=getattr(resources,"startup_execution_state",None)
+    return OrderExecutionService(broker_router,lifecycle,execution_store,idempotency_store,recovery=recovery,risk_gate=gate,risk_snapshot_provider=provider,safety_state_store=resources.safety_store,authorization=authorization,startup_execution_state=startup_state)
 def _broker_request(client_order_id,symbol,side,quantity,order_type="MARKET",price=None,stop=None,security_id=""):return BrokerOrderRequest(client_order_id=client_order_id,symbol=symbol,side=side,quantity=quantity,order_type=order_type,price=price,stop=stop,security_id=security_id)
 @router.post("")
 def create_order(payload:OrderRequest,request:Request,response:Response,db:Session=Depends(get_order_db),_:None=Depends(require_trading_ready),idempotency_key:str|None=Header(default=None,alias="Idempotency-Key")):
