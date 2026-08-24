@@ -8,7 +8,8 @@ async function getJson(path, baseUrl = DEFAULT_BASE_URL) {
 }
 
 export const marketDataApi = {
-  quote: (symbol, baseUrl) => getJson(`/api/market/quote/${encodeURIComponent(symbol)}`, baseUrl),
-  candles: (symbol, timeframe = '5m', limit = 200, baseUrl) => getJson(`/api/market/candles/${encodeURIComponent(symbol)}?timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`, baseUrl),
-  health: (baseUrl) => getJson('/api/market/health', baseUrl),
+  markets: (baseUrl) => getJson('/markets', baseUrl),
+  candles: (symbol = 'NIFTY', limit = 200, baseUrl) => getJson(`/candles?symbol=${encodeURIComponent(symbol)}&limit=${limit}`, baseUrl),
+  normalizedCandles: (symbol = 'NIFTY', timeframe = '5m', limit = 200, baseUrl) => getJson(`/api/market-data/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`, baseUrl),
+  marketAnalysis: (symbol = 'NIFTY', limit = 200, baseUrl) => getJson(`/analysis?symbol=${encodeURIComponent(symbol)}&limit=${limit}`, baseUrl),
 };
