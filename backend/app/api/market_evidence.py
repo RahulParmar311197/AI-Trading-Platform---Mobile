@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Query
 import pandas as pd
 from app.api.market_data import get_candles
 from app.smc.engine import analyze
+from app.ict_engine import structure as ict_analyze
 
 router = APIRouter(prefix="/api/market-data", tags=["market-evidence"])
 
@@ -13,12 +14,13 @@ def market_evidence(symbol: str = Query("NIFTY"), timeframe: str = Query("5m"), 
         raise HTTPException(status_code=503, detail="insufficient market data for evidence")
     frame = pd.DataFrame(candles)
     smc = analyze(frame)
+    ict = ict_analyze(candles)
     return {
         "symbol": payload["symbol"],
         "timeframe": payload["timeframe"],
         "facts": {"latest": candles[-1], "candle_count": len(candles)},
         "technical": payload["indicators"],
         "smc": smc,
-        "ict": {"status": "pending", "note": "ICT-specific evidence must be populated by the ICT analysis service; no values are invented here."},
+        "ict": ict,
         "data_quality": {"source": "normalized_market_data", "complete": True},
     }
