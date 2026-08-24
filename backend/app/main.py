@@ -11,6 +11,7 @@ from app.api.auth import router as auth_router
 from app.api.backtest import router as backtest_router
 from app.api.backtest_engine import router as backtest_engine_router
 from app.api.broker import router as broker_router
+from app.api.broker_accounts import router as broker_accounts_router
 from app.api.candle_builder import router as candle_builder_router
 from app.api.confluence import router as confluence_router
 from app.api.data_provider import router as data_provider_router
@@ -74,7 +75,6 @@ broker_router = build_broker_router(safety_store)
 broker_recovery = BrokerStartupRecovery(broker_router, execution_store, safety_store, recovery_manager)
 startup_recovery = StartupRecoveryCoordinator()
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -86,13 +86,12 @@ async def lifespan(app: FastAPI):
     app.state.execution_lifecycle = lifecycle
     yield
 
-
 app = FastAPI(title="AI Trading Platform", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 for router in [
     ai_router, ai_strategy_router, ai_intelligence_router, analysis_router, auth_router, backtest_router, backtest_engine_router,
-    broker_router, candle_builder_router, confluence_router, data_provider_router, ensemble_router,
+    broker_router, broker_accounts_router, candle_builder_router, confluence_router, data_provider_router, ensemble_router,
     ensemble_v2_router, execution_lifecycle_router, historical_backfill_router, historical_market_store_router,
     health_router, ict_smc_router, ict_zones_router, journal_router, market_data_router,
     market_data_normalizer_router, markets_router, ml_trainer_router, ml_training_router, model_registry_router,
