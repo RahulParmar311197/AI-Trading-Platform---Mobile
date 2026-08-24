@@ -33,7 +33,7 @@ class OrderExecutionService:
     def _assert_safety_ready(self):
         result=self.authorization.check_safety()
         if not result.allowed:return ExecutionResult("",OrderStatus.REJECTED.value,message=f"{result.code}: {result.reason or 'execution blocked'}")
-        if not self.startup_state.execution_allowed:return ExecutionResult("",OrderStatus.REJECTED.value,message=f"STARTUP_EXECUTION_LOCKED: {self.startup_state.state.value}")
+        if not self.startup_state.execution_allowed:return ExecutionResult("",OrderStatus.REJECTED.value,message=f"STARTUP_EXECUTION_LOCKED: {self.startup_state.status.reason or self.startup_state.state.value}")
     def _recover_broker_order(self,client_order_id):return self.router.find_order_by_client_id(client_order_id)
     @staticmethod
     def _validate_recovered_identity(request,recovered):
@@ -76,8 +76,10 @@ class OrderExecutionService:
         if request.client_order_id in self.lifecycle.orders:
             order=self.lifecycle.orders[request.client_order_id]
             if order.execution_id is None:order.execution_id=execution_id
+            if order.owner_user_id is None and request.owner_user_id is not None:order.owner_user_id=int(request.owner_user_id)
+            elif request.owner_user_id is not None and order.owner_user_id != int(request.owner_user_id):raise RuntimeError("execution owner mismatch for existing lifecycle order")
             return
-        self.lifecycle.create(request.client_order_id,request.symbol,request.side,request.quantity,execution_id=execution_id,order_type=request.order_type,requested_price=request.price,stop=request.stop,target=request.target,security_id=request.security_id,exchange_segment=request.exchange_segment,product_type=request.product_type,validity=request.validity,trigger_price=request.trigger_price)
+        self.lifecycle.create(request.client_order_id,request.symbol,request.side,request.quantity,execution_id=execution_id,owner_user_id=request.owner_user_id,order_type=request.order_type,requested_price=request.price,stop=request.stop,target=request.target,security_id=request.security_id,exchange_segment=request.exchange_segment,product_type=request.product_type,validity=request.validity,trigger_price=request.trigger_price)
     def _save_recovered(self,request,recovered,message,execution_id):
         self._validate_recovered_identity(request,recovered);broker_id=str(recovered.get("order_id",recovered.get("broker_order_id")))
         if broker_id=="None":raise RuntimeError("broker recovery returned an order without broker order id")
