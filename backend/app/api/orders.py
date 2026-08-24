@@ -48,7 +48,7 @@ def _execution_service(broker_router,execution_store,idempotency_store,recovery,
     if authorization is None: authorization=ExecutionAuthorization(resources.safety_store,gate,provider,audit_log=resources.audit_log)
     startup_state=resources.startup_execution_state
     return OrderExecutionService(broker_router,lifecycle,execution_store,idempotency_store,recovery=recovery,risk_gate=gate,risk_snapshot_provider=provider,safety_state_store=resources.safety_store,authorization=authorization,startup_state=startup_state,audit_log=resources.audit_log)
-def _broker_request(client_order_id,symbol,side,quantity,order_type="MARKET",price=None,stop=None,security_id=""):return BrokerOrderRequest(client_order_id=client_order_id,symbol=symbol,side=side,quantity=quantity,order_type=order_type,price=price,stop=stop,security_id=security_id)
+def _broker_request(client_order_id,symbol,side,quantity,order_type="MARKET",price=None,stop=None,security_id="",owner_user_id=None):return BrokerOrderRequest(client_order_id=client_order_id,symbol=symbol,side=side,quantity=quantity,order_type=order_type,price=price,stop=stop,security_id=security_id,owner_user_id=owner_user_id)
 @router.post("")
 def create_order(payload:OrderRequest,request:Request,response:Response,db:Session=Depends(get_order_db),_:None=Depends(require_trading_ready),idempotency_key:str|None=Header(default=None,alias="Idempotency-Key")):
     from app.startup_recovery import StartupRecoveryCoordinator
@@ -62,7 +62,7 @@ def create_order(payload:OrderRequest,request:Request,response:Response,db:Sessi
     existing=db.query(Order).filter(Order.client_order_id==client_order_id).first()
     if existing is not None:
         if existing.status in {"PENDING","SUBMISSION_INTENT","SUBMITTED","PARTIALLY_FILLED"} or existing.note=="EXECUTION_PENDING_RECONCILIATION":
-            service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources); result=service.submit(_broker_request(client_order_id,existing.symbol,existing.side,existing.quantity,existing.order_type)); existing.status=result.status; existing.broker_order_id=result.broker_order_id; existing.note=result.message; db.commit(); db.refresh(existing); _set_execution_response_status(response,result.status); return _order_response(existing,result.message,result.execution_id)
+            service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources); result=service.submit(_broker_request(client_order_id,existing.symbol,existing.side,existing.quantity,existing.order_type,owner_user_id=existing.user_id)); existing.status=result.status; existing.broker_order_id=result.broker_order_id; existing.note=result.message; db.commit(); db.refresh(existing); _set_execution_response_status(response,result.status); return _order_response(existing,result.message,result.execution_id)
         return _order_response(existing,"IDEMPOTENT_REPLAY")
     symbol=payload.symbol.upper(); order=Order(user_id=payload.user_id,client_order_id=client_order_id,symbol=symbol,side=payload.side,quantity=payload.quantity,order_type=payload.order_type,status="PENDING"); db.add(order)
     try:db.flush()
@@ -70,7 +70,5 @@ def create_order(payload:OrderRequest,request:Request,response:Response,db:Sessi
         db.rollback(); existing=db.query(Order).filter(Order.client_order_id==client_order_id).first()
         if existing is None:raise HTTPException(status_code=409,detail="ORDER_CREATION_CONFLICT")
         return _order_response(existing,"IDEMPOTENT_REPLAY")
-    # Establish a durable API-side execution intent before the broker can be touched.
-    # If this commit fails, no broker submission is attempted and the caller can retry safely.
     _commit_execution_intent(db,order)
-    service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources); result=service.submit(_broker_request(client_order_id,symbol,payload.side,payload.quantity,payload.order_type,payload.price,payload.stop,payload.security_id)); order.status=result.status; order.broker_order_id=result.broker_order_id; order.note=result.message; db.commit(); db.refresh(order); _set_execution_response_status(response,result.status); return _order_response(order,result.message,result.execution_id)
+    service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources); result=service.submit(_broker_request(client_order_id,symbol,payload.side,payload.quantity,payload.order_type,payload.price,payload.stop,payload.security_id,payload.user_id)); order.status=result.status; order.broker_order_id=result.broker_order_id; order.note=result.message; db.commit(); db.refresh(order); _set_execution_response_status(response,result.status); return _order_response(order,result.message,result.execution_id)
