@@ -41,7 +41,7 @@ def map_dhan_position(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def dhan_snapshot(orders: list[dict[str, Any]], positions: list[dict[str, Any]) -> BrokerSnapshot:
+def dhan_snapshot(orders: list[dict[str, Any]], positions: list[dict[str, Any]]) -> BrokerSnapshot:
     return BrokerSnapshot(
         orders=[map_dhan_order(row) for row in orders],
         positions=[map_dhan_position(row) for row in positions],
