@@ -58,20 +58,27 @@ from app.api.stream_pipeline import router as stream_pipeline_router
 from app.api.trade_risk import router as trade_risk_router
 from app.api.unified_backtest import router as unified_backtest_router
 from app.api.walk_forward import router as walk_forward_router
+from app.app_factory import create_resources
 from app.broker_factory import build_broker_router
 from app.broker_recovery import BrokerStartupRecovery
 from app.config import get_settings
 from app.db import init_db
-from app.execution_persistence import ExecutionStateStore
-from app.idempotency_store import IdempotencyStore
 from app.order_lifecycle import OrderLifecycle
 from app.recovery_manager import StartupRecoveryManager
-from app.safety_state import SafetyStateStore
 from app.startup_recovery import RecoveryState, StartupRecoveryCoordinator
 from app.startup_reconciliation_gate import StartupReconciliationGate
 from app.portfolio_reconciliation_service import PortfolioReconciliationService
 
-settings=get_settings(); execution_store=ExecutionStateStore(); idempotency_store=IdempotencyStore(); safety_store=SafetyStateStore(); recovery_manager=StartupRecoveryManager(execution_store,safety_store); broker_router=build_broker_router(safety_store); broker_recovery=BrokerStartupRecovery(broker_router,execution_store,safety_store,recovery_manager); startup_recovery=StartupRecoveryCoordinator(); startup_gate=StartupReconciliationGate(startup_recovery,safety_store,PortfolioReconciliationService())
+settings=get_settings()
+resources=create_resources()
+execution_store=resources.execution_store
+idempotency_store=resources.idempotency_store
+safety_store=resources.safety_store
+recovery_manager=StartupRecoveryManager(execution_store,safety_store)
+broker_router=build_broker_router(safety_store)
+broker_recovery=BrokerStartupRecovery(broker_router,execution_store,safety_store,recovery_manager)
+startup_recovery=StartupRecoveryCoordinator()
+startup_gate=StartupReconciliationGate(startup_recovery,safety_store,PortfolioReconciliationService())
 
 def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str,float]:
     positions:dict[str,float]={}
@@ -82,6 +89,8 @@ def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str,float]:
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
+    app.state.resources=resources
+    app.state.broker_router=broker_router
     init_db(); lifecycle=OrderLifecycle(); app.state.startup_recovery=startup_recovery
     result=broker_recovery.run(lifecycle); startup_recovery.state=RecoveryState.READY if result.ready else RecoveryState.FAILED; app.state.recovery_result=result; app.state.execution_lifecycle=lifecycle
     local_positions=_persisted_local_positions(lifecycle)
