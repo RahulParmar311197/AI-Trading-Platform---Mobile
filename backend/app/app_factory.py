@@ -35,12 +35,13 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     audit_log = TradingAuditLog(audit_path)
     startup_execution_state = StartupExecutionStateMachine(audit_log)
     emergency_halt_controller = EmergencyHaltController(safety_store, startup_execution_state, audit_log)
+    authorization = ExecutionAuthorization(safety_store, audit_log=audit_log)
     return AppResources(
         execution_store=ExecutionStateStore(execution_path),
         idempotency_store=IdempotencyStore(idempotency_path),
         safety_store=safety_store,
         audit_log=audit_log,
-        authorization=ExecutionAuthorization(safety_store),
+        authorization=authorization,
         session_local=session_local,
         startup_execution_state=startup_execution_state,
         emergency_halt_controller=emergency_halt_controller,
