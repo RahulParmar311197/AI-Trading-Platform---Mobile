@@ -1,16 +1,19 @@
+import hashlib
+import inspect
+
 from app.api.orders import OrderRequest, create_order
 from app.auth.security import create_access_token, decode_access_token, hash_password, needs_password_upgrade, verify_password
 
 
 def test_password_hash_is_not_legacy_sha256():
     hashed = hash_password("correct horse battery staple")
-    assert hashed != __import__("hashlib").sha256(b"correct horse battery staple").hexdigest()
+    assert hashed != hashlib.sha256(b"correct horse battery staple").hexdigest()
     assert verify_password("correct horse battery staple", hashed)
     assert not verify_password("wrong password", hashed)
 
 
 def test_legacy_sha256_hash_can_be_verified_and_upgraded():
-    legacy = __import__("hashlib").sha256(b"correct horse battery staple").hexdigest()
+    legacy = hashlib.sha256(b"correct horse battery staple").hexdigest()
     assert needs_password_upgrade(legacy)
     assert verify_password("correct horse battery staple", legacy)
     upgraded = hash_password("correct horse battery staple")
@@ -30,8 +33,9 @@ def test_order_request_user_id_is_optional_because_identity_comes_from_token():
 
 
 def test_order_endpoint_requires_authenticated_identity_dependency():
-    dependency_names = {dependency.call.__name__ for dependency in create_order.__wrapped__.__defaults__ or () if hasattr(dependency, "call")}
-    # FastAPI stores Depends metadata in the signature rather than normal defaults.
-    import inspect
-    dependencies = [p.default.dependency for p in inspect.signature(create_order).parameters.values() if hasattr(p.default, "dependency")]
+    dependencies = [
+        p.default.dependency
+        for p in inspect.signature(create_order).parameters.values()
+        if hasattr(p.default, "dependency")
+    ]
     assert any(getattr(dep, "__name__", "") == "get_current_user" for dep in dependencies)
