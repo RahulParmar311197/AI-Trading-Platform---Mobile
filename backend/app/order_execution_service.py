@@ -26,6 +26,21 @@ class OrderExecutionService:
             if value is not None and str(value).upper()!=str(expected).upper(): raise RuntimeError(f"broker recovery returned an order for a different {key}")
         quantity=recovered.get("quantity",recovered.get("requested_quantity"))
         if quantity is not None and abs(float(quantity)-float(request.quantity))>1e-9: raise RuntimeError("broker recovery returned an order with a different requested quantity")
+    @staticmethod
+    def _validate_submission_result(request,result):
+        broker_id=getattr(result,"order_id",None)
+        if broker_id is None or not str(broker_id).strip():
+            raise RuntimeError("broker submission returned no broker order id")
+        for key,expected in (("client_order_id",request.client_order_id),("symbol",request.symbol),("side",request.side)):
+            value=getattr(result,key,None)
+            if value is not None and str(value).upper()!=str(expected).upper():
+                raise RuntimeError(f"broker submission returned a different {key}")
+        quantity=getattr(result,"quantity",None)
+        if quantity is not None:
+            try:
+                if abs(float(quantity)-float(request.quantity))>1e-9: raise RuntimeError("broker submission returned a different requested quantity")
+            except (TypeError,ValueError):
+                raise RuntimeError("broker submission returned an invalid requested quantity")
     def _map_broker_status(self,status):
         n=status.upper().strip()
         if n in {"FILLED","TRADED","COMPLETE"}:return OrderStatus.FILLED
@@ -92,7 +107,7 @@ class OrderExecutionService:
             risk_result=self._authorize_risk(request)
             if risk_result is not None:self.lifecycle.transition(request.client_order_id,OrderStatus.REJECTED); self.store.save(self.lifecycle); return risk_result
             try:
-                result=self.router.submit(request); status=self._map_broker_status(str(result.status)); self.lifecycle.transition(request.client_order_id,status,filled_quantity=request.quantity if status==OrderStatus.FILLED else 0,fill_price=result.price); self.lifecycle.orders[request.client_order_id].broker_order_id=result.order_id; self.store.save(self.lifecycle); self._settle_risk_reservation(request,status,self.lifecycle.orders[request.client_order_id].filled_quantity)
+                result=self.router.submit(request); self._validate_submission_result(request,result); status=self._map_broker_status(str(result.status)); self.lifecycle.transition(request.client_order_id,status,filled_quantity=request.quantity if status==OrderStatus.FILLED else 0,fill_price=result.price); self.lifecycle.orders[request.client_order_id].broker_order_id=result.order_id; self.store.save(self.lifecycle); self._settle_risk_reservation(request,status,self.lifecycle.orders[request.client_order_id].filled_quantity)
                 if self.idempotency_store is not None and status!=OrderStatus.PARTIALLY_FILLED:self.idempotency_store.mark_completed(request.client_order_id)
                 return ExecutionResult(request.client_order_id,status.value,result.order_id)
             except Exception:
