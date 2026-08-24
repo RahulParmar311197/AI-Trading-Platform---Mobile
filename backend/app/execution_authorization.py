@@ -3,6 +3,7 @@ from typing import Any
 
 from app.safety_state import SafetyStateStore
 from app.session_risk_gate import SessionRiskGate
+from app.trading_audit import TradingAuditLog
 
 
 @dataclass(frozen=True)
@@ -17,12 +18,22 @@ class ExecutionAuthorization:
 
     def __init__(self, safety_store: SafetyStateStore, risk_gate: Any = None,
                  risk_snapshot_provider: Any = None, session_risk_gate: SessionRiskGate | None = None,
-                 session_clock: Any = None):
+                 session_clock: Any = None, audit_log: TradingAuditLog | None = None):
         self.safety_store = safety_store
         self.risk_gate = risk_gate
         self.risk_snapshot_provider = risk_snapshot_provider
         self.session_risk_gate = session_risk_gate
         self.session_clock = session_clock
+        self.audit_log = audit_log or TradingAuditLog()
+
+    def _result(self, result: AuthorizationResult, request: Any = None, metadata: dict | None = None) -> AuthorizationResult:
+        order_id = getattr(request, "client_order_id", None)
+        self.audit_log.record(
+            "EXECUTION_AUTHORIZATION",
+            reason=result.reason,
+            metadata={"client_order_id": order_id, "allowed": result.allowed, "code": result.code, **(metadata or {})},
+        )
+        return result
 
     def check_safety(self) -> AuthorizationResult:
         state = self.safety_store.load()
@@ -33,30 +44,27 @@ class ExecutionAuthorization:
     def check(self, request: Any) -> AuthorizationResult:
         safety = self.check_safety()
         if not safety.allowed:
-            return safety
+            return self._result(safety, request)
         if self.session_risk_gate is not None:
             try:
                 if self.session_clock is None:
-                    return AuthorizationResult(False, "SESSION_CLOCK_UNAVAILABLE", "session clock unavailable")
+                    return self._result(AuthorizationResult(False, "SESSION_CLOCK_UNAVAILABLE", "session clock unavailable"), request)
                 snapshot = self.session_clock(request)
-                result = self.session_risk_gate.evaluate(
-                    snapshot.timestamp,
-                    snapshot.current_equity,
-                    snapshot.realized_daily_pnl,
-                )
+                result = self.session_risk_gate.evaluate(snapshot.timestamp, snapshot.current_equity, snapshot.realized_daily_pnl)
                 if not result.allowed:
-                    return AuthorizationResult(False, "SESSION_RISK_REJECTED", result.reason)
+                    return self._result(AuthorizationResult(False, "SESSION_RISK_REJECTED", result.reason), request)
             except Exception as exc:
-                return AuthorizationResult(False, "SESSION_RISK_GATE_ERROR", str(exc))
+                return self._result(AuthorizationResult(False, "SESSION_RISK_GATE_ERROR", str(exc)), request)
         if self.risk_gate is None:
-            return AuthorizationResult(True)
+            return self._result(AuthorizationResult(True), request)
         if self.risk_snapshot_provider is None:
-            return AuthorizationResult(False, "RISK_SNAPSHOT_UNAVAILABLE", "risk snapshot provider unavailable")
+            return self._result(AuthorizationResult(False, "RISK_SNAPSHOT_UNAVAILABLE", "risk snapshot provider unavailable"), request)
         try:
             snapshot = self.risk_snapshot_provider(request)
+            fingerprint = getattr(snapshot, "broker_snapshot_fingerprint", None)
             decision = self.risk_gate.authorize(request, snapshot)
             if not decision.allowed:
-                return AuthorizationResult(False, "RISK_REJECTED", decision.reason)
+                return self._result(AuthorizationResult(False, "RISK_REJECTED", decision.reason), request, {"broker_snapshot_fingerprint": fingerprint})
+            return self._result(AuthorizationResult(True), request, {"broker_snapshot_fingerprint": fingerprint})
         except Exception as exc:
-            return AuthorizationResult(False, "RISK_GATE_ERROR", str(exc))
-        return AuthorizationResult(True)
+            return self._result(AuthorizationResult(False, "RISK_GATE_ERROR", str(exc)), request)
