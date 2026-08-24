@@ -65,12 +65,12 @@ from app.config import get_settings
 from app.db import init_db
 from app.order_lifecycle import OrderLifecycle
 from app.recovery_manager import StartupRecoveryManager
-from app.startup_recovery import RecoveryState, StartupRecoveryCoordinator
 from app.startup_reconciliation_gate import StartupReconciliationGate
+from app.startup_execution_state import StartupExecutionState, StartupExecutionStateMachine
 from app.portfolio_reconciliation_service import PortfolioReconciliationService
 
 settings=get_settings(); resources=create_resources(); execution_store=resources.execution_store; idempotency_store=resources.idempotency_store; safety_store=resources.safety_store
-execution_broker_router=build_broker_router(safety_store); recovery_manager=StartupRecoveryManager(execution_store,safety_store); broker_recovery=BrokerStartupRecovery(execution_broker_router,execution_store,safety_store,recovery_manager); startup_recovery=StartupRecoveryCoordinator(); startup_gate=StartupReconciliationGate(startup_recovery,safety_store,PortfolioReconciliationService())
+execution_broker_router=build_broker_router(safety_store); recovery_manager=StartupRecoveryManager(execution_store,safety_store); broker_recovery=BrokerStartupRecovery(execution_broker_router,execution_store,safety_store,recovery_manager); startup_state=StartupExecutionStateMachine(); startup_gate=StartupReconciliationGate(startup_state,safety_store,PortfolioReconciliationService())
 
 def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str,float]:
     positions={}
@@ -81,15 +81,27 @@ def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str,float]:
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
-    app.state.resources=resources; app.state.broker_router=execution_broker_router; init_db(); lifecycle=OrderLifecycle(); app.state.startup_recovery=startup_recovery
-    result=broker_recovery.run(lifecycle); startup_recovery.state=RecoveryState.READY if result.ready else RecoveryState.FAILED; app.state.recovery_result=result; app.state.execution_lifecycle=lifecycle
-    local_positions=_persisted_local_positions(lifecycle)
-    try: broker_positions=execution_broker_router.get_positions()
-    except Exception: broker_positions=None
-    if broker_positions is None: startup_recovery.state=RecoveryState.FAILED; app.state.startup_gate_result=None
+    app.state.resources=resources; app.state.broker_router=execution_broker_router; init_db(); lifecycle=OrderLifecycle(); app.state.startup_execution_state=startup_state
+    startup_state.transition(StartupExecutionState.RECOVERING)
+    result=broker_recovery.run(lifecycle); app.state.recovery_result=result
+    if not result.ready:
+        startup_state.fail('broker startup recovery failed')
     else:
-        gate_result=startup_gate.evaluate(local_positions,broker_positions); app.state.startup_gate_result=gate_result
-        if not gate_result.ready: startup_recovery.state=RecoveryState.FAILED
+        startup_state.transition(StartupExecutionState.BROKER_RECONCILED)
+        local_positions=_persisted_local_positions(lifecycle)
+        try: broker_positions=execution_broker_router.get_positions()
+        except Exception as exc: broker_positions=None; broker_error=str(exc)
+        if broker_positions is None:
+            startup_state.fail(f'broker position snapshot unavailable: {locals().get("broker_error", "unknown error")}')
+            app.state.startup_gate_result=None
+        else:
+            gate_result=startup_gate.evaluate(local_positions,broker_positions); app.state.startup_gate_result=gate_result
+            if not gate_result.ready:
+                startup_state.fail('portfolio reconciliation failed')
+            else:
+                startup_state.transition(StartupExecutionState.PORTFOLIO_RECONCILED)
+                startup_state.transition(StartupExecutionState.RISK_READY)
+                startup_state.transition(StartupExecutionState.READY)
     yield
 
 app=FastAPI(title='AI Trading Platform',version='1.0.0',lifespan=lifespan); app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=True,allow_methods=['*'],allow_headers=['*'])
