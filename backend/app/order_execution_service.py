@@ -10,7 +10,6 @@ from app.idempotency_store import IdempotencyStore
 from app.order_lifecycle import OrderLifecycle, OrderStatus
 from app.risk_gate import PreTradeRiskGate, RiskSnapshot
 from app.startup_recovery import StartupRecoveryCoordinator
-from app.startup_execution_state import StartupExecutionStateMachine
 from app.safety_state import SafetyStateStore
 from app.execution_authorization import ExecutionAuthorization
 from app.trading_audit import TradingAuditLog
@@ -27,14 +26,10 @@ class OrderExecutionService:
         self.startup_state=startup_state; self.audit_log=audit_log or getattr(startup_state,"audit_log",None) or TradingAuditLog(); self.authorization=authorization or ExecutionAuthorization(safety_state_store or SafetyStateStore(),risk_gate,risk_snapshot_provider,audit_log=self.audit_log)
         if self.risk_gate is not None:self.risk_gate.rebuild_from_lifecycle(self.lifecycle)
     def _audit(self,event_type,execution_id,request=None,**metadata):self.audit_log.record(event_type,metadata={"execution_id":execution_id,"client_order_id":getattr(request,"client_order_id",None),**metadata})
-    def _authorize_execution(self,request,execution_id):
-        result=self.authorization.check(request);self._audit("EXECUTION_AUTHORIZATION_CORRELATED",execution_id,request,allowed=result.allowed,code=result.code,reason=result.reason)
-        if not result.allowed:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message=f"{result.code}: {result.reason or 'execution blocked'}",execution_id=execution_id)
     def _assert_safety_ready(self):
         result=self.authorization.check_safety()
         if not result.allowed:return ExecutionResult("",OrderStatus.REJECTED.value,message=f"{result.code}: {result.reason or 'execution blocked'}")
         if not self.startup_state.execution_allowed:return ExecutionResult("",OrderStatus.REJECTED.value,message=f"STARTUP_EXECUTION_LOCKED: {self.startup_state.status.reason or self.startup_state.state.value}")
-    def _recover_broker_order(self,client_order_id):return self.router.find_order_by_client_id(client_order_id)
     @staticmethod
     def _validate_recovered_identity(request,recovered):
         for key,expected in (("client_order_id",request.client_order_id),("symbol",request.symbol),("side",request.side)):
@@ -78,8 +73,12 @@ class OrderExecutionService:
             if order.execution_id is None:order.execution_id=execution_id
             if order.owner_user_id is None and request.owner_user_id is not None:order.owner_user_id=int(request.owner_user_id)
             elif request.owner_user_id is not None and order.owner_user_id != int(request.owner_user_id):raise RuntimeError("execution owner mismatch for existing lifecycle order")
+            if order.broker_account_id is None and request.broker_account_id is not None:order.broker_account_id=int(request.broker_account_id)
+            elif request.broker_account_id is not None and order.broker_account_id != int(request.broker_account_id):raise RuntimeError("broker account mismatch for existing lifecycle order")
+            if order.broker_route is None and request.broker_route is not None:order.broker_route=str(request.broker_route)
+            elif request.broker_route is not None and order.broker_route != str(request.broker_route):raise RuntimeError("broker route mismatch for existing lifecycle order")
             return
-        self.lifecycle.create(request.client_order_id,request.symbol,request.side,request.quantity,execution_id=execution_id,owner_user_id=request.owner_user_id,order_type=request.order_type,requested_price=request.price,stop=request.stop,target=request.target,security_id=request.security_id,exchange_segment=request.exchange_segment,product_type=request.product_type,validity=request.validity,trigger_price=request.trigger_price)
+        self.lifecycle.create(request.client_order_id,request.symbol,request.side,request.quantity,execution_id=execution_id,owner_user_id=request.owner_user_id,broker_account_id=request.broker_account_id,broker_route=request.broker_route,order_type=request.order_type,requested_price=request.price,stop=request.stop,target=request.target,security_id=request.security_id,exchange_segment=request.exchange_segment,product_type=request.product_type,validity=request.validity,trigger_price=request.trigger_price)
     def _save_recovered(self,request,recovered,message,execution_id):
         self._validate_recovered_identity(request,recovered);broker_id=str(recovered.get("order_id",recovered.get("broker_order_id")))
         if broker_id=="None":raise RuntimeError("broker recovery returned an order without broker order id")
@@ -88,35 +87,28 @@ class OrderExecutionService:
         return ExecutionResult(request.client_order_id,status.value,broker_id,message,execution_id)
     def _reconcile_ambiguous_submission(self,request,execution_id,original_error):
         self._audit("BROKER_SUBMISSION_AMBIGUOUS",execution_id,request,error=str(original_error))
-        try:recovered=self._recover_broker_order(request.client_order_id)
+        try:recovered=self.router.find_order_by_client_id(request.client_order_id,request.broker_route)
         except Exception as recovery_error:self._audit("BROKER_RECOVERY_ERROR",execution_id,request,error=str(recovery_error));return None
         if recovered is not None:
             try:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED_AFTER_AMBIGUOUS_SUBMISSION",execution_id)
-            except Exception as recovery_error:
-                self._audit("BROKER_RECOVERY_ERROR",execution_id,request,error=str(recovery_error));return None
+            except Exception as recovery_error:self._audit("BROKER_RECOVERY_ERROR",execution_id,request,error=str(recovery_error));return None
         self._audit("BROKER_SUBMISSION_UNRESOLVED",execution_id,request,reason="no broker order found after ambiguous submission");return None
     def _release_reservation(self,request,execution_id,reason):
-        if self.risk_gate is not None:
-            self.risk_gate.release(request.client_order_id);self._audit("RISK_EXPOSURE_RELEASED",execution_id,request,reason=reason)
+        if self.risk_gate is not None:self.risk_gate.release(request.client_order_id);self._audit("RISK_EXPOSURE_RELEASED",execution_id,request,reason=reason)
     def submit(self,request):
         execution_id=str(uuid.uuid4());self._audit("EXECUTION_STARTED",execution_id,request);safety_result=self._assert_safety_ready()
         if safety_result is not None:self._audit("EXECUTION_BLOCKED",execution_id,request,reason=safety_result.message);return ExecutionResult(request.client_order_id,safety_result.status,message=safety_result.message,execution_id=execution_id)
+        if not request.broker_account_id or not request.broker_route:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message="BROKER_ACCOUNT_BINDING_REQUIRED",execution_id=execution_id)
         with self._claim_lock:
-            safety_result=self._assert_safety_ready()
-            if safety_result is not None:self._audit("EXECUTION_BLOCKED",execution_id,request,reason=safety_result.message);return ExecutionResult(request.client_order_id,safety_result.status,message=safety_result.message,execution_id=execution_id)
-            authorization_result=self.authorization.check(request)
-            self._audit("EXECUTION_AUTHORIZATION_CORRELATED",execution_id,request,allowed=authorization_result.allowed,code=authorization_result.code,reason=authorization_result.reason)
+            authorization_result=self.authorization.check(request);self._audit("EXECUTION_AUTHORIZATION_CORRELATED",execution_id,request,allowed=authorization_result.allowed,code=authorization_result.code,reason=authorization_result.reason)
             if not authorization_result.allowed:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message=f"{authorization_result.code}: {authorization_result.reason or 'execution blocked'}",execution_id=execution_id)
             reservation_acquired=False
             if self.risk_gate is not None:
                 snapshot=authorization_result.risk_snapshot
                 if snapshot is None:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message="RISK_SNAPSHOT_UNAVAILABLE: authorized execution has no risk snapshot",execution_id=execution_id)
                 reservation=self.risk_gate.reserve(request,snapshot)
-                if not reservation.allowed:
-                    self._audit("RISK_EXPOSURE_RESERVATION_REJECTED",execution_id,request,reason=reservation.reason)
-                    return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message=reservation.reason,execution_id=execution_id)
-                reservation_acquired=True
-                self._audit("RISK_EXPOSURE_RESERVED",execution_id,request,signed_quantity=self.risk_gate.reservations.get(request.client_order_id))
+                if not reservation.allowed:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message=reservation.reason,execution_id=execution_id)
+                reservation_acquired=True;self._audit("RISK_EXPOSURE_RESERVED",execution_id,request,signed_quantity=self.risk_gate.reservations.get(request.client_order_id))
             existing=self.lifecycle.orders.get(request.client_order_id)
             if existing is not None and existing.status in {OrderStatus.FILLED,OrderStatus.CANCELLED,OrderStatus.REJECTED}:
                 if reservation_acquired:self._release_reservation(request,execution_id,"IDEMPOTENT_REPLAY")
@@ -124,30 +116,27 @@ class OrderExecutionService:
             if not self.startup_state.execution_allowed:
                 if reservation_acquired:self._release_reservation(request,execution_id,"STARTUP_EXECUTION_LOCKED")
                 return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message=f"LIVE_EXECUTION_LOCKED_STARTUP_STATE_{self.startup_state.state.value}",execution_id=execution_id)
-            claim_acquired=False
             if self.idempotency_store is not None and not self.idempotency_store.claim(request.client_order_id,execution_id):
-                claim=self.idempotency_store.get_claim(request.client_order_id)
-                try:recovered=self._recover_broker_order(request.client_order_id)
+                try:recovered=self.router.find_order_by_client_id(request.client_order_id,request.broker_route)
                 except Exception as recovery_error:
                     if reservation_acquired:self._release_reservation(request,execution_id,"IDEMPOTENCY_CLAIM_RECOVERY_ERROR")
-                    self._audit("BROKER_RECOVERY_ERROR",execution_id,request,error=str(recovery_error));return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message="EXECUTION_PENDING_RECONCILIATION_RECOVERY_ERROR",execution_id=execution_id)
+                    return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message="EXECUTION_PENDING_RECONCILIATION_RECOVERY_ERROR",execution_id=execution_id)
                 if recovered is not None:
                     try:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED_FROM_PERSISTED_CLAIM",execution_id)
-                    except Exception as recovery_error:
+                    except Exception:
                         if reservation_acquired:self._release_reservation(request,execution_id,"PERSISTED_CLAIM_RECOVERY_ERROR")
-                        self._audit("BROKER_RECOVERY_ERROR",execution_id,request,error=str(recovery_error));return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message="EXECUTION_PENDING_RECONCILIATION_RECOVERY_ERROR",execution_id=execution_id)
+                        return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message="EXECUTION_PENDING_RECONCILIATION_RECOVERY_ERROR",execution_id=execution_id)
                 if reservation_acquired:self._release_reservation(request,execution_id,"EXECUTION_CLAIMED_BY_OTHER")
-                return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message=f"EXECUTION_PENDING_RECONCILIATION_CLAIMED_BY_{claim.get('execution_id') if claim else 'UNKNOWN'}",execution_id=execution_id)
-            claim_acquired=self.idempotency_store is None or True
+                return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message="EXECUTION_PENDING_RECONCILIATION_CLAIMED_BY_OTHER",execution_id=execution_id)
             try:
-                recovered=self._recover_broker_order(request.client_order_id)
+                recovered=self.router.find_order_by_client_id(request.client_order_id,request.broker_route)
                 if recovered is not None:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED",execution_id)
                 self._create_lifecycle_record(request,execution_id);self.lifecycle.transition(request.client_order_id,OrderStatus.SUBMISSION_INTENT);self.store.save(self.lifecycle);self._audit("SUBMISSION_INTENT",execution_id,request)
-            except Exception as pre_submit_error:
+            except Exception:
                 if reservation_acquired:self._release_reservation(request,execution_id,"PRE_SUBMISSION_FAILURE")
-                self._audit("EXECUTION_PRE_SUBMISSION_FAILURE",execution_id,request,error=str(pre_submit_error));return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message="EXECUTION_PENDING_RECONCILIATION_PRE_SUBMISSION_FAILURE",execution_id=execution_id)
+                return ExecutionResult(request.client_order_id,OrderStatus.SUBMITTED.value,message="EXECUTION_PENDING_RECONCILIATION_PRE_SUBMISSION_FAILURE",execution_id=execution_id)
             try:
-                result=self.router.submit(request);self._validate_submission_result(request,result);status=self._map_broker_status(str(result.status));filled=float(result.filled_quantity or 0) if result.filled_quantity is not None else 0.0;average=result.average_price if result.average_price is not None else result.price;self.lifecycle.transition(request.client_order_id,status,filled_quantity=filled,fill_price=average);self.lifecycle.orders[request.client_order_id].broker_order_id=result.order_id;self.store.save(self.lifecycle);self._settle_risk_reservation(request,status,filled);self._finalize_idempotency(request,status);self._audit("BROKER_SUBMISSION_RESULT",execution_id,request,broker_order_id=result.order_id,status=status.value,filled_quantity=filled,average_price=average);return ExecutionResult(request.client_order_id,status.value,result.order_id,None,execution_id)
+                result=self.router.submit(request,request.broker_route);self._validate_submission_result(request,result);status=self._map_broker_status(str(result.status));filled=float(result.filled_quantity or 0) if result.filled_quantity is not None else 0.0;average=result.average_price if result.average_price is not None else result.price;self.lifecycle.transition(request.client_order_id,status,filled_quantity=filled,fill_price=average);self.lifecycle.orders[request.client_order_id].broker_order_id=result.order_id;self.store.save(self.lifecycle);self._settle_risk_reservation(request,status,filled);self._finalize_idempotency(request,status);self._audit("BROKER_SUBMISSION_RESULT",execution_id,request,broker_order_id=result.order_id,status=status.value,filled_quantity=filled,average_price=average);return ExecutionResult(request.client_order_id,status.value,result.order_id,None,execution_id)
             except Exception as exc:
                 recovered_result=self._reconcile_ambiguous_submission(request,execution_id,exc)
                 if recovered_result is not None:return recovered_result
