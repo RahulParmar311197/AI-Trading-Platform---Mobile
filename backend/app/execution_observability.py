@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import Lock
+from typing import Callable
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,7 @@ class ExecutionMetricsScope:
 
 
 class ExecutionObservability:
-    """Thread-safe aggregate and broker-account-scoped execution counters."""
+    """Thread-safe execution telemetry with non-blocking alert hooks."""
 
     _METRIC_NAMES = frozenset({
         "submissions", "submitted", "broker_failures", "recovery_found",
@@ -37,16 +38,11 @@ class ExecutionObservability:
         self._lock = Lock()
         self._values = self._empty_values()
         self._scoped_values: dict[ExecutionMetricsScope, dict[str, float | int]] = {}
+        self._hooks: list[Callable[[], None]] = []
 
     @staticmethod
     def _empty_values() -> dict[str, float | int]:
-        return {
-            "submissions": 0, "submitted": 0, "broker_failures": 0,
-            "recovery_found": 0, "recovery_safe_retries": 0,
-            "quarantined": 0, "duplicate_preventions": 0,
-            "broker_latency_ms_total": 0.0, "broker_latency_samples": 0,
-            "recovery_latency_ms_total": 0.0, "recovery_latency_samples": 0,
-        }
+        return {"submissions": 0, "submitted": 0, "broker_failures": 0, "recovery_found": 0, "recovery_safe_retries": 0, "quarantined": 0, "duplicate_preventions": 0, "broker_latency_ms_total": 0.0, "broker_latency_samples": 0, "recovery_latency_ms_total": 0.0, "recovery_latency_samples": 0}
 
     @staticmethod
     def _scope(broker_account_id: int, broker_route: str) -> ExecutionMetricsScope:
@@ -56,6 +52,21 @@ class ExecutionObservability:
             raise ValueError("invalid broker route")
         return ExecutionMetricsScope(broker_account_id, broker_route)
 
+    def add_hook(self, hook: Callable[[], None]) -> None:
+        if not callable(hook):
+            raise ValueError("invalid observability hook")
+        with self._lock:
+            self._hooks.append(hook)
+
+    def _notify_hooks(self) -> None:
+        with self._lock:
+            hooks = tuple(self._hooks)
+        for hook in hooks:
+            try:
+                hook()
+            except Exception:
+                continue
+
     def _scoped(self, scope: ExecutionMetricsScope) -> dict[str, float | int]:
         return self._scoped_values.setdefault(scope, self._empty_values())
 
@@ -64,6 +75,7 @@ class ExecutionObservability:
             raise ValueError("invalid execution metric")
         with self._lock:
             self._values[metric] += amount
+        self._notify_hooks()
 
     def increment_scoped(self, metric: str, broker_account_id: int, broker_route: str, amount: int = 1) -> None:
         if metric not in self._METRIC_NAMES or not isinstance(amount, int) or amount < 0:
@@ -71,6 +83,7 @@ class ExecutionObservability:
         scope = self._scope(broker_account_id, broker_route)
         with self._lock:
             self._scoped(scope)[metric] += amount
+        self._notify_hooks()
 
     def observe_latency(self, metric: str, milliseconds: float) -> None:
         if metric not in {"broker_latency", "recovery_latency"} or milliseconds < 0:
@@ -78,6 +91,7 @@ class ExecutionObservability:
         with self._lock:
             self._values[f"{metric}_ms_total"] += float(milliseconds)
             self._values[f"{metric}_samples"] += 1
+        self._notify_hooks()
 
     def observe_latency_scoped(self, metric: str, broker_account_id: int, broker_route: str, milliseconds: float) -> None:
         if metric not in {"broker_latency", "recovery_latency"} or milliseconds < 0:
@@ -87,6 +101,7 @@ class ExecutionObservability:
             values = self._scoped(scope)
             values[f"{metric}_ms_total"] += float(milliseconds)
             values[f"{metric}_samples"] += 1
+        self._notify_hooks()
 
     @staticmethod
     def _snapshot(values: dict[str, float | int]) -> ExecutionMetricsSnapshot:
