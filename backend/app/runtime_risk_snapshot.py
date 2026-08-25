@@ -44,9 +44,10 @@ class RuntimeRiskSnapshotProvider:
         except (TypeError,ValueError) as exc: raise RuntimeError("invalid broker snapshot freshness timestamp") from exc
         if not isfinite(age) or age < -0.5 or age > self.max_snapshot_age_seconds: raise RuntimeError("broker risk snapshot is stale")
     def __call__(self,request:BrokerOrderRequest)->RiskSnapshot:
+        if not request.broker_route: raise RuntimeError("broker account route is required for live risk authorization")
         if self.router.safety_store is not None and self.router.safety_store.load().trading_halted: return RiskSnapshot(kill_switch=True,broker_ready=False)
         try:
-            snapshot=self.router.get_snapshot(); self._validate_freshness(snapshot); account=self.router.get_account()
+            snapshot=self.router.get_snapshot(request.broker_route); self._validate_freshness(snapshot); account=self.router.get_account(request.broker_route)
         except Exception as exc: raise RuntimeError("live broker risk snapshot unavailable") from exc
         position=self._position_for_request(request,snapshot.positions)
         if request.stop is None: raise RuntimeError("protective stop is required for live risk authorization")
