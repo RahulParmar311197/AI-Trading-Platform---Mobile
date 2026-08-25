@@ -35,7 +35,18 @@ class TransactionalInternalTradingStateProvider(InternalTradingStateProvider):
             for (account_id, route, symbol), quantity in snapshot.positions.items()
             if account_id == broker_account_id and route == broker_route
         }
+        # ExecutionSnapshot exposes open orders only by ID. Resolve those IDs
+        # against the durable order table while holding the repository lock so
+        # an account-scoped risk view cannot inherit another account's orders.
+        with self.repository._lock:
+            rows = self.repository._db.execute(
+                "SELECT order_id FROM orders "
+                "WHERE status IN ('SUBMITTED','PARTIALLY_FILLED') "
+                "AND broker_account_id=? AND broker_route=?",
+                (broker_account_id, broker_route),
+            ).fetchall()
+        open_order_ids = frozenset(row[0] for row in rows)
         return InternalTradingState(
             positions=positions,
-            open_order_ids=frozenset(snapshot.open_order_ids),
+            open_order_ids=open_order_ids,
         )
