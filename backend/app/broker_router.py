@@ -24,16 +24,17 @@ class BrokerRouter:
     def _require_execution_ready(self):
         halted=self.safety_store.load().trading_halted if self.safety_store else True; self.trading_gate.require_ready(halted)
     def submit(self,request:BrokerOrderRequest,route=None):
-        self._require_execution_ready(); key=(route or self.default_route,str(request.client_order_id))
+        self._require_execution_ready(); selected_route=route or request.broker_route or self.default_route
+        key=(selected_route,str(request.client_order_id))
         with self._submission_lock:
             if key in self._submission_claims:
-                existing=self.find_order_by_client_id(request.client_order_id,route)
+                existing=self.find_order_by_client_id(request.client_order_id,selected_route)
                 if existing is not None: return BrokerOrderUpdate(order_id=str(existing.get("order_id",existing.get("broker_order_id"))),status=str(existing.get("status","NEW")),client_order_id=existing.get("client_order_id"),symbol=existing.get("symbol"),side=existing.get("side"),quantity=existing.get("quantity"),filled_quantity=existing.get("filled_quantity",existing.get("filledQty",0)),price=existing.get("price"),average_price=existing.get("average_price",existing.get("averagePrice")),message="BROKER_CLIENT_ID_REPLAY")
                 raise RuntimeError("submission already in progress for client_order_id")
-            existing=self.find_order_by_client_id(request.client_order_id,route)
+            existing=self.find_order_by_client_id(request.client_order_id,selected_route)
             if existing is not None: return BrokerOrderUpdate(order_id=str(existing.get("order_id",existing.get("broker_order_id"))),status=str(existing.get("status","NEW")),client_order_id=existing.get("client_order_id"),symbol=existing.get("symbol"),side=existing.get("side"),quantity=existing.get("quantity"),filled_quantity=existing.get("filled_quantity",existing.get("filledQty",0)),price=existing.get("price"),average_price=existing.get("average_price",existing.get("averagePrice")),message="BROKER_CLIENT_ID_REPLAY")
             self._submission_claims.add(key)
-        try: return self.get(route).adapter.submit_order(request)
+        try: return self.get(selected_route).adapter.submit_order(request)
         finally:
             with self._submission_lock: self._submission_claims.discard(key)
     def cancel(self,order_id,route=None):
