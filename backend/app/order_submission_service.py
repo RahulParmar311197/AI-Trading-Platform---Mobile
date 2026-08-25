@@ -44,6 +44,11 @@ class OrderSubmissionService:
         authorization = self.safety_gate.authorize(ExecutionSafetyContext(emergency_halt, reconciliation_ready, broker_healthy, risk_allowed, intent.broker_account_id, intent.broker_route))
         if not authorization.allowed:
             raise PermissionError(f"order submission blocked: {authorization.reason.value}")
+        order = self.repository.get_order(intent.client_order_id)
+        if order is None:
+            raise KeyError(intent.client_order_id)
+        if (order["symbol"], order["side"], float(order["quantity"]), order["broker_account_id"], order["broker_route"]) != (intent.symbol.upper(), intent.side.upper(), float(intent.quantity), intent.broker_account_id, intent.broker_route):
+            raise ValueError("order intent does not match durable order scope")
         record = self.repository.register_submission(intent.idempotency_key, intent.client_order_id, intent.broker_account_id, intent.broker_route)
         if record.status == "SUBMITTED" and record.broker_order_id:
             return BrokerSubmissionResult(record.broker_order_id, record.client_order_id)
@@ -54,7 +59,5 @@ class OrderSubmissionService:
     def recover_pending(self, *, limit: int = 100) -> list[BrokerSubmissionResult]:
         results: list[BrokerSubmissionResult] = []
         for record in self.repository.pending_submissions(limit):
-            # A broker adapter must support the same idempotency key to make ambiguous
-            # post-acceptance crashes safely recoverable. Without that contract, do not retry.
             raise RuntimeError(f"manual broker reconciliation required for pending submission {record.idempotency_key}")
         return results
