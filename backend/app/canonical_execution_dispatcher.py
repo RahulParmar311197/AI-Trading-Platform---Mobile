@@ -20,13 +20,20 @@ class CanonicalExecutionDispatcher:
         self.repository = repository
 
     def dispatch(self, event: CanonicalExecutionEvent) -> DispatchResult:
+        if event.broker_account_id is None or not event.broker_route:
+            raise ValueError("broker account identity is required for execution dispatch")
+        kwargs = {
+            "broker_account_id": event.broker_account_id,
+            "broker_route": event.broker_route,
+            "price": event.price,
+            "quantity": event.quantity,
+        }
         if event.event_type is CanonicalExecutionEventType.ACKNOWLEDGED:
-            # ACK is intentionally treated as an observation; no position mutation.
-            applied = self.repository.apply_event(event.event_id, event.client_order_id, "SUBMITTED")
+            applied = self.repository.apply_event(event.event_id, event.client_order_id, "SUBMITTED", **kwargs)
         elif event.event_type is CanonicalExecutionEventType.FILLED:
-            applied = self.repository.apply_event(event.event_id, event.client_order_id, "FILLED", price=event.price, quantity=event.quantity)
+            applied = self.repository.apply_event(event.event_id, event.client_order_id, "FILLED", **kwargs)
         elif event.event_type is CanonicalExecutionEventType.PARTIAL_FILL:
-            applied = self.repository.apply_event(event.event_id, event.client_order_id, "PARTIAL_FILL", price=event.price, quantity=event.quantity)
+            applied = self.repository.apply_event(event.event_id, event.client_order_id, "PARTIAL_FILL", **kwargs)
         else:
-            applied = self.repository.apply_event(event.event_id, event.client_order_id, event.event_type.value, price=event.price, quantity=event.quantity)
+            applied = self.repository.apply_event(event.event_id, event.client_order_id, event.event_type.value, **kwargs)
         return DispatchResult(applied, event.event_id, event.event_type)
