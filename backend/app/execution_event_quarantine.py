@@ -10,9 +10,14 @@ class ExecutionEventQuarantine:
 
     def __init__(self, database_path: str) -> None:
         self._lock = RLock()
+        self._database_path = database_path
         self._db = sqlite3.connect(database_path, check_same_thread=False)
         self._db.execute("CREATE TABLE IF NOT EXISTS execution_event_quarantine(id INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT NOT NULL UNIQUE,broker TEXT NOT NULL,broker_order_id TEXT,payload TEXT NOT NULL,reason TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'OPEN',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
         self._db.commit()
+
+    @property
+    def database_path(self) -> str:
+        return self._database_path
 
     def quarantine(self, *, event_id: str, broker: str, broker_order_id: str, payload: dict, reason: str) -> bool:
         if not event_id or not broker or not reason:
