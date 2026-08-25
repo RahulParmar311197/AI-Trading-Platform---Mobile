@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum
+
 from app.order_lifecycle import OrderLifecycle, OrderStatus
 
 
@@ -22,6 +24,8 @@ class BrokerOrder:
     filled_quantity: float = 0.0
     average_fill_price: float | None = None
     client_order_id: str | None = None
+    broker_account_id: int | None = None
+    broker_route: str | None = None
 
 
 @dataclass(frozen=True)
@@ -36,18 +40,42 @@ class OrderReconciler:
         self.lifecycle = lifecycle
 
     def _find_local(self, remote: BrokerOrder):
+        # Account identity is part of the lookup boundary. Never attach a
+        # broker order from one account/route to another account's lifecycle.
+        candidates = []
         direct = self.lifecycle.orders.get(remote.order_id)
         if direct is not None:
-            return direct
+            candidates.append(direct)
         for order in self.lifecycle.orders.values():
-            if order.broker_order_id == remote.order_id:
-                return order
-            if remote.client_order_id and order.order_id == remote.client_order_id:
-                return order
-        return None
+            if order.broker_order_id == remote.order_id or (
+                remote.client_order_id and order.order_id == remote.client_order_id
+            ):
+                if order not in candidates:
+                    candidates.append(order)
+        for local in candidates:
+            if self._validate_account_identity(local, remote) is None:
+                return local
+        return candidates[0] if candidates else None
 
     @staticmethod
-    def _validate_identity(local, remote: BrokerOrder):
+    def _validate_account_identity(local, remote: BrokerOrder):
+        if local.broker_account_id is not None:
+            if remote.broker_account_id is None:
+                return "BROKER_ACCOUNT_ID_MISSING"
+            if int(local.broker_account_id) != int(remote.broker_account_id):
+                return "BROKER_ACCOUNT_ID_MISMATCH"
+        if local.broker_route is not None:
+            if not remote.broker_route:
+                return "BROKER_ROUTE_MISSING"
+            if str(local.broker_route) != str(remote.broker_route):
+                return "BROKER_ROUTE_MISMATCH"
+        return None
+
+    @classmethod
+    def _validate_identity(cls, local, remote: BrokerOrder):
+        account_error = cls._validate_account_identity(local, remote)
+        if account_error:
+            return account_error
         if local.symbol.upper() != remote.symbol.upper():
             return "BROKER_SYMBOL_MISMATCH"
         if local.side.upper() != remote.side.upper():
@@ -72,8 +100,20 @@ class OrderReconciler:
                 if local_id in self.lifecycle.orders:
                     events.append(ReconciliationEvent(remote.order_id, ReconciliationAction.ALERT, "BROKER_CLIENT_ORDER_ID_COLLISION"))
                     continue
+                # A broker order without account identity cannot be safely
+                # materialized into the multi-account execution lifecycle.
+                if remote.broker_account_id is None or not remote.broker_route:
+                    events.append(ReconciliationEvent(remote.order_id, ReconciliationAction.ALERT, "BROKER_ACCOUNT_IDENTITY_MISSING"))
+                    continue
                 try:
-                    self.lifecycle.create(local_id, remote.symbol, remote.side, remote.quantity)
+                    self.lifecycle.create(
+                        local_id,
+                        remote.symbol,
+                        remote.side,
+                        remote.quantity,
+                        broker_account_id=remote.broker_account_id,
+                        broker_route=remote.broker_route,
+                    )
                     local = self.lifecycle.orders[local_id]
                     local.broker_order_id = remote.order_id
                     self.lifecycle.transition(local_id, remote.status, remote.filled_quantity, remote.average_fill_price)
