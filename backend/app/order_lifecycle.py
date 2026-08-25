@@ -13,7 +13,7 @@ class OrderRecord:
     order_id:str; symbol:str; side:str; quantity:float
     status:OrderStatus=OrderStatus.CREATED; filled_quantity:float=0.0; average_fill_price:float|None=None
     applied_fill_quantity:float=0.0; applied_fill_value:float=0.0; broker_order_id:str|None=None
-    execution_id:str|None=None; owner_user_id:int|None=None
+    execution_id:str|None=None; owner_user_id:int|None=None; broker_account_id:int|None=None; broker_route:str|None=None
     order_type:str="MARKET"; requested_price:float|None=None; stop:float|None=None; target:float|None=None
     security_id:str=""; exchange_segment:str="NSE_EQ"; product_type:str="CNC"; validity:str="DAY"; trigger_price:float|None=None
     risk_amount:float|None=None; risk_source:str|None=None; risk_confidence:float|None=None; risk_reason:str|None=None
@@ -32,8 +32,12 @@ class OrderLifecycle:
         if order.owner_user_id is not None:
             order.owner_user_id=int(order.owner_user_id)
             if order.owner_user_id<=0: raise ValueError("owner_user_id must be positive")
+        if order.broker_account_id is not None:
+            order.broker_account_id=int(order.broker_account_id)
+            if order.broker_account_id<=0: raise ValueError("broker_account_id must be positive")
+        if order.broker_route is not None and not str(order.broker_route).strip(): raise ValueError("broker_route must not be empty")
         self.orders[order_id]=order
-        self.audit_log.record("ORDER_CREATED",metadata={"order_id":order_id,"symbol":order.symbol,"side":order.side,"quantity":quantity,"execution_id":order.execution_id,"owner_user_id":order.owner_user_id}); return order
+        self.audit_log.record("ORDER_CREATED",metadata={"order_id":order_id,"symbol":order.symbol,"side":order.side,"quantity":quantity,"execution_id":order.execution_id,"owner_user_id":order.owner_user_id,"broker_account_id":order.broker_account_id,"broker_route":order.broker_route}); return order
     def apply_fill(self,order_id,quantity,price,fill_id=None):
         if fill_id is not None and fill_id in self._applied_fill_ids:return self.orders[order_id]
         order=self.orders[order_id]; quantity=float(quantity); price=float(price)
