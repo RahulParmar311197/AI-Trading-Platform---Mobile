@@ -19,7 +19,6 @@ from app.startup_execution_state import StartupExecutionStateMachine
 from app.trading_audit import TradingAuditLog
 from app.emergency_halt import EmergencyHaltController
 
-
 @dataclass
 class AppResources:
     execution_store: ExecutionStateStore
@@ -48,19 +47,7 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     alert_store = ExecutionAlertStore(alert_path)
     alert_service = ExecutionAlertService(ExecutionHealth(observability), ExecutionAlertPolicy(), alert_store)
     observability.add_hook(alert_service.evaluate)
-    return AppResources(
-        execution_store=ExecutionStateStore(execution_path),
-        idempotency_store=IdempotencyStore(idempotency_path),
-        safety_store=safety_store,
-        audit_log=audit_log,
-        execution_observability=observability,
-        execution_alert_store=alert_store,
-        execution_alert_service=alert_service,
-        authorization=authorization,
-        session_local=session_local,
-        startup_execution_state=startup_execution_state,
-        emergency_halt_controller=emergency_halt_controller,
-    )
+    return AppResources(ExecutionStateStore(execution_path), IdempotencyStore(idempotency_path), safety_store, audit_log, observability, alert_store, alert_service, authorization, session_local, startup_execution_state, emergency_halt_controller)
 
 
 def create_app(resources: AppResources | None = None, broker_router: BrokerRouter | None = None, execution_health_token: str | None = None) -> FastAPI:
@@ -85,8 +72,10 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     from app.api.ensemble import router as decision_router
     from app.api.execution_health import router as execution_health_router
     from app.api.execution_alerts import router as execution_alerts_router
+    from app.api.execution_alert_lifecycle import router as execution_alert_lifecycle_router
     app.include_router(orders_router)
     app.include_router(decision_router)
     app.include_router(execution_health_router)
     app.include_router(execution_alerts_router)
+    app.include_router(execution_alert_lifecycle_router)
     return app
