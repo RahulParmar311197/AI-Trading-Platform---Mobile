@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.execution_safety_gate import ExecutionSafetyContext, ExecutionSafetyGate
+from app.transactional_execution_repository import TransactionalExecutionRepository
 
 
 @dataclass(frozen=True)
@@ -28,12 +29,12 @@ class BrokerOrderAdapter(Protocol):
 
 
 class OrderSubmissionService:
-    """Single outbound order boundary: safety checks precede broker submission."""
+    """Single outbound order boundary backed by durable submission state."""
 
-    def __init__(self, adapter: BrokerOrderAdapter, safety_gate: ExecutionSafetyGate | None = None) -> None:
+    def __init__(self, repository: TransactionalExecutionRepository, adapter: BrokerOrderAdapter, safety_gate: ExecutionSafetyGate | None = None) -> None:
+        self.repository = repository
         self.adapter = adapter
         self.safety_gate = safety_gate or ExecutionSafetyGate()
-        self._submitted: dict[str, BrokerSubmissionResult] = {}
 
     def submit(self, intent: OrderIntent, *, reconciliation_ready: bool = True, broker_healthy: bool = True, risk_allowed: bool = True, emergency_halt: bool = False) -> BrokerSubmissionResult:
         if not intent.idempotency_key:
@@ -43,9 +44,17 @@ class OrderSubmissionService:
         authorization = self.safety_gate.authorize(ExecutionSafetyContext(emergency_halt, reconciliation_ready, broker_healthy, risk_allowed, intent.broker_account_id, intent.broker_route))
         if not authorization.allowed:
             raise PermissionError(f"order submission blocked: {authorization.reason.value}")
-        existing = self._submitted.get(intent.idempotency_key)
-        if existing is not None:
-            return existing
+        record = self.repository.register_submission(intent.idempotency_key, intent.client_order_id, intent.broker_account_id, intent.broker_route)
+        if record.status == "SUBMITTED" and record.broker_order_id:
+            return BrokerSubmissionResult(record.broker_order_id, record.client_order_id)
         result = self.adapter.submit(intent)
-        self._submitted[intent.idempotency_key] = result
+        self.repository.mark_submission_submitted(intent.idempotency_key, result.broker_order_id)
         return result
+
+    def recover_pending(self, *, limit: int = 100) -> list[BrokerSubmissionResult]:
+        results: list[BrokerSubmissionResult] = []
+        for record in self.repository.pending_submissions(limit):
+            # A broker adapter must support the same idempotency key to make ambiguous
+            # post-acceptance crashes safely recoverable. Without that contract, do not retry.
+            raise RuntimeError(f"manual broker reconciliation required for pending submission {record.idempotency_key}")
+        return results
