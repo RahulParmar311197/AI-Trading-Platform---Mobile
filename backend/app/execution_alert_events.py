@@ -15,6 +15,11 @@ class ExecutionAlertEvent:
     event_type: str
     created_at: str
 
+    @property
+    def idempotency_key(self) -> str:
+        """Stable provider-side idempotency key for at-least-once delivery."""
+        return f"execution-alert:{self.event_id}"
+
 
 class ExecutionAlertEventStore:
     """Durable outbox for exactly-once event creation per alert lifecycle transition."""
