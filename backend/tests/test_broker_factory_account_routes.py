@@ -1,7 +1,5 @@
 from types import SimpleNamespace
 
-import pytest
-
 from app.broker_factory import account_route_name, validate_active_account_routes
 from app.broker_router import BrokerRoute, BrokerRouter
 
