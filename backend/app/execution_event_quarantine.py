@@ -37,9 +37,8 @@ class ExecutionEventQuarantine:
         return self.pending(limit)
 
     def resolve(self, quarantine_id: int) -> None:
-        with self._lock:
-            self._db.execute("UPDATE execution_event_quarantine SET status='RESOLVED' WHERE id=?", (quarantine_id,))
-            self._db.commit()
+        """Direct resolution is forbidden; execution and quarantine must resolve atomically."""
+        raise RuntimeError("direct quarantine resolution is disabled; use TransactionalRecoveryService.approve_and_apply")
 
     def close(self) -> None:
         with self._lock:
