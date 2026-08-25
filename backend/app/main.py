@@ -7,6 +7,7 @@ from app.api.auth import router as auth_router
 from app.api.emergency_halt import router as emergency_halt_router
 from app.api.orders import router as orders_router
 from app.api.health import router as health_router
+from app.api.execution_health import router as execution_health_router
 from app.app_factory import create_resources
 from app.broker_factory import build_broker_router
 from app.broker_recovery import BrokerStartupRecovery
@@ -69,6 +70,8 @@ async def lifespan(app: FastAPI):
     app.state.trading_health = trading_health
     app.state.trading_metrics = trading_metrics
     app.state.risk_circuit_breaker = risk_circuit_breaker
+    from app.execution_observability import ExecutionObservability
+    app.state.execution_observability = ExecutionObservability()
     init_db()
     lifecycle = OrderLifecycle(resources.audit_log)
     app.state.order_lifecycle = lifecycle
@@ -171,6 +174,7 @@ for router in [
     auth_router,
     emergency_halt_router,
     health_router,
+    execution_health_router,
     orders_router,
     create_operational_router(trading_health, trading_metrics),
     create_risk_circuit_router(risk_circuit_breaker),
