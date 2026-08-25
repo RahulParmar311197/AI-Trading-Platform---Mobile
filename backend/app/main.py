@@ -1,66 +1,159 @@
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.api.auth import router as auth_router
 from app.api.emergency_halt import router as emergency_halt_router
 from app.api.orders import router as orders_router
+from app.api.health import router as health_router
 from app.app_factory import create_resources
 from app.broker_factory import build_broker_router
 from app.broker_recovery import BrokerStartupRecovery
 from app.config import get_settings
 from app.db import SessionLocal, init_db
-from app.order_lifecycle import OrderLifecycle
-from app.recovery_manager import StartupRecoveryManager
-from app.startup_reconciliation_gate import StartupReconciliationGate
-from app.startup_execution_state import StartupExecutionState, StartupExecutionStateMachine
-from app.portfolio_reconciliation_service import PortfolioReconciliationService
 from app.emergency_halt import EmergencyHaltController
-from app.api.health import router as health_router
 from app.api_order_reconciliation import reconcile_api_order_projection
+from app.operational_api import create_operational_router
+from app.operational_metrics import TradingMetricsCollector
+from app.order_lifecycle import OrderLifecycle
+from app.portfolio_reconciliation_service import PortfolioReconciliationService
+from app.recovery_manager import StartupRecoveryManager
+from app.startup_execution_state import StartupExecutionState, StartupExecutionStateMachine
+from app.startup_reconciliation_gate import StartupReconciliationGate
+from app.system_health import TradingSystemHealth
 
-settings=get_settings(); resources=create_resources(); execution_store=resources.execution_store; idempotency_store=resources.idempotency_store; safety_store=resources.safety_store
-execution_broker_router=build_broker_router(safety_store); recovery_manager=StartupRecoveryManager(execution_store,safety_store); broker_recovery=BrokerStartupRecovery(execution_broker_router,execution_store,safety_store,recovery_manager); startup_state=resources.startup_execution_state; emergency_halt_controller=resources.emergency_halt_controller; startup_gate=StartupReconciliationGate(startup_state,safety_store,PortfolioReconciliationService())
+settings = get_settings()
+resources = create_resources()
+execution_store = resources.execution_store
+idempotency_store = resources.idempotency_store
+safety_store = resources.safety_store
+execution_broker_router = build_broker_router(safety_store)
+recovery_manager = StartupRecoveryManager(execution_store, safety_store)
+broker_recovery = BrokerStartupRecovery(
+    execution_broker_router, execution_store, safety_store, recovery_manager
+)
+startup_state = resources.startup_execution_state
+emergency_halt_controller = resources.emergency_halt_controller
+startup_gate = StartupReconciliationGate(
+    startup_state, safety_store, PortfolioReconciliationService()
+)
+trading_health = TradingSystemHealth()
+trading_metrics = TradingMetricsCollector()
 
-def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str,float]:
-    positions={}
-    for symbol,position in lifecycle.positions.items():
-        quantity=float(position.quantity or 0.0); side=str(position.side or '').upper(); signed=-abs(quantity) if side in {'SELL','SHORT'} else abs(quantity); key=str(symbol).strip().upper()
-        if key: positions[key]=positions.get(key,0.0)+signed
-    return {symbol:quantity for symbol,quantity in positions.items() if abs(quantity)>1e-9}
+
+def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str, float]:
+    positions = {}
+    for symbol, position in lifecycle.positions.items():
+        quantity = float(position.quantity or 0.0)
+        side = str(position.side or "").upper()
+        signed = -abs(quantity) if side in {"SELL", "SHORT"} else abs(quantity)
+        key = str(symbol).strip().upper()
+        if key:
+            positions[key] = positions.get(key, 0.0) + signed
+    return {symbol: quantity for symbol, quantity in positions.items() if abs(quantity) > 1e-9}
+
 
 @asynccontextmanager
-async def lifespan(app:FastAPI):
-    app.state.resources=resources; app.state.broker_router=execution_broker_router; app.state.startup_execution_state=startup_state; app.state.emergency_halt_controller=emergency_halt_controller; app.state.trading_audit_log=resources.audit_log; init_db(); lifecycle=OrderLifecycle(resources.audit_log); app.state.order_lifecycle=lifecycle
+async def lifespan(app: FastAPI):
+    app.state.resources = resources
+    app.state.broker_router = execution_broker_router
+    app.state.startup_execution_state = startup_state
+    app.state.emergency_halt_controller = emergency_halt_controller
+    app.state.trading_audit_log = resources.audit_log
+    app.state.trading_health = trading_health
+    app.state.trading_metrics = trading_metrics
+    init_db()
+    lifecycle = OrderLifecycle(resources.audit_log)
+    app.state.order_lifecycle = lifecycle
+
     if emergency_halt_controller.is_halted():
-        startup_state.halt(safety_store.load().halt_reason or 'persisted emergency halt')
+        reason = safety_store.load().halt_reason or "persisted emergency halt"
+        startup_state.halt(reason)
+        trading_health.record("emergency_halt", False, reason)
     else:
-        startup_state.transition(StartupExecutionState.RECOVERING, 'application startup recovery')
-        result=broker_recovery.run(lifecycle); app.state.recovery_result=result
+        trading_health.record("emergency_halt", True, "not halted")
+        startup_state.transition(
+            StartupExecutionState.RECOVERING, "application startup recovery"
+        )
+        result = broker_recovery.run(lifecycle)
+        app.state.recovery_result = result
+        trading_health.record("broker_recovery", result.ready, "ready" if result.ready else "failed")
         if not result.ready:
-            startup_state.fail('broker startup recovery failed')
+            startup_state.fail("broker startup recovery failed")
         else:
-            startup_state.transition(StartupExecutionState.BROKER_RECONCILED, 'broker orders reconciled')
+            startup_state.transition(
+                StartupExecutionState.BROKER_RECONCILED, "broker orders reconciled"
+            )
             with SessionLocal() as db:
-                api_order_reconciliation=reconcile_api_order_projection(db,lifecycle)
-            app.state.api_order_reconciliation=api_order_reconciliation
+                api_order_reconciliation = reconcile_api_order_projection(db, lifecycle)
+            app.state.api_order_reconciliation = api_order_reconciliation
+            reconciliation_ready = not api_order_reconciliation
+            trading_health.record(
+                "api_order_reconciliation",
+                reconciliation_ready,
+                "reconciled" if reconciliation_ready else "unresolved",
+            )
             if api_order_reconciliation:
-                startup_state.fail('API order projection reconciliation unresolved')
+                trading_metrics.increment("reconciliation_failures")
+                startup_state.fail("API order projection reconciliation unresolved")
             else:
-                local_positions=_persisted_local_positions(lifecycle)
-                try: broker_positions=execution_broker_router.get_positions(); broker_error=None
-                except Exception as exc: broker_positions=None; broker_error=str(exc)
+                local_positions = _persisted_local_positions(lifecycle)
+                try:
+                    broker_positions = execution_broker_router.get_positions()
+                    broker_error = None
+                except Exception as exc:
+                    broker_positions = None
+                    broker_error = str(exc)
+                positions_available = broker_positions is not None
+                trading_health.record(
+                    "broker_position_snapshot",
+                    positions_available,
+                    "available" if positions_available else broker_error or "unavailable",
+                )
                 if broker_positions is None:
-                    startup_state.fail(f'broker position snapshot unavailable: {broker_error or "unknown error"}')
-                    app.state.startup_gate_result=None
+                    startup_state.fail(
+                        f"broker position snapshot unavailable: {broker_error or 'unknown error'}"
+                    )
+                    app.state.startup_gate_result = None
                 else:
-                    gate_result=startup_gate.evaluate(local_positions,broker_positions); app.state.startup_gate_result=gate_result
+                    gate_result = startup_gate.evaluate(local_positions, broker_positions)
+                    app.state.startup_gate_result = gate_result
+                    trading_health.record(
+                        "portfolio_reconciliation",
+                        gate_result.ready,
+                        "reconciled" if gate_result.ready else "failed",
+                    )
                     if not gate_result.ready:
-                        startup_state.fail('portfolio reconciliation failed')
+                        startup_state.fail("portfolio reconciliation failed")
                     else:
-                        startup_state.transition(StartupExecutionState.PORTFOLIO_RECONCILED, 'portfolio reconciled')
-                        startup_state.transition(StartupExecutionState.RISK_READY, 'risk readiness checks passed')
+                        startup_state.transition(
+                            StartupExecutionState.PORTFOLIO_RECONCILED,
+                            "portfolio reconciled",
+                        )
+                        startup_state.transition(
+                            StartupExecutionState.RISK_READY,
+                            "risk readiness checks passed",
+                        )
+                        trading_health.record("risk_readiness", True, "ready")
                         startup_state.transition(StartupExecutionState.READY)
+
     yield
 
-app=FastAPI(title='AI Trading Platform',version='1.0.0',lifespan=lifespan); app.add_middleware(CORSMiddleware,allow_origins=settings.cors_origin_list,allow_credentials=True,allow_methods=['*'],allow_headers=['*'])
-for router in [auth_router,emergency_halt_router,health_router,orders_router]: app.include_router(router)
+
+app = FastAPI(title="AI Trading Platform", version="1.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+for router in [
+    auth_router,
+    emergency_halt_router,
+    health_router,
+    orders_router,
+    create_operational_router(trading_health, trading_metrics),
+]:
+    app.include_router(router)
