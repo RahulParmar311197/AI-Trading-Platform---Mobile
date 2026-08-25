@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import Lock
+from dataclasses import replace
 from app.broker_adapter import BrokerAdapter, BrokerOrderRequest, BrokerOrderUpdate
 from app.broker_snapshot import BrokerSnapshot
 from app.safety_state import SafetyStateStore
@@ -12,6 +13,7 @@ class BrokerRoute:
     name: str
     adapter: BrokerAdapter
     enabled: bool = True
+    broker_account_id: int | None = None
 
 class BrokerRouter:
     def __init__(self, routes: list[BrokerRoute], default_route: str, safety_store: SafetyStateStore | None = None, trading_gate: TradingGate | None = None):
@@ -23,8 +25,15 @@ class BrokerRouter:
         return route
     def _require_execution_ready(self):
         halted=self.safety_store.load().trading_halted if self.safety_store else True; self.trading_gate.require_ready(halted)
+    def _require_account_binding(self, request: BrokerOrderRequest, route: BrokerRoute) -> None:
+        if request.broker_account_id is None:
+            return
+        if route.broker_account_id is None:
+            raise RuntimeError("broker route is not bound to a broker account")
+        if int(route.broker_account_id) != int(request.broker_account_id):
+            raise RuntimeError("broker account does not match broker route")
     def submit(self,request:BrokerOrderRequest,route=None):
-        self._require_execution_ready(); selected_route=route or request.broker_route or self.default_route
+        self._require_execution_ready(); selected_route=route or request.broker_route or self.default_route; selected=self.get(selected_route); self._require_account_binding(request, selected)
         key=(selected_route,str(request.client_order_id))
         with self._submission_lock:
             if key in self._submission_claims:
@@ -34,7 +43,7 @@ class BrokerRouter:
             existing=self.find_order_by_client_id(request.client_order_id,selected_route)
             if existing is not None: return BrokerOrderUpdate(order_id=str(existing.get("order_id",existing.get("broker_order_id"))),status=str(existing.get("status","NEW")),client_order_id=existing.get("client_order_id"),symbol=existing.get("symbol"),side=existing.get("side"),quantity=existing.get("quantity"),filled_quantity=existing.get("filled_quantity",existing.get("filledQty",0)),price=existing.get("price"),average_price=existing.get("average_price",existing.get("averagePrice")),message="BROKER_CLIENT_ID_REPLAY")
             self._submission_claims.add(key)
-        try: return self.get(selected_route).adapter.submit_order(request)
+        try: return selected.adapter.submit_order(request)
         finally:
             with self._submission_lock: self._submission_claims.discard(key)
     def cancel(self,order_id,route=None):
@@ -56,5 +65,8 @@ class BrokerRouter:
     def get_positions(self,route=None): return self.get(route).adapter.get_positions()
     def get_account(self,route=None): return self.get(route).adapter.get_account()
     def get_snapshot(self,route=None):
-        adapter=self.get(route).adapter; get_snapshot=getattr(adapter,"get_snapshot",None)
-        return get_snapshot() if get_snapshot is not None else BrokerSnapshot(orders=self.get_orders(route),positions=self.get_positions(route))
+        selected=self.get(route); adapter=selected.adapter; get_snapshot=getattr(adapter,"get_snapshot",None)
+        snapshot=get_snapshot() if get_snapshot is not None else BrokerSnapshot(orders=self.get_orders(selected.name),positions=self.get_positions(selected.name))
+        if not isinstance(snapshot, BrokerSnapshot):
+            snapshot=BrokerSnapshot(orders=list(snapshot.orders),positions=list(snapshot.positions),fetched_at=float(snapshot.fetched_at))
+        return replace(snapshot, broker_route=selected.name, broker_account_id=selected.broker_account_id)
