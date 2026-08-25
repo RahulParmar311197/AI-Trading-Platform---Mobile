@@ -24,9 +24,9 @@ def req(): return BrokerOrderRequest(client_order_id="L-1", symbol="NIFTY", side
 def ready_state():
     state = StartupExecutionStateMachine(); state.transition(StartupExecutionState.RECOVERING); state.transition(StartupExecutionState.BROKER_RECONCILED); state.transition(StartupExecutionState.PORTFOLIO_RECONCILED); state.transition(StartupExecutionState.RISK_READY); state.transition(StartupExecutionState.READY); return state
 
-def service(tmp_path, status="FILLED", risk_gate=None, risk_provider=None):
+def service(tmp_path, status="FILLED", risk_gate=None, risk_provider=None, observability=None):
     safety = SafetyStateStore(str(tmp_path / "safety.json")); safety.clear(); router = BrokerRouter([BrokerRoute("test", Broker(status))], "test", safety_store=safety); lifecycle = OrderLifecycle()
-    return OrderExecutionService(router, lifecycle, ExecutionStateStore(str(tmp_path / "execution.json")), risk_gate=risk_gate, risk_snapshot_provider=risk_provider, startup_state=ready_state()), lifecycle
+    return OrderExecutionService(router, lifecycle, ExecutionStateStore(str(tmp_path / "execution.json")), risk_gate=risk_gate, risk_snapshot_provider=risk_provider, startup_state=ready_state(), observability=observability), lifecycle
 
 def test_filled_order_updates_lifecycle_and_persists(tmp_path):
     svc, lifecycle = service(tmp_path); result = svc.submit(req()); assert result.status == "FILLED"; assert lifecycle.orders["L-1"].status == OrderStatus.FILLED; assert lifecycle.positions["NIFTY"].quantity == 1; assert lifecycle.orders["L-1"].broker_account_id == 1; assert lifecycle.orders["L-1"].broker_route == "test"
@@ -75,3 +75,29 @@ def test_pre_submission_recovery_error_releases_reservation(tmp_path):
         def release(self, client_order_id): self.release_calls += 1
         def update_after_fill(self, request, filled_quantity, current_position): return RiskDecision(True, "RISK_OK")
     gate = Gate(); provider = lambda request: RiskSnapshot(broker_ready=True, broker_snapshot_fingerprint="A", position_quantity=0, projected_trade_loss=0); svc, lifecycle = service(tmp_path, risk_gate=gate, risk_provider=provider); svc.router.find_order_by_client_id = lambda *_: (_ for _ in ()).throw(RuntimeError("broker unavailable")); result = svc.submit(req()); assert result.status == "SUBMITTED"; assert "PRE_SUBMISSION_FAILURE" in result.message; assert gate.reserve_calls == 1; assert gate.release_calls == 1
+
+def test_execution_metrics_are_scoped_to_broker_account(tmp_path):
+    from app.execution_observability import ExecutionObservability
+    metrics = ExecutionObservability()
+    svc, lifecycle = service(tmp_path, observability=metrics)
+    result = svc.submit(req())
+    assert result.status == "FILLED"
+    aggregate = metrics.snapshot()
+    scoped = metrics.snapshot_scoped(1, "test")
+    assert aggregate.submissions == 1
+    assert aggregate.submitted == 1
+    assert scoped.submissions == 1
+    assert scoped.submitted == 1
+    assert scoped.broker_failures == 0
+    assert scoped.broker_latency_samples == 1
+    assert scoped.recovery_latency_samples >= 1
+
+def test_metrics_failures_never_change_execution_result(tmp_path):
+    class BrokenMetrics:
+        def __getattr__(self, name):
+            def fail(*args, **kwargs): raise RuntimeError("metrics unavailable")
+            return fail
+    svc, lifecycle = service(tmp_path, observability=BrokenMetrics())
+    result = svc.submit(req())
+    assert result.status == "FILLED"
+    assert lifecycle.orders["L-1"].status == OrderStatus.FILLED
