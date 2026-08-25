@@ -20,6 +20,8 @@ class OrderIdentity:
     client_order_id: str
     broker: str
     broker_order_id: str
+    broker_account_id: int | None = None
+    broker_route: str | None = None
 
 
 class TransactionalExecutionRepository:
@@ -42,8 +44,13 @@ class TransactionalExecutionRepository:
             self._db.execute("DROP TABLE positions"); self._db.execute("CREATE TABLE positions(broker_account_id INTEGER NOT NULL,broker_route TEXT NOT NULL,symbol TEXT NOT NULL,quantity REAL NOT NULL,PRIMARY KEY(broker_account_id,broker_route,symbol))")
         self._db.execute("CREATE TABLE IF NOT EXISTS execution_events(event_id TEXT PRIMARY KEY,order_id TEXT NOT NULL,event_kind TEXT NOT NULL,payload TEXT NOT NULL)")
         self._db.execute("CREATE TABLE IF NOT EXISTS execution_outbox(id INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT UNIQUE NOT NULL,event_type TEXT NOT NULL,payload TEXT NOT NULL,published INTEGER NOT NULL DEFAULT 0)")
-        self._db.execute("CREATE TABLE IF NOT EXISTS order_identity(client_order_id TEXT PRIMARY KEY,broker TEXT NOT NULL,broker_order_id TEXT NOT NULL UNIQUE)")
-        self._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_order_identity_broker ON order_identity(broker,broker_order_id)")
+        self._db.execute("CREATE TABLE IF NOT EXISTS order_identity(client_order_id TEXT PRIMARY KEY,broker TEXT NOT NULL,broker_order_id TEXT NOT NULL,broker_account_id INTEGER NOT NULL,broker_route TEXT NOT NULL,UNIQUE(broker,broker_order_id,broker_account_id,broker_route))")
+        identity_cols={row[1] for row in self._db.execute("PRAGMA table_info(order_identity)")}
+        if not {"broker_account_id","broker_route"}.issubset(identity_cols):
+            count=self._db.execute("SELECT COUNT(*) FROM order_identity").fetchone()[0]
+            if count: raise RuntimeError("legacy identity rows lack broker-account scope; migrate before live execution")
+            self._db.execute("DROP TABLE order_identity")
+            self._db.execute("CREATE TABLE order_identity(client_order_id TEXT PRIMARY KEY,broker TEXT NOT NULL,broker_order_id TEXT NOT NULL,broker_account_id INTEGER NOT NULL,broker_route TEXT NOT NULL,UNIQUE(broker,broker_order_id,broker_account_id,broker_route))")
         self._db.commit()
 
     def create_order(self,symbol:str,side:str,quantity:float,*,broker_account_id:int,broker_route:str)->str:
@@ -62,15 +69,19 @@ class TransactionalExecutionRepository:
 
     def _bind_identity_tx(self,identity:OrderIdentity)->None:
         if not identity.client_order_id or not identity.broker or not identity.broker_order_id: raise ValueError("client_order_id, broker and broker_order_id are required")
-        row=self._db.execute("SELECT broker,broker_order_id FROM order_identity WHERE client_order_id=?",(identity.client_order_id,)).fetchone()
-        if row and row!=(identity.broker,identity.broker_order_id): raise ValueError("client order is already bound to a different broker order")
-        reverse=self._db.execute("SELECT client_order_id FROM order_identity WHERE broker=? AND broker_order_id=?",(identity.broker,identity.broker_order_id)).fetchone()
+        if identity.broker_account_id is None or identity.broker_account_id<=0 or not identity.broker_route: raise ValueError("broker account identity and route are required")
+        order=self._db.execute("SELECT broker_account_id,broker_route FROM orders WHERE order_id=?",(identity.client_order_id,)).fetchone()
+        if order is None: raise KeyError(identity.client_order_id)
+        if order!=(identity.broker_account_id,identity.broker_route): raise ValueError("client order broker account identity mismatch")
+        row=self._db.execute("SELECT broker,broker_order_id,broker_account_id,broker_route FROM order_identity WHERE client_order_id=?",(identity.client_order_id,)).fetchone()
+        if row and row!=(identity.broker,identity.broker_order_id,identity.broker_account_id,identity.broker_route): raise ValueError("client order is already bound to a different broker identity")
+        reverse=self._db.execute("SELECT client_order_id FROM order_identity WHERE broker=? AND broker_order_id=? AND broker_account_id=? AND broker_route=?",(identity.broker,identity.broker_order_id,identity.broker_account_id,identity.broker_route)).fetchone()
         if reverse and reverse[0]!=identity.client_order_id: raise ValueError("broker order is already bound to a different client order")
-        self._db.execute("INSERT OR IGNORE INTO order_identity(client_order_id,broker,broker_order_id) VALUES(?,?,?)",(identity.client_order_id,identity.broker,identity.broker_order_id))
+        self._db.execute("INSERT OR IGNORE INTO order_identity(client_order_id,broker,broker_order_id,broker_account_id,broker_route) VALUES(?,?,?,?,?)",(identity.client_order_id,identity.broker,identity.broker_order_id,identity.broker_account_id,identity.broker_route))
 
-    def get_identity_by_broker(self,broker:str,broker_order_id:str)->OrderIdentity|None:
+    def get_identity_by_broker(self,broker:str,broker_order_id:str,*,broker_account_id:int,broker_route:str)->OrderIdentity|None:
         with self._lock:
-            row=self._db.execute("SELECT client_order_id,broker,broker_order_id FROM order_identity WHERE broker=? AND broker_order_id=?",(broker,broker_order_id)).fetchone()
+            row=self._db.execute("SELECT client_order_id,broker,broker_order_id,broker_account_id,broker_route FROM order_identity WHERE broker=? AND broker_order_id=? AND broker_account_id=? AND broker_route=?",(broker,broker_order_id,broker_account_id,broker_route)).fetchone()
         return OrderIdentity(*row) if row else None
 
     def _apply_event_tx(self,event_id:str,order_id:str,kind:str,*,broker_account_id:int,broker_route:str,price:float|None,quantity:float)->bool:
@@ -102,7 +113,7 @@ class TransactionalExecutionRepository:
             except Exception: self._db.rollback(); raise
 
     def bind_identity_and_apply_event(self,identity:OrderIdentity,event_id:str,kind:str,*,broker_account_id:int,broker_route:str,price:float|None=None,quantity:float=0.0)->bool:
-        """Atomically bind identity and mutate execution state; rollback covers both."""
+        if identity.broker_account_id!=broker_account_id or identity.broker_route!=broker_route: raise ValueError("identity scope does not match execution scope")
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
