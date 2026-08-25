@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.broker_submission_recovery import SubmissionRecoveryService
+from app.order_submission_recovery_orchestrator import RecoveryResult as _Unused
 from app.order_submission_service import BrokerSubmissionResult, OrderIntent
+from app.submission_recovery_audit import SubmissionRecoveryAuditor
 from app.transactional_execution_repository import TransactionalExecutionRepository
 
 
@@ -16,24 +18,32 @@ class RecoveryResult:
 
 
 class OrderSubmissionRecoveryOrchestrator:
-    """Canonical restart path for durable PENDING outbound orders."""
+    """Canonical restart path for durable PENDING outbound orders with mandatory audit."""
 
-    def __init__(self, repository: TransactionalExecutionRepository, recovery: SubmissionRecoveryService) -> None:
+    def __init__(self, repository: TransactionalExecutionRepository, recovery: SubmissionRecoveryService, auditor: SubmissionRecoveryAuditor | None = None) -> None:
         self.repository = repository
         self.recovery = recovery
+        self.auditor = auditor or SubmissionRecoveryAuditor()
 
     def recover_pending(self, *, limit: int = 100) -> list[RecoveryResult]:
         results: list[RecoveryResult] = []
         for record in self.repository.pending_submissions(limit=limit):
+            self.auditor.record(event="RECOVERY_SCAN", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="PENDING")
             order = self.repository.get_order(record.client_order_id)
             if order is None:
-                results.append(RecoveryResult(record.idempotency_key, "QUARANTINED", reason="durable order missing"))
+                reason = "durable order missing"
+                self.auditor.record(event="QUARANTINE", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="QUARANTINED", reason=reason)
+                results.append(RecoveryResult(record.idempotency_key, "QUARANTINED", reason=reason))
                 continue
             intent = OrderIntent(record.client_order_id, order["symbol"], order["side"], float(order["quantity"]), record.broker_account_id, record.broker_route, record.idempotency_key)
             try:
+                self.auditor.record(event="BROKER_LOOKUP", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="LOOKUP")
                 result: BrokerSubmissionResult = self.recovery.recover(intent)
                 self.repository.mark_submission_submitted(record.idempotency_key, result.broker_order_id)
+                self.auditor.record(event="SUBMITTED", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="SUBMITTED", broker_order_id=result.broker_order_id)
                 results.append(RecoveryResult(record.idempotency_key, "SUBMITTED", result.broker_order_id))
             except RuntimeError as exc:
-                results.append(RecoveryResult(record.idempotency_key, "QUARANTINED", reason=str(exc)))
+                reason = str(exc)
+                self.auditor.record(event="QUARANTINE", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="QUARANTINED", reason=reason)
+                results.append(RecoveryResult(record.idempotency_key, "QUARANTINED", reason=reason))
         return results
