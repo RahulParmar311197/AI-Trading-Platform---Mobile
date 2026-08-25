@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
+from app.api.broker_accounts import router as broker_accounts_router
 from app.api.emergency_halt import router as emergency_halt_router
 from app.api.orders import router as orders_router
 from app.api.health import router as health_router
@@ -182,6 +183,7 @@ app.add_middleware(
 )
 for router in [
     auth_router,
+    broker_accounts_router,
     emergency_halt_router,
     health_router,
     execution_health_router,
