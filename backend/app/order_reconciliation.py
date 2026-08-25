@@ -9,6 +9,7 @@ class ReconciliationAction(str, Enum):
     CREATE = "CREATE"
     UPDATE = "UPDATE"
     ALERT = "ALERT"
+    PENDING = "PENDING"
 
 
 @dataclass(frozen=True)
@@ -99,4 +100,29 @@ class OrderReconciler:
                 events.append(ReconciliationEvent(remote.order_id, ReconciliationAction.ALERT, f"BROKER_UPDATE_REJECTED:{exc}"))
                 continue
             events.append(ReconciliationEvent(remote.order_id, ReconciliationAction.UPDATE, "LOCAL_STATE_RECONCILED"))
+        return events
+
+    def reconcile_pending(self, broker_orders: list[BrokerOrder]) -> list[ReconciliationEvent]:
+        """Resolve only local orders explicitly parked in PENDING_RECONCILIATION."""
+        pending = {o.order_id for o in self.lifecycle.orders.values() if o.status == OrderStatus.PENDING_RECONCILIATION}
+        if not pending:
+            return []
+        events = []
+        matched = set()
+        for remote in broker_orders:
+            local = self._find_local(remote)
+            if local is None or local.order_id not in pending:
+                continue
+            matched.add(local.order_id)
+            identity_error = self._validate_identity(local, remote)
+            if identity_error:
+                events.append(ReconciliationEvent(remote.order_id, ReconciliationAction.ALERT, identity_error))
+                continue
+            try:
+                self.lifecycle.transition(local.order_id, remote.status, remote.filled_quantity, remote.average_fill_price)
+                events.append(ReconciliationEvent(remote.order_id, ReconciliationAction.UPDATE, "PENDING_ORDER_RESOLVED"))
+            except (TypeError, ValueError, RuntimeError) as exc:
+                events.append(ReconciliationEvent(remote.order_id, ReconciliationAction.ALERT, f"PENDING_RESOLUTION_REJECTED:{exc}"))
+        for order_id in sorted(pending - matched):
+            events.append(ReconciliationEvent(order_id, ReconciliationAction.PENDING, "BROKER_ORDER_NOT_FOUND"))
         return events
