@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import monotonic
 
 from app.broker_submission_recovery import SubmissionRecoveryService
 from app.execution_observability import ExecutionObservability
@@ -56,9 +57,11 @@ class OrderSubmissionRecoveryOrchestrator:
                 results.append(RecoveryResult(record.idempotency_key, "QUARANTINED", reason=reason))
                 continue
             intent = OrderIntent(record.client_order_id, order["symbol"], order["side"], float(order["quantity"]), record.broker_account_id, record.broker_route, record.idempotency_key)
+            started = monotonic()
             try:
                 self.auditor.record(event="BROKER_LOOKUP", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="LOOKUP")
                 result: BrokerSubmissionResult = self.recovery.recover(intent)
+                self.observability.observe_latency("recovery_latency", (monotonic() - started) * 1000)
                 self.repository.mark_submission_submitted(record.idempotency_key, result.broker_order_id)
                 if self.recovery.adapter.find_by_idempotency_key(intent).status.value == "FOUND":
                     self.observability.increment("recovery_found")
@@ -69,6 +72,7 @@ class OrderSubmissionRecoveryOrchestrator:
                 self.auditor.record(event="SUBMITTED", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="SUBMITTED", broker_order_id=result.broker_order_id)
                 results.append(RecoveryResult(record.idempotency_key, "SUBMITTED", result.broker_order_id))
             except RuntimeError as exc:
+                self.observability.observe_latency("recovery_latency", (monotonic() - started) * 1000)
                 reason = str(exc)
                 self.observability.increment("quarantined")
                 self.auditor.record(event="QUARANTINE", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="QUARANTINED", reason=reason)
