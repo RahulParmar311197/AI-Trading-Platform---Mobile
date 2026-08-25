@@ -12,29 +12,87 @@ class LiveExecutionOrder:
     symbol: str
     side: str
     quantity: float
+    broker_account_id: int
+    broker_route: str
 
 
 class LiveExecutionRepositoryBridge:
-    """Small integration boundary for broker adapters to use the transactional repository."""
+    """Execution integration boundary with mandatory broker-account identity."""
 
     def __init__(self, repository: TransactionalExecutionRepository) -> None:
         self.repository = repository
 
-    def create_order(self, *, symbol: str, side: str, quantity: float) -> LiveExecutionOrder:
-        order_id = self.repository.create_order(symbol, side, quantity)
-        return LiveExecutionOrder(order_id, symbol.upper(), side.upper(), quantity)
+    def create_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: float,
+        broker_account_id: int,
+        broker_route: str,
+    ) -> LiveExecutionOrder:
+        order_id = self.repository.create_order(
+            symbol,
+            side,
+            quantity,
+            broker_account_id=broker_account_id,
+            broker_route=broker_route,
+        )
+        return LiveExecutionOrder(
+            order_id,
+            symbol.upper(),
+            side.upper(),
+            quantity,
+            broker_account_id,
+            broker_route,
+        )
 
-    def submitted(self, *, event_id: str, order_id: str) -> bool:
-        return self.repository.apply_event(event_id, order_id, "SUBMITTED")
+    def submitted(self, *, event_id: str, order_id: str, broker_account_id: int, broker_route: str) -> bool:
+        return self.repository.apply_event(
+            event_id,
+            order_id,
+            "SUBMITTED",
+            broker_account_id=broker_account_id,
+            broker_route=broker_route,
+        )
 
-    def fill(self, *, event_id: str, order_id: str, quantity: float, price: float | None = None) -> bool:
-        return self.repository.apply_event(event_id, order_id, "FILL", quantity=quantity, price=price)
+    def fill(
+        self,
+        *,
+        event_id: str,
+        order_id: str,
+        quantity: float,
+        broker_account_id: int,
+        broker_route: str,
+        price: float | None = None,
+    ) -> bool:
+        return self.repository.apply_event(
+            event_id,
+            order_id,
+            "FILL",
+            broker_account_id=broker_account_id,
+            broker_route=broker_route,
+            quantity=quantity,
+            price=price,
+        )
 
-    def cancelled(self, *, event_id: str, order_id: str) -> bool:
-        return self.repository.apply_event(event_id, order_id, OrderStatus.CANCELLED.value)
+    def cancelled(self, *, event_id: str, order_id: str, broker_account_id: int, broker_route: str) -> bool:
+        return self.repository.apply_event(
+            event_id,
+            order_id,
+            OrderStatus.CANCELLED.value,
+            broker_account_id=broker_account_id,
+            broker_route=broker_route,
+        )
 
-    def rejected(self, *, event_id: str, order_id: str) -> bool:
-        return self.repository.apply_event(event_id, order_id, OrderStatus.REJECTED.value)
+    def rejected(self, *, event_id: str, order_id: str, broker_account_id: int, broker_route: str) -> bool:
+        return self.repository.apply_event(
+            event_id,
+            order_id,
+            OrderStatus.REJECTED.value,
+            broker_account_id=broker_account_id,
+            broker_route=broker_route,
+        )
 
     def state(self):
         return self.repository.snapshot()
