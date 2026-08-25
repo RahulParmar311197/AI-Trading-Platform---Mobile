@@ -7,6 +7,9 @@ from app.db_runtime import create_db_runtime
 from app.execution_persistence import ExecutionStateStore
 from app.execution_observability import ExecutionObservability
 from app.execution_alert_store import ExecutionAlertStore
+from app.execution_alert_policy import ExecutionAlertPolicy
+from app.execution_alert_service import ExecutionAlertService
+from app.execution_health import ExecutionHealth
 from app.idempotency_store import IdempotencyStore
 from app.safety_state import SafetyStateStore
 from app.broker_factory import build_broker_router
@@ -25,13 +28,14 @@ class AppResources:
     audit_log: TradingAuditLog
     execution_observability: ExecutionObservability
     execution_alert_store: ExecutionAlertStore
+    execution_alert_service: ExecutionAlertService
     authorization: ExecutionAuthorization | None = None
     session_local: object | None = None
     startup_execution_state: StartupExecutionStateMachine | None = None
     emergency_halt_controller: EmergencyHaltController | None = None
 
 
-def create_resources(*, execution_path="data/execution_state.json", idempotency_path="data/idempotency.sqlite3", safety_path="data/safety_state.json", audit_path="data/trading_audit.jsonl", database_url: str | None = None, alert_path="data/execution_alerts.sqlite3") -> AppResources:
+def create_resources(*, execution_path="data/execution_state.json", idempotency_path="data/idempotency.sqlite3", safety_path="data/safety_state.json", audit_path="data/trading_audit.jsonl", database_url: str | None = None, alert_path="data/execution_alerts.sqlite3", execution_health_token="test-token") -> AppResources:
     session_local = None
     if database_url:
         _, session_local = create_db_runtime(database_url)
@@ -40,13 +44,17 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     startup_execution_state = StartupExecutionStateMachine(audit_log)
     emergency_halt_controller = EmergencyHaltController(safety_store, startup_execution_state, audit_log)
     authorization = ExecutionAuthorization(safety_store, audit_log=audit_log)
+    observability = ExecutionObservability()
+    alert_store = ExecutionAlertStore(alert_path)
+    alert_service = ExecutionAlertService(ExecutionHealth(observability), ExecutionAlertPolicy(), alert_store)
     return AppResources(
         execution_store=ExecutionStateStore(execution_path),
         idempotency_store=IdempotencyStore(idempotency_path),
         safety_store=safety_store,
         audit_log=audit_log,
-        execution_observability=ExecutionObservability(),
-        execution_alert_store=ExecutionAlertStore(alert_path),
+        execution_observability=observability,
+        execution_alert_store=alert_store,
+        execution_alert_service=alert_service,
         authorization=authorization,
         session_local=session_local,
         startup_execution_state=startup_execution_state,
@@ -60,6 +68,7 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     app.state.resources = resources
     app.state.execution_observability = resources.execution_observability
     app.state.execution_alert_store = resources.execution_alert_store
+    app.state.execution_alert_service = resources.execution_alert_service
     app.state.execution_health_token = "test-token"
     app.state.broker_router = broker_router or build_broker_router(resources.safety_store)
     app.state.startup_execution_state = resources.startup_execution_state
