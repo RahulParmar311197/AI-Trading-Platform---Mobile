@@ -69,7 +69,7 @@ class ExecutionAlertDispatcher:
         with sqlite3.connect(self.path) as conn:
             state = conn.execute("SELECT attempts FROM execution_alert_deliveries WHERE event_id=?", (event_id,)).fetchone()
             attempts = int(state[0]) if state else 0
-        event = type("Event", (), {"event_id": int(row[0]), "alert_id": int(row[1]), "event_type": str(row[2]), "created_at": str(row[3])})()
+        event = ExecutionAlertEvent(int(row[0]), int(row[1]), str(row[2]), str(row[3]))
         attempts += 1
         try:
             self.publish(event)
