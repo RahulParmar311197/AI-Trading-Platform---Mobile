@@ -66,6 +66,12 @@ def _execution_service(broker_router,execution_store,idempotency_store,recovery,
 def _broker_request(client_order_id,symbol,side,quantity,order_type="MARKET",price=None,stop=None,security_id="",owner_user_id=None,broker_account_id=None,broker_route=None):
     return BrokerOrderRequest(client_order_id=client_order_id,symbol=symbol,side=side,quantity=quantity,order_type=order_type,price=price,stop=stop,security_id=security_id,owner_user_id=owner_user_id,broker_account_id=broker_account_id,broker_route=broker_route)
 
+def _broker_route_for_account(account:BrokerAccount)->str:
+    broker=str(account.broker).strip().lower()
+    if not broker or account.id is None or int(account.id)<=0:
+        raise HTTPException(status_code=409,detail="BROKER_ACCOUNT_ROUTE_UNAVAILABLE")
+    return f"{broker}:account:{int(account.id)}"
+
 def _resolve_broker_account(db:Session,user_id:int,requested_id:int|None)->BrokerAccount:
     if requested_id is not None:
         account=db.query(BrokerAccount).filter(BrokerAccount.id==requested_id,BrokerAccount.user_id==user_id,BrokerAccount.status=="active").first()
@@ -93,7 +99,7 @@ def create_order(payload:OrderRequest,request:Request,response:Response,db:Sessi
             service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources)
             result=service.submit(_broker_request(client_order_id,existing.symbol,existing.side,existing.quantity,existing.order_type,existing.price,existing.stop,existing.security_id,existing.user_id,existing.broker_account_id,existing.broker_route)); existing.status=result.status; existing.broker_order_id=result.broker_order_id; existing.note=result.message; _commit_execution_projection(db,existing); _set_execution_response_status(response,result.status); return _order_response(existing,result.message,result.execution_id)
         return _order_response(existing,"IDEMPOTENT_REPLAY")
-    account=_resolve_broker_account(db,user_id,payload.broker_account_id); broker_route=str(account.broker).strip()
+    account=_resolve_broker_account(db,user_id,payload.broker_account_id); broker_route=_broker_route_for_account(account)
     try: broker_router.get(broker_route)
     except Exception as exc: raise HTTPException(status_code=409,detail="BROKER_ACCOUNT_ROUTE_UNAVAILABLE") from exc
     symbol=payload.symbol.upper(); order=Order(user_id=user_id,broker_account_id=account.id,broker_route=broker_route,client_order_id=client_order_id,symbol=symbol,side=payload.side,quantity=payload.quantity,order_type=payload.order_type,price=payload.price,stop=payload.stop,security_id=payload.security_id,status="PENDING"); db.add(order)
