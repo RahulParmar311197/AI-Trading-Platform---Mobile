@@ -44,17 +44,24 @@ class TradingSystemHealth:
     def liveness(self) -> bool:
         return True
 
+    def _ready_unlocked(self) -> bool:
+        return bool(self.state.checks) and all(c.healthy for c in self.state.checks.values())
+
     def readiness(self) -> bool:
         with self._lock:
-            return bool(self.state.checks) and all(c.healthy for c in self.state.checks.values())
+            return self._ready_unlocked()
 
     def snapshot(self) -> dict:
         with self._lock:
             return {
-                "ready": self.readiness(),
+                "ready": self._ready_unlocked(),
                 "updated_at": self.state.updated_at.isoformat() if self.state.updated_at else None,
                 "checks": {
-                    name: {"healthy": c.healthy, "message": c.message, "checked_at": c.checked_at.isoformat() if c.checked_at else None}
+                    name: {
+                        "healthy": c.healthy,
+                        "message": c.message,
+                        "checked_at": c.checked_at.isoformat() if c.checked_at else None,
+                    }
                     for name, c in self.state.checks.items()
                 },
             }
