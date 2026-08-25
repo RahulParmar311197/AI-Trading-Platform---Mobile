@@ -11,9 +11,8 @@ from app.api.execution_health import router as execution_health_router
 from app.app_factory import create_resources
 from app.broker_factory import build_broker_router
 from app.broker_recovery import BrokerStartupRecovery
-from app.config import get_settings
+from app.get_settings import get_settings
 from app.db import SessionLocal, init_db
-from app.emergency_halt import EmergencyHaltController
 from app.api_order_reconciliation import reconcile_api_order_projection
 from app.operational_api import create_operational_router
 from app.operational_metrics import TradingMetricsCollector
@@ -63,6 +62,7 @@ def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str, float]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.resources = resources
+    app.state.execution_observability = resources.execution_observability
     app.state.broker_router = execution_broker_router
     app.state.startup_execution_state = startup_state
     app.state.emergency_halt_controller = emergency_halt_controller
@@ -70,8 +70,6 @@ async def lifespan(app: FastAPI):
     app.state.trading_health = trading_health
     app.state.trading_metrics = trading_metrics
     app.state.risk_circuit_breaker = risk_circuit_breaker
-    from app.execution_observability import ExecutionObservability
-    app.state.execution_observability = ExecutionObservability()
     init_db()
     lifecycle = OrderLifecycle(resources.audit_log)
     app.state.order_lifecycle = lifecycle
