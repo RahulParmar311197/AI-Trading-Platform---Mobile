@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from dataclasses import dataclass
 from threading import RLock
 from uuid import uuid4
@@ -43,7 +44,11 @@ class TransactionalExecutionRepository:
             if self._db.execute("SELECT COUNT(*) FROM positions").fetchone()[0]: raise RuntimeError("legacy symbol-only positions cannot be safely attributed to a broker account")
             self._db.execute("DROP TABLE positions"); self._db.execute("CREATE TABLE positions(broker_account_id INTEGER NOT NULL,broker_route TEXT NOT NULL,symbol TEXT NOT NULL,quantity REAL NOT NULL,PRIMARY KEY(broker_account_id,broker_route,symbol))")
         self._db.execute("CREATE TABLE IF NOT EXISTS execution_events(event_id TEXT PRIMARY KEY,order_id TEXT NOT NULL,event_kind TEXT NOT NULL,payload TEXT NOT NULL)")
-        self._db.execute("CREATE TABLE IF NOT EXISTS execution_outbox(id INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT UNIQUE NOT NULL,event_type TEXT NOT NULL,payload TEXT NOT NULL,published INTEGER NOT NULL DEFAULT 0)")
+        self._db.execute("CREATE TABLE IF NOT EXISTS execution_outbox(id INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT UNIQUE NOT NULL,event_type TEXT NOT NULL,payload TEXT NOT NULL,published INTEGER NOT NULL DEFAULT 0,claim_token TEXT,claim_expires_at REAL)")
+        outbox_cols={row[1] for row in self._db.execute("PRAGMA table_info(execution_outbox)")}
+        if "claim_token" not in outbox_cols: self._db.execute("ALTER TABLE execution_outbox ADD COLUMN claim_token TEXT")
+        if "claim_expires_at" not in outbox_cols: self._db.execute("ALTER TABLE execution_outbox ADD COLUMN claim_expires_at REAL")
+        self._db.execute("CREATE INDEX IF NOT EXISTS idx_execution_outbox_pending ON execution_outbox(published,claim_expires_at,id)")
         self._db.execute("CREATE TABLE IF NOT EXISTS order_identity(client_order_id TEXT PRIMARY KEY,broker TEXT NOT NULL,broker_order_id TEXT NOT NULL,broker_account_id INTEGER NOT NULL,broker_route TEXT NOT NULL,UNIQUE(broker,broker_order_id,broker_account_id,broker_route))")
         identity_cols={row[1] for row in self._db.execute("PRAGMA table_info(order_identity)")}
         if not {"broker_account_id","broker_route"}.issubset(identity_cols):
@@ -128,11 +133,33 @@ class TransactionalExecutionRepository:
             orders=frozenset(r[0] for r in self._db.execute("SELECT order_id FROM orders WHERE status IN ('SUBMITTED','PARTIALLY_FILLED')")); return ExecutionSnapshot(positions,orders)
 
     def pending_outbox(self,limit:int=100)->list[dict]:
+        now=time.time()
         with self._lock:
-            rows=self._db.execute("SELECT id,event_id,event_type,payload FROM execution_outbox WHERE published=0 ORDER BY id LIMIT ?",(limit,)).fetchall(); return [dict(id=r[0],event_id=r[1],event_type=r[2],payload=json.loads(r[3])) for r in rows]
+            rows=self._db.execute("SELECT id,event_id,event_type,payload FROM execution_outbox WHERE published=0 AND (claim_token IS NULL OR claim_expires_at<=?) ORDER BY id LIMIT ?",(now,limit)).fetchall(); return [dict(id=r[0],event_id=r[1],event_type=r[2],payload=json.loads(r[3])) for r in rows]
 
-    def mark_published(self,outbox_id:int)->None:
-        with self._lock: self._db.execute("UPDATE execution_outbox SET published=1 WHERE id=?",(outbox_id,)); self._db.commit()
+    def claim_outbox(self,*,limit:int=100,lease_seconds:float=30.0)->list[dict]:
+        if limit<=0 or lease_seconds<=0: raise ValueError("positive limit and lease are required")
+        now=time.time(); expires=now+lease_seconds; token=str(uuid4())
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                rows=self._db.execute("SELECT id,event_id,event_type,payload FROM execution_outbox WHERE published=0 AND (claim_token IS NULL OR claim_expires_at<=?) ORDER BY id LIMIT ?",(now,limit)).fetchall()
+                for row in rows: self._db.execute("UPDATE execution_outbox SET claim_token=?,claim_expires_at=? WHERE id=? AND published=0 AND (claim_token IS NULL OR claim_expires_at<=?)",(token,expires,row[0],now))
+                self._db.commit()
+            except Exception:
+                self._db.rollback(); raise
+        return [dict(id=r[0],event_id=r[1],event_type=r[2],payload=json.loads(r[3]),claim_token=token) for r in rows]
+
+    def mark_published(self,outbox_id:int,claim_token:str)->None:
+        if not claim_token: raise ValueError("claim token is required")
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                updated=self._db.execute("UPDATE execution_outbox SET published=1,claim_token=NULL,claim_expires_at=NULL WHERE id=? AND published=0 AND claim_token=?",(outbox_id,claim_token)).rowcount
+                if updated!=1: raise RuntimeError("outbox publication claim is no longer owned")
+                self._db.commit()
+            except Exception:
+                self._db.rollback(); raise
 
     def close(self)->None:
         with self._lock: self._db.close()
