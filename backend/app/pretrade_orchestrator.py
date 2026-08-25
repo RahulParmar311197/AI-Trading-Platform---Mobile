@@ -18,6 +18,7 @@ from app.risk_circuit_breaker import TradingRiskCircuitBreaker
 from app.risk_circuit_observability import ObservableRiskCircuitBreaker
 from app.setup_risk_engine import RiskValidatedSetup, SetupRiskEngine
 from app.trading_observability import TradingAuditLogger
+from app.trading_state_reconciliation import ReconciliationState, TradingStateReconciliationGuard
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,7 @@ class PreTradeResult:
 
 
 class PreTradeOrchestrator:
-    """Single fail-closed pre-trade path with automatic, freshness-validated broker snapshots."""
+    """Single fail-closed pre-trade path with broker freshness and reconciliation guards."""
 
     def __init__(self, setup_engine: SetupRiskEngine | None = None,
                  circuit_breaker: TradingRiskCircuitBreaker | ObservableRiskCircuitBreaker | None = None,
@@ -40,7 +41,8 @@ class PreTradeOrchestrator:
                  risk_aggregator: PortfolioRiskAggregator | None = None,
                  snapshot_adapter: BrokerSnapshotRiskAdapter | None = None,
                  broker_provider: BrokerPortfolioProvider | None = None,
-                 snapshot_freshness: BrokerSnapshotFreshnessPolicy | None = None):
+                 snapshot_freshness: BrokerSnapshotFreshnessPolicy | None = None,
+                 reconciliation_guard: TradingStateReconciliationGuard | None = None):
         self.setup_engine = setup_engine or SetupRiskEngine()
         self.metrics = metrics or TradingMetricsCollector()
         self.audit = audit or TradingAuditLogger()
@@ -50,13 +52,12 @@ class PreTradeOrchestrator:
         self.snapshot_adapter = snapshot_adapter or BrokerSnapshotRiskAdapter()
         self.broker_provider = broker_provider
         self.snapshot_freshness = snapshot_freshness or BrokerSnapshotFreshnessPolicy()
+        self.reconciliation_guard = reconciliation_guard or TradingStateReconciliationGuard()
         if isinstance(circuit_breaker, ObservableRiskCircuitBreaker):
             self.circuit_breaker = circuit_breaker
         else:
             self.circuit_breaker = ObservableRiskCircuitBreaker(
-                breaker=circuit_breaker or TradingRiskCircuitBreaker(),
-                metrics=self.metrics,
-                audit=self.audit,
+                breaker=circuit_breaker or TradingRiskCircuitBreaker(), metrics=self.metrics, audit=self.audit,
             )
 
     def authorize_decision(
@@ -71,6 +72,8 @@ class PreTradeOrchestrator:
         open_order_risk_inputs: list[OpenOrderRiskInput] | None = None,
         broker_snapshot: BrokerPortfolioSnapshot | None = None,
         fetch_broker_snapshot: bool = True,
+        internal_positions: dict[str, float] | None = None,
+        internal_open_order_ids: set[str] | frozenset[str] | None = None,
     ) -> PreTradeResult:
         breaker = self.circuit_breaker.evaluate(
             daily_pnl=daily_pnl, drawdown=drawdown, consecutive_losses=recent_losses,
@@ -112,6 +115,28 @@ class PreTradeOrchestrator:
             open_risk = None
             portfolio_risk_data_available = None
 
+            if internal_positions is not None or internal_open_order_ids is not None:
+                broker_order_ids = {o.order_id for o in broker_snapshot.open_orders}
+                reconciliation = self.reconciliation_guard.evaluate(
+                    ReconciliationState(
+                        internal_positions=internal_positions or {},
+                        broker_positions=exposure_positions,
+                        internal_open_order_ids=frozenset(internal_open_order_ids or ()),
+                        broker_open_order_ids=frozenset(broker_order_ids),
+                    )
+                )
+                if not reconciliation.clean:
+                    self.audit.emit(
+                        "RECONCILIATION_DRIFT_BLOCKED", symbol=symbol, severity="ERROR",
+                        data={
+                            "reason": reconciliation.reason,
+                            "position_differences": list(reconciliation.position_differences),
+                            "missing_internal_orders": list(reconciliation.missing_internal_orders),
+                            "missing_broker_orders": list(reconciliation.missing_broker_orders),
+                        },
+                    )
+                    return PreTradeResult(setup, None, False, reconciliation.reason)
+
         exposure = self.exposure_risk.evaluate(
             symbol=symbol, side=setup.side, quantity=setup.quantity,
             price=exposure_price if exposure_price is not None else setup.entry,
@@ -123,11 +148,11 @@ class PreTradeOrchestrator:
             return PreTradeResult(setup, None, False, exposure.reason)
 
         if open_risk is None or portfolio_risk_data_available is None:
-            snapshot = self.risk_aggregator.calculate(position_risk_inputs or [], open_order_risk_inputs or [])
-            open_risk = snapshot.total_open_risk
-            portfolio_risk_data_available = snapshot.risk_data_available
-            if not snapshot.risk_data_available:
-                self.audit.emit("PORTFOLIO_RISK_DATA_UNAVAILABLE", symbol=symbol, severity="WARNING", data={"unresolved_symbols": list(snapshot.unresolved_symbols)})
+            risk_snapshot = self.risk_aggregator.calculate(position_risk_inputs or [], open_order_risk_inputs or [])
+            open_risk = risk_snapshot.total_open_risk
+            portfolio_risk_data_available = risk_snapshot.risk_data_available
+            if not risk_snapshot.risk_data_available:
+                self.audit.emit("PORTFOLIO_RISK_DATA_UNAVAILABLE", symbol=symbol, severity="WARNING", data={"unresolved_symbols": list(risk_snapshot.unresolved_symbols)})
 
         portfolio = self.portfolio_loss_risk.evaluate(
             daily_pnl=daily_pnl, current_drawdown=drawdown,
