@@ -13,3 +13,15 @@ def test_execution_health_requires_token():
     assert client.get("/execution/health", headers={"X-Execution-Health-Token": "wrong"}).status_code == 401
     response = client.get("/execution/health", headers={"X-Execution-Health-Token": "test-secret"})
     assert response.status_code == 200
+
+
+def test_execution_health_rejects_near_match_token():
+    resources = create_resources(execution_path=":memory:", idempotency_path=":memory:", safety_path=":memory:", audit_path=":memory:")
+    app = create_app(resources=resources)
+    app.state.execution_health_token = "test-secret"
+    client = TestClient(app)
+
+    assert client.get(
+        "/execution/health",
+        headers={"X-Execution-Health-Token": "test-secreT"},
+    ).status_code == 401
