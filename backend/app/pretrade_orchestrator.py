@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.ai_decision_engine import TradingDecision
+from app.broker_portfolio_provider import BrokerPortfolioProvider
 from app.broker_portfolio_snapshot import BrokerPortfolioSnapshot
 from app.broker_snapshot_risk_adapter import BrokerSnapshotRiskAdapter
 from app.order_intent import OrderIntent
@@ -27,7 +28,7 @@ class PreTradeResult:
 
 
 class PreTradeOrchestrator:
-    """Single fail-closed pre-trade path with canonical broker risk snapshots."""
+    """Single fail-closed pre-trade path with automatic broker portfolio snapshots."""
 
     def __init__(self, setup_engine: SetupRiskEngine | None = None,
                  circuit_breaker: TradingRiskCircuitBreaker | ObservableRiskCircuitBreaker | None = None,
@@ -36,7 +37,8 @@ class PreTradeOrchestrator:
                  exposure_risk: PortfolioExposureRisk | None = None,
                  portfolio_loss_risk: PortfolioLossRisk | None = None,
                  risk_aggregator: PortfolioRiskAggregator | None = None,
-                 snapshot_adapter: BrokerSnapshotRiskAdapter | None = None):
+                 snapshot_adapter: BrokerSnapshotRiskAdapter | None = None,
+                 broker_provider: BrokerPortfolioProvider | None = None):
         self.setup_engine = setup_engine or SetupRiskEngine()
         self.metrics = metrics or TradingMetricsCollector()
         self.audit = audit or TradingAuditLogger()
@@ -44,6 +46,7 @@ class PreTradeOrchestrator:
         self.portfolio_loss_risk = portfolio_loss_risk or PortfolioLossRisk(PortfolioRiskLimits())
         self.risk_aggregator = risk_aggregator or PortfolioRiskAggregator()
         self.snapshot_adapter = snapshot_adapter or BrokerSnapshotRiskAdapter()
+        self.broker_provider = broker_provider
         if isinstance(circuit_breaker, ObservableRiskCircuitBreaker):
             self.circuit_breaker = circuit_breaker
         else:
@@ -64,6 +67,7 @@ class PreTradeOrchestrator:
         position_risk_inputs: list[PositionRiskInput] | None = None,
         open_order_risk_inputs: list[OpenOrderRiskInput] | None = None,
         broker_snapshot: BrokerPortfolioSnapshot | None = None,
+        fetch_broker_snapshot: bool = True,
     ) -> PreTradeResult:
         breaker = self.circuit_breaker.evaluate(
             daily_pnl=daily_pnl, drawdown=drawdown, consecutive_losses=recent_losses,
@@ -79,6 +83,13 @@ class PreTradeOrchestrator:
         if not setup.approved:
             self.audit.emit("RISK_REJECTED", symbol=symbol, severity="WARNING", data={"reason": setup.reason})
             return PreTradeResult(setup, None, False, setup.reason)
+
+        if broker_snapshot is None and fetch_broker_snapshot and self.broker_provider is not None:
+            try:
+                broker_snapshot = self.broker_provider.get_portfolio_snapshot()
+            except Exception as exc:
+                self.audit.emit("BROKER_SNAPSHOT_FETCH_FAILED", symbol=symbol, severity="ERROR", data={"error": str(exc)})
+                return PreTradeResult(setup, None, False, "broker portfolio snapshot unavailable")
 
         exposure_positions = positions or {}
         exposure_positions_available = positions_available
