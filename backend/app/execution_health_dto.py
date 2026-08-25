@@ -11,7 +11,10 @@ class ExecutionHealthDTO:
 
     @staticmethod
     def from_snapshot(snapshot: ExecutionHealthSnapshot) -> dict[str, Any]:
-        return asdict(snapshot)
+        payload = asdict(snapshot)
+        payload["status"] = snapshot.status.value
+        payload["reason_codes"] = list(snapshot.reason_codes)
+        return payload
 
     @staticmethod
     def current(health: ExecutionHealth) -> dict[str, Any]:
