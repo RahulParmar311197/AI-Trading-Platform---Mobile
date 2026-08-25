@@ -5,14 +5,37 @@ from app.transactional_execution_repository import TransactionalExecutionReposit
 
 
 class TransactionalInternalTradingStateProvider(InternalTradingStateProvider):
-    """Read-only adapter making the transactional execution repository the pre-trade state source."""
+    """Read-only adapter exposing account-safe transactional execution state."""
 
     def __init__(self, repository: TransactionalExecutionRepository) -> None:
         self.repository = repository
 
     def get_state(self) -> InternalTradingState:
         snapshot = self.repository.snapshot()
+        account_scopes = {(account_id, route) for account_id, route, _symbol in snapshot.positions}
+        if len(account_scopes) > 1:
+            raise RuntimeError(
+                "transactional execution state contains multiple broker accounts; "
+                "request an account-scoped state view before pre-trade use"
+            )
+        positions = {symbol: float(quantity) for (_account_id, _route, symbol), quantity in snapshot.positions.items()}
         return InternalTradingState(
-            positions=dict(snapshot.positions),
+            positions=positions,
+            open_order_ids=frozenset(snapshot.open_order_ids),
+        )
+
+    def get_state_for_account(self, *, broker_account_id: int, broker_route: str) -> InternalTradingState:
+        if broker_account_id <= 0:
+            raise ValueError("broker_account_id must be positive")
+        if not broker_route:
+            raise ValueError("broker_route is required")
+        snapshot = self.repository.snapshot()
+        positions = {
+            symbol: float(quantity)
+            for (account_id, route, symbol), quantity in snapshot.positions.items()
+            if account_id == broker_account_id and route == broker_route
+        }
+        return InternalTradingState(
+            positions=positions,
             open_order_ids=frozenset(snapshot.open_order_ids),
         )
