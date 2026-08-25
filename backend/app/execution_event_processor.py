@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from threading import RLock
 
+from app.execution_event_store import ExecutionEventStore, InMemoryExecutionEventStore
 from app.execution_lifecycle import ExecutionLedger, OrderStatus
 
 
@@ -16,21 +17,21 @@ class ExecutionEvent:
 
 
 class IdempotentExecutionEventProcessor:
-    """Apply broker callbacks exactly once by durable event identity."""
+    """Apply broker callbacks once through a replaceable durable event store."""
 
-    def __init__(self, ledger: ExecutionLedger) -> None:
+    def __init__(self, ledger: ExecutionLedger, event_store: ExecutionEventStore | None = None) -> None:
         self.ledger = ledger
+        self.event_store = event_store or InMemoryExecutionEventStore()
         self._lock = RLock()
-        self._processed: set[str] = set()
 
     def process(self, event: ExecutionEvent):
         if not event.event_id:
             raise ValueError("event_id is required")
         with self._lock:
-            if event.event_id in self._processed:
+            if self.event_store.contains(event.event_id):
                 return False
             result = self._apply(event)
-            self._processed.add(event.event_id)
+            self.event_store.record(event.event_id)
             return result
 
     def _apply(self, event: ExecutionEvent):
@@ -39,9 +40,7 @@ class IdempotentExecutionEventProcessor:
             return self.ledger.transition(event.order_id, OrderStatus.SUBMITTED)
         if kind == "ACKNOWLEDGED":
             return self.ledger.orders[event.order_id]
-        if kind == "PARTIAL_FILL":
-            return self.ledger.fill(event.order_id, float(event.price), event.quantity)
-        if kind == "FILLED":
+        if kind in {"PARTIAL_FILL", "FILLED"}:
             return self.ledger.fill(event.order_id, float(event.price), event.quantity)
         if kind == "CANCELLED":
             return self.ledger.transition(event.order_id, OrderStatus.CANCELLED)
