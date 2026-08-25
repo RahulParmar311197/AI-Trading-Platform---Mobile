@@ -19,6 +19,8 @@ from app.operational_metrics import TradingMetricsCollector
 from app.order_lifecycle import OrderLifecycle
 from app.portfolio_reconciliation_service import PortfolioReconciliationService
 from app.recovery_manager import StartupRecoveryManager
+from app.risk_circuit_observability import ObservableRiskCircuitBreaker
+from app.risk_circuit_api import create_risk_circuit_router
 from app.startup_execution_state import StartupExecutionState, StartupExecutionStateMachine
 from app.startup_reconciliation_gate import StartupReconciliationGate
 from app.system_health import TradingSystemHealth
@@ -40,6 +42,7 @@ startup_gate = StartupReconciliationGate(
 )
 trading_health = TradingSystemHealth()
 trading_metrics = TradingMetricsCollector()
+risk_circuit_breaker = ObservableRiskCircuitBreaker(metrics=trading_metrics, audit=resources.audit_log)
 
 
 def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str, float]:
@@ -63,6 +66,7 @@ async def lifespan(app: FastAPI):
     app.state.trading_audit_log = resources.audit_log
     app.state.trading_health = trading_health
     app.state.trading_metrics = trading_metrics
+    app.state.risk_circuit_breaker = risk_circuit_breaker
     init_db()
     lifecycle = OrderLifecycle(resources.audit_log)
     app.state.order_lifecycle = lifecycle
@@ -155,5 +159,6 @@ for router in [
     health_router,
     orders_router,
     create_operational_router(trading_health, trading_metrics),
+    create_risk_circuit_router(risk_circuit_breaker),
 ]:
     app.include_router(router)
