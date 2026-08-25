@@ -25,6 +25,16 @@ class OrderIdentity:
     broker_route: str | None = None
 
 
+@dataclass(frozen=True)
+class SubmissionRecord:
+    idempotency_key: str
+    client_order_id: str
+    broker_account_id: int
+    broker_route: str
+    status: str
+    broker_order_id: str | None
+
+
 class TransactionalExecutionRepository:
     """Single durable transaction boundary for account-scoped execution state and identities."""
 
@@ -56,6 +66,8 @@ class TransactionalExecutionRepository:
             if count: raise RuntimeError("legacy identity rows lack broker-account scope; migrate before live execution")
             self._db.execute("DROP TABLE order_identity")
             self._db.execute("CREATE TABLE order_identity(client_order_id TEXT PRIMARY KEY,broker TEXT NOT NULL,broker_order_id TEXT NOT NULL,broker_account_id INTEGER NOT NULL,broker_route TEXT NOT NULL,UNIQUE(broker,broker_order_id,broker_account_id,broker_route))")
+        self._db.execute("CREATE TABLE IF NOT EXISTS order_submissions(idempotency_key TEXT PRIMARY KEY,client_order_id TEXT NOT NULL,broker_account_id INTEGER NOT NULL,broker_route TEXT NOT NULL,status TEXT NOT NULL,broker_order_id TEXT,created_at REAL NOT NULL,updated_at REAL NOT NULL)")
+        self._db.execute("CREATE INDEX IF NOT EXISTS idx_order_submissions_status ON order_submissions(status,updated_at)")
         self._db.commit()
 
     def create_order(self,symbol:str,side:str,quantity:float,*,broker_account_id:int,broker_route:str)->str:
@@ -64,6 +76,46 @@ class TransactionalExecutionRepository:
         with self._lock:
             self._db.execute("INSERT INTO orders(order_id,symbol,side,quantity,status,broker_account_id,broker_route) VALUES(?,?,?,?,?,?,?)",(order_id,symbol.upper(),side.upper(),quantity,OrderStatus.CREATED.value,broker_account_id,broker_route)); self._db.commit()
         return order_id
+
+    def register_submission(self,idempotency_key:str,client_order_id:str,broker_account_id:int,broker_route:str)->SubmissionRecord:
+        if not idempotency_key or not client_order_id or broker_account_id<=0 or not broker_route: raise ValueError("submission identity is required")
+        now=time.time()
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._db.execute("INSERT OR IGNORE INTO order_submissions(idempotency_key,client_order_id,broker_account_id,broker_route,status,broker_order_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",(idempotency_key,client_order_id,broker_account_id,broker_route,"PENDING",None,now,now))
+                row=self._db.execute("SELECT idempotency_key,client_order_id,broker_account_id,broker_route,status,broker_order_id FROM order_submissions WHERE idempotency_key=?",(idempotency_key,)).fetchone()
+                if row[1:]!=(client_order_id,broker_account_id,broker_route,row[4],row[5]):
+                    raise ValueError("idempotency key is bound to a different order scope")
+                self._db.commit()
+                return SubmissionRecord(*row)
+            except Exception:
+                self._db.rollback(); raise
+
+    def mark_submission_submitted(self,idempotency_key:str,broker_order_id:str)->SubmissionRecord:
+        if not idempotency_key or not broker_order_id: raise ValueError("submission identifiers are required")
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                updated=self._db.execute("UPDATE order_submissions SET status='SUBMITTED',broker_order_id=?,updated_at=? WHERE idempotency_key=? AND status='PENDING'",(broker_order_id,time.time(),idempotency_key)).rowcount
+                if updated!=1:
+                    row=self._db.execute("SELECT idempotency_key,client_order_id,broker_account_id,broker_route,status,broker_order_id FROM order_submissions WHERE idempotency_key=?",(idempotency_key,)).fetchone()
+                    if not row: raise KeyError(idempotency_key)
+                    if row[5]!=broker_order_id: raise ValueError("submission is already bound to a different broker order")
+                row=self._db.execute("SELECT idempotency_key,client_order_id,broker_account_id,broker_route,status,broker_order_id FROM order_submissions WHERE idempotency_key=?",(idempotency_key,)).fetchone()
+                self._db.commit(); return SubmissionRecord(*row)
+            except Exception:
+                self._db.rollback(); raise
+
+    def get_submission(self,idempotency_key:str)->SubmissionRecord|None:
+        with self._lock:
+            row=self._db.execute("SELECT idempotency_key,client_order_id,broker_account_id,broker_route,status,broker_order_id FROM order_submissions WHERE idempotency_key=?",(idempotency_key,)).fetchone()
+        return SubmissionRecord(*row) if row else None
+
+    def pending_submissions(self,limit:int=100)->list[SubmissionRecord]:
+        with self._lock:
+            rows=self._db.execute("SELECT idempotency_key,client_order_id,broker_account_id,broker_route,status,broker_order_id FROM order_submissions WHERE status='PENDING' ORDER BY created_at LIMIT ?",(limit,)).fetchall()
+        return [SubmissionRecord(*row) for row in rows]
 
     def bind_identity(self,identity:OrderIdentity)->None:
         with self._lock:
