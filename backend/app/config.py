@@ -1,5 +1,5 @@
 from functools import lru_cache
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -24,6 +24,16 @@ class Settings(BaseSettings):
     risk_max_trade_loss: float = Field(default=200.0, validation_alias="RISK_MAX_TRADE_LOSS")
     risk_trading_day_timezone: str = Field(default="Asia/Kolkata", validation_alias="RISK_TRADING_DAY_TIMEZONE")
     risk_max_snapshot_age_seconds: float = Field(default=2.0, validation_alias="RISK_MAX_SNAPSHOT_AGE_SECONDS")
+
+    @model_validator(mode="after")
+    def validate_production_security(self):
+        if self.environment.lower() == "production":
+            if not self.execution_health_token or len(self.execution_health_token) < 32:
+                raise ValueError("EXECUTION_HEALTH_TOKEN must be set to at least 32 characters in production")
+            if self.jwt_secret == "change-me-in-production":
+                raise ValueError("JWT_SECRET must be changed in production")
+        return self
+
     @property
     def cors_origin_list(self) -> list[str]: return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
     @property
