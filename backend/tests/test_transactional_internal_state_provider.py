@@ -17,6 +17,26 @@ def test_provider_reads_persistent_positions_and_open_orders(tmp_path):
     repo.close()
 
 
+def test_account_scoped_state_does_not_leak_open_orders(tmp_path):
+    repo = TransactionalExecutionRepository(str(tmp_path / "execution.db"))
+    account_a = repo.create_order("NIFTY", "BUY", 10, broker_account_id=7, broker_route="upstox:account:7")
+    account_b = repo.create_order("NIFTY", "BUY", 5, broker_account_id=8, broker_route="upstox:account:8")
+    repo.apply_event("submit-a", account_a, "SUBMITTED", broker_account_id=7, broker_route="upstox:account:7")
+    repo.apply_event("submit-b", account_b, "SUBMITTED", broker_account_id=8, broker_route="upstox:account:8")
+    repo.apply_event("fill-a", account_a, "PARTIAL_FILL", broker_account_id=7, broker_route="upstox:account:7", price=1000, quantity=4)
+    repo.apply_event("fill-b", account_b, "PARTIAL_FILL", broker_account_id=8, broker_route="upstox:account:8", price=1000, quantity=2)
+
+    provider = TransactionalInternalTradingStateProvider(repo)
+    state_a = provider.get_state_for_account(broker_account_id=7, broker_route="upstox:account:7")
+    state_b = provider.get_state_for_account(broker_account_id=8, broker_route="upstox:account:8")
+
+    assert state_a.positions == {"NIFTY": 4.0}
+    assert state_a.open_order_ids == frozenset({account_a})
+    assert state_b.positions == {"NIFTY": 2.0}
+    assert state_b.open_order_ids == frozenset({account_b})
+    repo.close()
+
+
 def test_unscoped_provider_fails_closed_for_multiple_accounts(tmp_path):
     repo = TransactionalExecutionRepository(str(tmp_path / "execution.db"))
     account_a = repo.create_order("NIFTY", "BUY", 10, broker_account_id=7, broker_route="upstox:account:7")
