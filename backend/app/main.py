@@ -63,6 +63,7 @@ def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str, float]:
 async def lifespan(app: FastAPI):
     app.state.resources = resources
     app.state.execution_observability = resources.execution_observability
+    app.state.execution_health_token = settings.execution_health_token
     app.state.broker_router = execution_broker_router
     app.state.startup_execution_state = startup_state
     app.state.emergency_halt_controller = emergency_halt_controller
