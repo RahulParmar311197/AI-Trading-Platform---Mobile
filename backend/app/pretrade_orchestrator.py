@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from app.ai_decision_engine import TradingDecision
 from app.order_intent import OrderIntent
 from app.operational_metrics import TradingMetricsCollector
+from app.portfolio_exposure_risk import ExposureLimits, PortfolioExposureRisk
 from app.risk_engine import RiskLimits
 from app.risk_gateway import RiskGatewayResult, authorize
 from app.risk_circuit_breaker import TradingRiskCircuitBreaker
@@ -27,10 +28,12 @@ class PreTradeOrchestrator:
     def __init__(self, setup_engine: SetupRiskEngine | None = None,
                  circuit_breaker: TradingRiskCircuitBreaker | ObservableRiskCircuitBreaker | None = None,
                  metrics: TradingMetricsCollector | None = None,
-                 audit: TradingAuditLogger | None = None):
+                 audit: TradingAuditLogger | None = None,
+                 exposure_risk: PortfolioExposureRisk | None = None):
         self.setup_engine = setup_engine or SetupRiskEngine()
         self.metrics = metrics or TradingMetricsCollector()
         self.audit = audit or TradingAuditLogger()
+        self.exposure_risk = exposure_risk or PortfolioExposureRisk(ExposureLimits())
         if isinstance(circuit_breaker, ObservableRiskCircuitBreaker):
             self.circuit_breaker = circuit_breaker
         else:
@@ -45,6 +48,8 @@ class PreTradeOrchestrator:
         open_positions: int, recent_losses: int = 0, limits: RiskLimits | None = None,
         price_increment: float = 0.0, drawdown: float = 0.0,
         reconciliation_drift: bool = False, stale_data: bool = False,
+        positions: dict[str, float] | None = None, open_order_notional: float = 0.0,
+        positions_available: bool = True, exposure_price: float | None = None,
     ) -> PreTradeResult:
         breaker = self.circuit_breaker.evaluate(
             daily_pnl=daily_pnl, drawdown=drawdown, consecutive_losses=recent_losses,
@@ -61,6 +66,16 @@ class PreTradeOrchestrator:
         if not setup.approved:
             self.audit.emit("RISK_REJECTED", symbol=symbol, severity="WARNING", data={"reason": setup.reason})
             return PreTradeResult(setup, None, False, setup.reason)
+
+        exposure = self.exposure_risk.evaluate(
+            symbol=symbol, side=setup.side, quantity=setup.quantity,
+            price=exposure_price if exposure_price is not None else setup.entry,
+            positions=positions or {}, open_order_notional=open_order_notional,
+            positions_available=positions_available,
+        )
+        if not exposure.approved:
+            self.audit.emit("EXPOSURE_REJECTED", symbol=symbol, severity="WARNING", data={"reason": exposure.reason})
+            return PreTradeResult(setup, None, False, exposure.reason)
 
         order = OrderIntent(symbol=symbol, side=setup.side, entry=setup.entry,
                             stop_loss=setup.stop_loss, take_profit=setup.target,
