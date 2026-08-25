@@ -22,6 +22,8 @@ class Order(Base):
     stop: Mapped[float | None] = mapped_column(Numeric(20, 8), nullable=True)
     security_id: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="PENDING", index=True)
+    filled_quantity: Mapped[float] = mapped_column(Numeric(20, 6), default=0, nullable=False)
+    average_fill_price: Mapped[float | None] = mapped_column(Numeric(20, 8), nullable=True)
     broker_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     note: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
