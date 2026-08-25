@@ -47,6 +47,7 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     observability = ExecutionObservability()
     alert_store = ExecutionAlertStore(alert_path)
     alert_service = ExecutionAlertService(ExecutionHealth(observability), ExecutionAlertPolicy(), alert_store)
+    observability.add_hook(alert_service.evaluate)
     return AppResources(
         execution_store=ExecutionStateStore(execution_path),
         idempotency_store=IdempotencyStore(idempotency_path),
@@ -62,14 +63,14 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     )
 
 
-def create_app(resources: AppResources | None = None, broker_router: BrokerRouter | None = None) -> FastAPI:
-    resources = resources or create_resources()
+def create_app(resources: AppResources | None = None, broker_router: BrokerRouter | None = None, execution_health_token: str | None = None) -> FastAPI:
+    resources = resources or create_resources(execution_health_token=execution_health_token or "test-token")
     app = FastAPI(title="AI Trading Platform", version="1.0.0")
     app.state.resources = resources
     app.state.execution_observability = resources.execution_observability
     app.state.execution_alert_store = resources.execution_alert_store
     app.state.execution_alert_service = resources.execution_alert_service
-    app.state.execution_health_token = "test-token"
+    app.state.execution_health_token = execution_health_token if execution_health_token is not None else "test-token"
     app.state.broker_router = broker_router or build_broker_router(resources.safety_store)
     app.state.startup_execution_state = resources.startup_execution_state
     app.state.emergency_halt_controller = resources.emergency_halt_controller
