@@ -6,7 +6,7 @@ from threading import RLock
 
 
 class ExecutionEventQuarantine:
-    """Durable quarantine for broker events that cannot be safely resolved."""
+    """Durable fail-closed quarantine for broker events that cannot be safely resolved."""
 
     def __init__(self, database_path: str) -> None:
         self._lock = RLock()
@@ -26,6 +26,10 @@ class ExecutionEventQuarantine:
         with self._lock:
             rows = self._db.execute("SELECT id,event_id,broker,broker_order_id,payload,reason,status,created_at FROM execution_event_quarantine WHERE status='OPEN' ORDER BY id LIMIT ?", (limit,)).fetchall()
         return [dict(id=r[0], event_id=r[1], broker=r[2], broker_order_id=r[3], payload=json.loads(r[4]), reason=r[5], status=r[6], created_at=r[7]) for r in rows]
+
+    def list_recovery_cases(self, limit: int = 100) -> list[dict]:
+        """Return open cases for review; this method never binds or executes them."""
+        return self.pending(limit)
 
     def resolve(self, quarantine_id: int) -> None:
         with self._lock:
