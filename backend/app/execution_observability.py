@@ -27,12 +27,9 @@ class ExecutionMetricsScope:
 
 
 class ExecutionObservability:
-    """Thread-safe execution telemetry with non-blocking alert hooks."""
+    """Thread-safe execution telemetry with ordered, non-blocking hooks."""
 
-    _METRIC_NAMES = frozenset({
-        "submissions", "submitted", "broker_failures", "recovery_found",
-        "recovery_safe_retries", "quarantined", "duplicate_preventions",
-    })
+    _METRIC_NAMES = frozenset({"submissions", "submitted", "broker_failures", "recovery_found", "recovery_safe_retries", "quarantined", "duplicate_preventions"})
 
     def __init__(self) -> None:
         self._lock = Lock()
@@ -52,16 +49,17 @@ class ExecutionObservability:
             raise ValueError("invalid broker route")
         return ExecutionMetricsScope(broker_account_id, broker_route)
 
-    def add_hook(self, hook: Callable[[], None]) -> None:
+    def add_hook(self, hook: Callable[[], None], *, priority: int = 100) -> None:
         if not callable(hook):
             raise ValueError("invalid observability hook")
         with self._lock:
-            self._hooks.append(hook)
+            self._hooks.append((priority, len(self._hooks), hook))
+            self._hooks.sort(key=lambda item: (item[0], item[1]))
 
     def _notify_hooks(self) -> None:
         with self._lock:
             hooks = tuple(self._hooks)
-        for hook in hooks:
+        for _, _, hook in hooks:
             try:
                 hook()
             except Exception:
