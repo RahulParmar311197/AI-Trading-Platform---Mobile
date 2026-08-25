@@ -1,0 +1,43 @@
+name: Trading Safety
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile backend Python
+        run: python -m compileall -q backend
+      - name: Verify live execution is disabled by default
+        run: |
+          python - <<'PY'
+          from backend.app.live_execution_adapter import LiveExecutionAdapter, LiveExecutionConfig
+          adapter = LiveExecutionAdapter(config=LiveExecutionConfig())
+          assert adapter.enabled is False
+          try:
+              adapter.submit({'symbol': 'TEST', 'quantity': 1})
+          except RuntimeError:
+              pass
+          else:
+              raise AssertionError('live execution unexpectedly enabled')
+          PY
+      - name: Verify idempotency guard
+        run: |
+          python - <<'PY'
+          from backend.app.idempotent_execution import IdempotentExecution
+          guard = IdempotentExecution(max_attempts=3)
+          calls = {'n': 0}
+          def submit():
+              calls['n'] += 1
+              return {'ok': True}
+          first = guard.execute('ci-order-1', submit)
+          second = guard.execute('ci-order-1', submit)
+          assert calls['n'] == 1
+          assert first.result == second.result
+          PY
