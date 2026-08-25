@@ -6,6 +6,7 @@ from app.ai_decision_engine import TradingDecision
 from app.order_intent import OrderIntent
 from app.operational_metrics import TradingMetricsCollector
 from app.portfolio_exposure_risk import ExposureLimits, PortfolioExposureRisk
+from app.portfolio_loss_risk import PortfolioLossRisk, PortfolioRiskLimits
 from app.risk_engine import RiskLimits
 from app.risk_gateway import RiskGatewayResult, authorize
 from app.risk_circuit_breaker import TradingRiskCircuitBreaker
@@ -23,17 +24,19 @@ class PreTradeResult:
 
 
 class PreTradeOrchestrator:
-    """Single fail-closed pre-trade path with setup, portfolio, and observable circuit-breaker gates."""
+    """Single fail-closed pre-trade path with setup, exposure, portfolio-loss and circuit-breaker gates."""
 
     def __init__(self, setup_engine: SetupRiskEngine | None = None,
                  circuit_breaker: TradingRiskCircuitBreaker | ObservableRiskCircuitBreaker | None = None,
                  metrics: TradingMetricsCollector | None = None,
                  audit: TradingAuditLogger | None = None,
-                 exposure_risk: PortfolioExposureRisk | None = None):
+                 exposure_risk: PortfolioExposureRisk | None = None,
+                 portfolio_loss_risk: PortfolioLossRisk | None = None):
         self.setup_engine = setup_engine or SetupRiskEngine()
         self.metrics = metrics or TradingMetricsCollector()
         self.audit = audit or TradingAuditLogger()
         self.exposure_risk = exposure_risk or PortfolioExposureRisk(ExposureLimits())
+        self.portfolio_loss_risk = portfolio_loss_risk or PortfolioLossRisk(PortfolioRiskLimits())
         if isinstance(circuit_breaker, ObservableRiskCircuitBreaker):
             self.circuit_breaker = circuit_breaker
         else:
@@ -50,6 +53,7 @@ class PreTradeOrchestrator:
         reconciliation_drift: bool = False, stale_data: bool = False,
         positions: dict[str, float] | None = None, open_order_notional: float = 0.0,
         positions_available: bool = True, exposure_price: float | None = None,
+        open_risk: float = 0.0, portfolio_risk_data_available: bool = True,
     ) -> PreTradeResult:
         breaker = self.circuit_breaker.evaluate(
             daily_pnl=daily_pnl, drawdown=drawdown, consecutive_losses=recent_losses,
@@ -76,6 +80,17 @@ class PreTradeOrchestrator:
         if not exposure.approved:
             self.audit.emit("EXPOSURE_REJECTED", symbol=symbol, severity="WARNING", data={"reason": exposure.reason})
             return PreTradeResult(setup, None, False, exposure.reason)
+
+        portfolio = self.portfolio_loss_risk.evaluate(
+            daily_pnl=daily_pnl,
+            current_drawdown=drawdown,
+            open_risk=open_risk,
+            proposed_risk=float(setup.risk_amount),
+            positions_available=portfolio_risk_data_available,
+        )
+        if not portfolio.approved:
+            self.audit.emit("PORTFOLIO_RISK_REJECTED", symbol=symbol, severity="WARNING", data={"reason": portfolio.reason})
+            return PreTradeResult(setup, None, False, portfolio.reason)
 
         order = OrderIntent(symbol=symbol, side=setup.side, entry=setup.entry,
                             stop_loss=setup.stop_loss, take_profit=setup.target,
