@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.broker_submission_recovery import SubmissionRecoveryService
-from app.order_submission_recovery_orchestrator import RecoveryResult as _Unused
 from app.order_submission_service import BrokerSubmissionResult, OrderIntent
 from app.submission_recovery_audit import SubmissionRecoveryAuditor
 from app.transactional_execution_repository import TransactionalExecutionRepository
