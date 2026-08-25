@@ -14,6 +14,8 @@ class IdentityMatch:
     broker: str
     broker_order_id: str
     client_order_id: str
+    broker_account_id: int | None = None
+    broker_route: str | None = None
 
 
 class ReconciliationEventRecovery:
@@ -25,9 +27,7 @@ class ReconciliationEventRecovery:
         self.repository = repository
 
     def bind_reconciled_identity(self, match: IdentityMatch) -> None:
-        # Matching is intentionally performed by the reconciliation engine before this call.
-        # This method only persists an already-approved one-to-one identity.
-        self.registry.bind(OrderIdentity(match.client_order_id, match.broker, match.broker_order_id))
+        self.registry.bind(OrderIdentity(match.client_order_id, match.broker, match.broker_order_id, match.broker_account_id, match.broker_route))
 
     def recover(self, limit: int = 100) -> RecoveryResult:
         worker = ExecutionQuarantineRecovery(self.registry, self.quarantine, CanonicalExecutionDispatcher(self.repository))
