@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     jwt_exp_minutes: int = Field(default=60, validation_alias="JWT_EXP_MINUTES")
     live_trading_enabled: bool = Field(default=False, validation_alias="LIVE_TRADING_ENABLED")
     broker_credentials_key: str = Field(default="", validation_alias="BROKER_CREDENTIALS_KEY")
+    execution_health_token: str = Field(default="", validation_alias="EXECUTION_HEALTH_TOKEN")
     upstox_client_id: str = Field(default="", validation_alias="UPSTOX_CLIENT_ID")
     upstox_client_secret: str = Field(default="", validation_alias="UPSTOX_CLIENT_SECRET")
     upstox_redirect_uri: str = Field(default="", validation_alias="UPSTOX_REDIRECT_URI")
