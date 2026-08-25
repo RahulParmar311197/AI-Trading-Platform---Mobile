@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from fastapi import APIRouter
 
 from app.operational_metrics import TradingMetricsCollector
 from app.system_health import TradingSystemHealth
 
 
-def create_operational_router(health: TradingSystemHealth | None = None, metrics: TradingMetricsCollector | None = None) -> APIRouter:
+def create_operational_router(
+    health: TradingSystemHealth | None = None,
+    metrics: TradingMetricsCollector | None = None,
+) -> APIRouter:
     health = health or TradingSystemHealth()
     metrics = metrics or TradingMetricsCollector()
     router = APIRouter(tags=["operations"])
@@ -19,7 +21,11 @@ def create_operational_router(health: TradingSystemHealth | None = None, metrics
     @router.get("/health/ready")
     def ready() -> dict:
         is_ready = health.readiness()
-        return {"status": "ready" if is_ready else "not_ready", "ready": is_ready, "health": health.snapshot()}
+        return {
+            "status": "ready" if is_ready else "not_ready",
+            "ready": is_ready,
+            "health": health.snapshot(),
+        }
 
     @router.get("/health")
     def health_status() -> dict:
