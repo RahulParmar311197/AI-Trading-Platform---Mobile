@@ -11,4 +11,8 @@ class ExecutionAlertRecoveryCoordinator:
         self.resolver = resolver
 
     def evaluate(self) -> list[ExecutionAlertRecord]:
-        return self.resolver.evaluate()
+        try:
+            return self.resolver.evaluate()
+        except Exception:
+            # Alert recovery is strictly best-effort and must never affect execution.
+            return []
