@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from threading import Lock
-from time import monotonic
 
 
 @dataclass
@@ -13,6 +12,7 @@ class TradingMetrics:
     orders_rejected: int = 0
     partial_fills: int = 0
     reconciliation_failures: int = 0
+    circuit_breaker_blocks: int = 0
     execution_latency_ms: list[float] = field(default_factory=list)
     realized_pnl: float = 0.0
     max_drawdown: float = 0.0
@@ -53,6 +53,7 @@ class TradingMetricsCollector:
                 "orders_rejected": self.metrics.orders_rejected,
                 "partial_fills": self.metrics.partial_fills,
                 "reconciliation_failures": self.metrics.reconciliation_failures,
+                "circuit_breaker_blocks": self.metrics.circuit_breaker_blocks,
                 "execution_latency_ms_p95": p95,
                 "realized_pnl": self.metrics.realized_pnl,
                 "max_drawdown": self.metrics.max_drawdown,
