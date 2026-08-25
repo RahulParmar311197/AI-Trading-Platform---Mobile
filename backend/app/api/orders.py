@@ -61,7 +61,7 @@ def _execution_service(broker_router,execution_store,idempotency_store,recovery,
     authorization=resources.authorization
     if authorization is None: authorization=ExecutionAuthorization(resources.safety_store,gate,provider,audit_log=resources.audit_log)
     startup_state=resources.startup_execution_state
-    return OrderExecutionService(broker_router,lifecycle,execution_store,idempotency_store,recovery=recovery,risk_gate=gate,risk_snapshot_provider=provider,safety_state_store=resources.safety_store,authorization=authorization,startup_state=startup_state,audit_log=resources.audit_log)
+    return OrderExecutionService(broker_router,lifecycle,execution_store,idempotency_store,recovery=recovery,risk_gate=gate,risk_snapshot_provider=provider,safety_state_store=resources.safety_store,authorization=authorization,startup_state=startup_state,audit_log=resources.audit_log,observability=resources.execution_observability)
 
 def _broker_request(client_order_id,symbol,side,quantity,order_type="MARKET",price=None,stop=None,security_id="",owner_user_id=None,broker_account_id=None,broker_route=None):
     return BrokerOrderRequest(client_order_id=client_order_id,symbol=symbol,side=side,quantity=quantity,order_type=order_type,price=price,stop=stop,security_id=security_id,owner_user_id=owner_user_id,broker_account_id=broker_account_id,broker_route=broker_route)
