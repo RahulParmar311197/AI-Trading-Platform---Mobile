@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.db import init_db
 from app.db_runtime import create_db_runtime
 from app.execution_persistence import ExecutionStateStore
+from app.execution_observability import ExecutionObservability
 from app.idempotency_store import IdempotencyStore
 from app.safety_state import SafetyStateStore
 from app.broker_factory import build_broker_router
@@ -21,6 +22,7 @@ class AppResources:
     idempotency_store: IdempotencyStore
     safety_store: SafetyStateStore
     audit_log: TradingAuditLog
+    execution_observability: ExecutionObservability
     authorization: ExecutionAuthorization | None = None
     session_local: object | None = None
     startup_execution_state: StartupExecutionStateMachine | None = None
@@ -41,6 +43,7 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
         idempotency_store=IdempotencyStore(idempotency_path),
         safety_store=safety_store,
         audit_log=audit_log,
+        execution_observability=ExecutionObservability(),
         authorization=authorization,
         session_local=session_local,
         startup_execution_state=startup_execution_state,
@@ -52,6 +55,7 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     resources = resources or create_resources()
     app = FastAPI(title="AI Trading Platform", version="1.0.0")
     app.state.resources = resources
+    app.state.execution_observability = resources.execution_observability
     app.state.broker_router = broker_router or build_broker_router(resources.safety_store)
     app.state.startup_execution_state = resources.startup_execution_state
     app.state.emergency_halt_controller = resources.emergency_halt_controller
@@ -64,6 +68,8 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
 
     from app.api.orders import router as orders_router
     from app.api.ensemble import router as decision_router
+    from app.api.execution_health import router as execution_health_router
     app.include_router(orders_router)
     app.include_router(decision_router)
+    app.include_router(execution_health_router)
     return app
