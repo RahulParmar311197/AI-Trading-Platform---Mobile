@@ -37,6 +37,7 @@ class ExecutionEventNormalizer:
         timestamp = payload.get("timestamp")
         if isinstance(timestamp, str):
             timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        account_id = payload.get("broker_account_id")
         return CanonicalExecutionEvent(
             event_id=event_id,
             broker_order_id=broker_order_id,
@@ -48,4 +49,6 @@ class ExecutionEventNormalizer:
             price=float(payload["price"]) if payload.get("price") is not None else None,
             timestamp=timestamp,
             broker=broker,
+            broker_account_id=int(account_id) if account_id is not None else None,
+            broker_route=str(payload["broker_route"]) if payload.get("broker_route") else None,
         )
