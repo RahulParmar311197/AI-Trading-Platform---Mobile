@@ -9,6 +9,8 @@ from app.execution_observability import ExecutionObservability
 from app.execution_alert_store import ExecutionAlertStore
 from app.execution_alert_policy import ExecutionAlertPolicy
 from app.execution_alert_service import ExecutionAlertService
+from app.execution_alert_resolution import ExecutionAlertResolutionService
+from app.execution_alert_recovery import ExecutionAlertRecoveryCoordinator
 from app.execution_health import ExecutionHealth
 from app.idempotency_store import IdempotencyStore
 from app.safety_state import SafetyStateStore
@@ -28,6 +30,7 @@ class AppResources:
     execution_observability: ExecutionObservability
     execution_alert_store: ExecutionAlertStore
     execution_alert_service: ExecutionAlertService
+    execution_alert_recovery: ExecutionAlertRecoveryCoordinator
     authorization: ExecutionAuthorization | None = None
     session_local: object | None = None
     startup_execution_state: StartupExecutionStateMachine | None = None
@@ -45,9 +48,12 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     authorization = ExecutionAuthorization(safety_store, audit_log=audit_log)
     observability = ExecutionObservability()
     alert_store = ExecutionAlertStore(alert_path)
-    alert_service = ExecutionAlertService(ExecutionHealth(observability), ExecutionAlertPolicy(), alert_store)
-    observability.add_hook(alert_service.evaluate)
-    return AppResources(ExecutionStateStore(execution_path), IdempotencyStore(idempotency_path), safety_store, audit_log, observability, alert_store, alert_service, authorization, session_local, startup_execution_state, emergency_halt_controller)
+    health = ExecutionHealth(observability)
+    alert_service = ExecutionAlertService(health, ExecutionAlertPolicy(), alert_store)
+    recovery = ExecutionAlertRecoveryCoordinator(ExecutionAlertResolutionService(health, alert_store))
+    observability.add_hook(alert_service.evaluate, priority=100)
+    observability.add_hook(recovery.evaluate, priority=200)
+    return AppResources(ExecutionStateStore(execution_path), IdempotencyStore(idempotency_path), safety_store, audit_log, observability, alert_store, alert_service, recovery, authorization, session_local, startup_execution_state, emergency_halt_controller)
 
 
 def create_app(resources: AppResources | None = None, broker_router: BrokerRouter | None = None, execution_health_token: str | None = None) -> FastAPI:
@@ -57,6 +63,7 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     app.state.execution_observability = resources.execution_observability
     app.state.execution_alert_store = resources.execution_alert_store
     app.state.execution_alert_service = resources.execution_alert_service
+    app.state.execution_alert_recovery = resources.execution_alert_recovery
     app.state.execution_health_token = execution_health_token if execution_health_token is not None else "test-token"
     app.state.broker_router = broker_router or build_broker_router(resources.safety_store)
     app.state.startup_execution_state = resources.startup_execution_state
