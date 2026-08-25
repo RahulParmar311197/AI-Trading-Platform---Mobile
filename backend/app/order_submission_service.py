@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import monotonic
 from typing import Protocol
 
 from app.execution_observability import ExecutionObservability
@@ -56,11 +57,14 @@ class OrderSubmissionService:
         if record.status == "SUBMITTED" and record.broker_order_id:
             self.observability.increment("duplicate_preventions")
             return BrokerSubmissionResult(record.broker_order_id, record.client_order_id)
+        started = monotonic()
         try:
             result = self.adapter.submit(intent)
         except Exception:
+            self.observability.observe_latency("broker_latency", (monotonic() - started) * 1000)
             self.observability.increment("broker_failures")
             raise
+        self.observability.observe_latency("broker_latency", (monotonic() - started) * 1000)
         self.repository.mark_submission_submitted(intent.idempotency_key, result.broker_order_id)
         self.observability.increment("submitted")
         return result
