@@ -15,6 +15,8 @@ def _lifecycle_status(order) -> str:
 
 def _execution_projection_values(execution_order) -> dict[str, object]:
     return {
+        "broker_account_id": execution_order.broker_account_id,
+        "broker_route": execution_order.broker_route,
         "symbol": str(execution_order.symbol).upper(),
         "side": str(execution_order.side).upper(),
         "order_type": str(execution_order.order_type or "MARKET").upper(),
@@ -29,6 +31,13 @@ def _execution_projection_values(execution_order) -> dict[str, object]:
     }
 
 
+def _validate_binding(execution_order) -> str | None:
+    if execution_order.broker_account_id is None: return "MISSING_BROKER_ACCOUNT"
+    if int(execution_order.broker_account_id) <= 0: return "INVALID_BROKER_ACCOUNT"
+    if not str(execution_order.broker_route or "").strip(): return "MISSING_BROKER_ROUTE"
+    return None
+
+
 def _apply_projection(api_order: Order, execution_order) -> bool:
     changed = False
     values = _execution_projection_values(execution_order)
@@ -41,12 +50,7 @@ def _apply_projection(api_order: Order, execution_order) -> bool:
 
 
 def reconcile_api_order_projection(db: Session, lifecycle: OrderLifecycle) -> list[str]:
-    """Reconcile SQL orders from durable execution lifecycle state only.
-
-    This function is broker-side-effect free. It repairs the SQL projection from
-    the durable execution record and never submits, retries, cancels, or changes
-    broker state. Ambiguous ownership is always reported instead of guessed.
-    """
+    """Reconcile SQL orders from durable execution lifecycle state only."""
     unresolved: list[str] = []
     changed = False
     api_orders = db.query(Order).all()
@@ -57,47 +61,26 @@ def reconcile_api_order_projection(db: Session, lifecycle: OrderLifecycle) -> li
         if not client_order_id:
             unresolved.append(f"ORDER:{api_order.id}:MISSING_CLIENT_ORDER_ID")
             continue
-
         execution_order = lifecycle.orders.get(client_order_id)
         if execution_order is None:
-            if str(api_order.status or "").upper() in _NON_TERMINAL_API_STATUSES:
-                unresolved.append(f"{client_order_id}:MISSING_EXECUTION_LIFECYCLE")
+            if str(api_order.status or "").upper() in _NON_TERMINAL_API_STATUSES: unresolved.append(f"{client_order_id}:MISSING_EXECUTION_LIFECYCLE")
             continue
-
-        if execution_order.owner_user_id is None:
-            unresolved.append(f"{client_order_id}:MISSING_EXECUTION_OWNER")
-            continue
-        if int(execution_order.owner_user_id) <= 0:
-            unresolved.append(f"{client_order_id}:INVALID_EXECUTION_OWNER")
-            continue
-        if int(execution_order.owner_user_id) != int(api_order.user_id):
-            unresolved.append(f"{client_order_id}:EXECUTION_OWNER_MISMATCH")
-            continue
-
+        if execution_order.owner_user_id is None: unresolved.append(f"{client_order_id}:MISSING_EXECUTION_OWNER"); continue
+        if int(execution_order.owner_user_id) <= 0: unresolved.append(f"{client_order_id}:INVALID_EXECUTION_OWNER"); continue
+        if int(execution_order.owner_user_id) != int(api_order.user_id): unresolved.append(f"{client_order_id}:EXECUTION_OWNER_MISMATCH"); continue
+        binding_error=_validate_binding(execution_order)
+        if binding_error: unresolved.append(f"{client_order_id}:{binding_error}"); continue
         changed = _apply_projection(api_order, execution_order) or changed
 
     for client_order_id, execution_order in lifecycle.orders.items():
-        if client_order_id in api_by_client_id:
-            continue
-        if execution_order.owner_user_id is None:
-            unresolved.append(f"{client_order_id}:MISSING_EXECUTION_OWNER")
-            continue
-        if int(execution_order.owner_user_id) <= 0:
-            unresolved.append(f"{client_order_id}:INVALID_EXECUTION_OWNER")
-            continue
-
+        if client_order_id in api_by_client_id: continue
+        if execution_order.owner_user_id is None: unresolved.append(f"{client_order_id}:MISSING_EXECUTION_OWNER"); continue
+        if int(execution_order.owner_user_id) <= 0: unresolved.append(f"{client_order_id}:INVALID_EXECUTION_OWNER"); continue
+        binding_error=_validate_binding(execution_order)
+        if binding_error: unresolved.append(f"{client_order_id}:{binding_error}"); continue
         values = _execution_projection_values(execution_order)
-        api_order = Order(
-            user_id=int(execution_order.owner_user_id),
-            client_order_id=client_order_id,
-            **values,
-            note="RECONCILED_FROM_EXECUTION_LIFECYCLE",
-        )
-        db.add(api_order)
-        api_by_client_id[client_order_id] = api_order
-        changed = True
+        api_order = Order(user_id=int(execution_order.owner_user_id),client_order_id=client_order_id,**values,note="RECONCILED_FROM_EXECUTION_LIFECYCLE")
+        db.add(api_order); api_by_client_id[client_order_id]=api_order; changed=True
 
-    if changed:
-        db.commit()
-
+    if changed: db.commit()
     return unresolved
