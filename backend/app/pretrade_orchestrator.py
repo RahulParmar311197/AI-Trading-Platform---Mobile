@@ -7,6 +7,7 @@ from app.order_intent import OrderIntent
 from app.operational_metrics import TradingMetricsCollector
 from app.portfolio_exposure_risk import ExposureLimits, PortfolioExposureRisk
 from app.portfolio_loss_risk import PortfolioLossRisk, PortfolioRiskLimits
+from app.portfolio_risk_aggregation import OpenOrderRiskInput, PositionRiskInput, PortfolioRiskAggregator
 from app.risk_engine import RiskLimits
 from app.risk_gateway import RiskGatewayResult, authorize
 from app.risk_circuit_breaker import TradingRiskCircuitBreaker
@@ -24,19 +25,21 @@ class PreTradeResult:
 
 
 class PreTradeOrchestrator:
-    """Single fail-closed pre-trade path with setup, exposure, portfolio-loss and circuit-breaker gates."""
+    """Single fail-closed pre-trade path with live portfolio risk aggregation."""
 
     def __init__(self, setup_engine: SetupRiskEngine | None = None,
                  circuit_breaker: TradingRiskCircuitBreaker | ObservableRiskCircuitBreaker | None = None,
                  metrics: TradingMetricsCollector | None = None,
                  audit: TradingAuditLogger | None = None,
                  exposure_risk: PortfolioExposureRisk | None = None,
-                 portfolio_loss_risk: PortfolioLossRisk | None = None):
+                 portfolio_loss_risk: PortfolioLossRisk | None = None,
+                 risk_aggregator: PortfolioRiskAggregator | None = None):
         self.setup_engine = setup_engine or SetupRiskEngine()
         self.metrics = metrics or TradingMetricsCollector()
         self.audit = audit or TradingAuditLogger()
         self.exposure_risk = exposure_risk or PortfolioExposureRisk(ExposureLimits())
         self.portfolio_loss_risk = portfolio_loss_risk or PortfolioLossRisk(PortfolioRiskLimits())
+        self.risk_aggregator = risk_aggregator or PortfolioRiskAggregator()
         if isinstance(circuit_breaker, ObservableRiskCircuitBreaker):
             self.circuit_breaker = circuit_breaker
         else:
@@ -53,15 +56,16 @@ class PreTradeOrchestrator:
         reconciliation_drift: bool = False, stale_data: bool = False,
         positions: dict[str, float] | None = None, open_order_notional: float = 0.0,
         positions_available: bool = True, exposure_price: float | None = None,
-        open_risk: float = 0.0, portfolio_risk_data_available: bool = True,
+        open_risk: float | None = None, portfolio_risk_data_available: bool | None = None,
+        position_risk_inputs: list[PositionRiskInput] | None = None,
+        open_order_risk_inputs: list[OpenOrderRiskInput] | None = None,
     ) -> PreTradeResult:
         breaker = self.circuit_breaker.evaluate(
             daily_pnl=daily_pnl, drawdown=drawdown, consecutive_losses=recent_losses,
             reconciliation_drift=reconciliation_drift, stale_data=stale_data,
         )
         if breaker.blocked:
-            self.audit.emit("PRETRADE_BLOCKED", symbol=symbol, severity="WARNING",
-                            data={"reason": breaker.reason})
+            self.audit.emit("PRETRADE_BLOCKED", symbol=symbol, severity="WARNING", data={"reason": breaker.reason})
             return PreTradeResult(None, None, False, f"circuit breaker: {breaker.reason}")
 
         setup = self.setup_engine.validate(decision, equity, price_increment)
@@ -81,12 +85,18 @@ class PreTradeOrchestrator:
             self.audit.emit("EXPOSURE_REJECTED", symbol=symbol, severity="WARNING", data={"reason": exposure.reason})
             return PreTradeResult(setup, None, False, exposure.reason)
 
+        if open_risk is None or portfolio_risk_data_available is None:
+            snapshot = self.risk_aggregator.calculate(position_risk_inputs or [], open_order_risk_inputs or [])
+            open_risk = snapshot.total_open_risk
+            portfolio_risk_data_available = snapshot.risk_data_available
+            if not snapshot.risk_data_available:
+                self.audit.emit("PORTFOLIO_RISK_DATA_UNAVAILABLE", symbol=symbol, severity="WARNING",
+                                data={"unresolved_symbols": list(snapshot.unresolved_symbols)})
+
         portfolio = self.portfolio_loss_risk.evaluate(
-            daily_pnl=daily_pnl,
-            current_drawdown=drawdown,
-            open_risk=open_risk,
-            proposed_risk=float(setup.risk_amount),
-            positions_available=portfolio_risk_data_available,
+            daily_pnl=daily_pnl, current_drawdown=drawdown,
+            open_risk=float(open_risk), proposed_risk=float(setup.risk_amount),
+            positions_available=bool(portfolio_risk_data_available),
         )
         if not portfolio.approved:
             self.audit.emit("PORTFOLIO_RISK_REJECTED", symbol=symbol, severity="WARNING", data={"reason": portfolio.reason})
