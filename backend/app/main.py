@@ -17,11 +17,13 @@ from app.api_order_reconciliation import reconcile_api_order_projection
 from app.operational_api import create_operational_router
 from app.operational_metrics import TradingMetricsCollector
 from app.order_lifecycle import OrderLifecycle
+from app.order_reconciliation import OrderReconciliationService
 from app.portfolio_reconciliation_service import PortfolioReconciliationService
 from app.recovery_manager import StartupRecoveryManager
 from app.risk_circuit_observability import ObservableRiskCircuitBreaker
 from app.risk_circuit_api import create_risk_circuit_router
 from app.startup_execution_state import StartupExecutionState, StartupExecutionStateMachine
+from app.startup_order_recovery import StartupOrderRecovery
 from app.startup_reconciliation_gate import StartupReconciliationGate
 from app.system_health import TradingSystemHealth
 
@@ -86,61 +88,73 @@ async def lifespan(app: FastAPI):
         if not result.ready:
             startup_state.fail("broker startup recovery failed")
         else:
-            startup_state.transition(
-                StartupExecutionState.BROKER_RECONCILED, "broker orders reconciled"
-            )
-            with SessionLocal() as db:
-                api_order_reconciliation = reconcile_api_order_projection(db, lifecycle)
-            app.state.api_order_reconciliation = api_order_reconciliation
-            reconciliation_ready = not api_order_reconciliation
+            order_recovery = StartupOrderRecovery(
+                OrderReconciliationService(execution_broker_router)
+            ).run(lifecycle)
+            app.state.order_recovery_result = order_recovery
             trading_health.record(
-                "api_order_reconciliation",
-                reconciliation_ready,
-                "reconciled" if reconciliation_ready else "unresolved",
+                "pending_order_recovery",
+                order_recovery.ready,
+                "ready" if order_recovery.ready else order_recovery.reason,
             )
-            if api_order_reconciliation:
-                trading_metrics.increment("reconciliation_failures")
-                startup_state.fail("API order projection reconciliation unresolved")
+            if not order_recovery.ready:
+                startup_state.fail("pending order reconciliation unresolved")
             else:
-                local_positions = _persisted_local_positions(lifecycle)
-                try:
-                    broker_positions = execution_broker_router.get_positions()
-                    broker_error = None
-                except Exception as exc:
-                    broker_positions = None
-                    broker_error = str(exc)
-                positions_available = broker_positions is not None
-                trading_health.record(
-                    "broker_position_snapshot",
-                    positions_available,
-                    "available" if positions_available else broker_error or "unavailable",
+                startup_state.transition(
+                    StartupExecutionState.BROKER_RECONCILED, "broker orders reconciled"
                 )
-                if broker_positions is None:
-                    startup_state.fail(
-                        f"broker position snapshot unavailable: {broker_error or 'unknown error'}"
-                    )
-                    app.state.startup_gate_result = None
+                with SessionLocal() as db:
+                    api_order_reconciliation = reconcile_api_order_projection(db, lifecycle)
+                app.state.api_order_reconciliation = api_order_reconciliation
+                reconciliation_ready = not api_order_reconciliation
+                trading_health.record(
+                    "api_order_reconciliation",
+                    reconciliation_ready,
+                    "reconciled" if reconciliation_ready else "unresolved",
+                )
+                if api_order_reconciliation:
+                    trading_metrics.increment("reconciliation_failures")
+                    startup_state.fail("API order projection reconciliation unresolved")
                 else:
-                    gate_result = startup_gate.evaluate(local_positions, broker_positions)
-                    app.state.startup_gate_result = gate_result
+                    local_positions = _persisted_local_positions(lifecycle)
+                    try:
+                        broker_positions = execution_broker_router.get_positions()
+                        broker_error = None
+                    except Exception as exc:
+                        broker_positions = None
+                        broker_error = str(exc)
+                    positions_available = broker_positions is not None
                     trading_health.record(
-                        "portfolio_reconciliation",
-                        gate_result.ready,
-                        "reconciled" if gate_result.ready else "failed",
+                        "broker_position_snapshot",
+                        positions_available,
+                        "available" if positions_available else broker_error or "unavailable",
                     )
-                    if not gate_result.ready:
-                        startup_state.fail("portfolio reconciliation failed")
+                    if broker_positions is None:
+                        startup_state.fail(
+                            f"broker position snapshot unavailable: {broker_error or 'unknown error'}"
+                        )
+                        app.state.startup_gate_result = None
                     else:
-                        startup_state.transition(
-                            StartupExecutionState.PORTFOLIO_RECONCILED,
-                            "portfolio reconciled",
+                        gate_result = startup_gate.evaluate(local_positions, broker_positions)
+                        app.state.startup_gate_result = gate_result
+                        trading_health.record(
+                            "portfolio_reconciliation",
+                            gate_result.ready,
+                            "reconciled" if gate_result.ready else "failed",
                         )
-                        startup_state.transition(
-                            StartupExecutionState.RISK_READY,
-                            "risk readiness checks passed",
-                        )
-                        trading_health.record("risk_readiness", True, "ready")
-                        startup_state.transition(StartupExecutionState.READY)
+                        if not gate_result.ready:
+                            startup_state.fail("portfolio reconciliation failed")
+                        else:
+                            startup_state.transition(
+                                StartupExecutionState.PORTFOLIO_RECONCILED,
+                                "portfolio reconciled",
+                            )
+                            startup_state.transition(
+                                StartupExecutionState.RISK_READY,
+                                "risk readiness checks passed",
+                            )
+                            trading_health.record("risk_readiness", True, "ready")
+                            startup_state.transition(StartupExecutionState.READY)
 
     yield
 
