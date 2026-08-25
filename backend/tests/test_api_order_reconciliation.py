@@ -27,12 +27,39 @@ class FakeSession:
         self.commits += 1
 
 
+def _api_order(**overrides):
+    values = {
+        "client_order_id": "ABC",
+        "user_id": 7,
+        "status": "PENDING",
+        "broker_order_id": None,
+        "symbol": "NIFTY",
+        "side": "BUY",
+        "order_type": "LIMIT",
+        "quantity": 1.0,
+        "price": 22500.25,
+        "stop": None,
+        "security_id": "SEC-1",
+        "filled_quantity": 0.0,
+        "average_fill_price": None,
+        "note": None,
+        "id": 1,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
 def test_projection_reconciles_existing_api_order_from_lifecycle():
-    api_order = SimpleNamespace(client_order_id="ABC", user_id=7, status="PENDING", broker_order_id=None, note=None, id=1)
+    api_order = _api_order()
     lifecycle = OrderLifecycle()
-    lifecycle.create("ABC", "NIFTY", "BUY", 1, owner_user_id=7)
+    lifecycle.create(
+        "ABC", "NIFTY", "BUY", 1, owner_user_id=7, order_type="LIMIT",
+        requested_price=22500.25, security_id="SEC-1",
+    )
     lifecycle.orders["ABC"].status = OrderStatus.FILLED
     lifecycle.orders["ABC"].broker_order_id = "BROKER-1"
+    lifecycle.orders["ABC"].filled_quantity = 1.0
+    lifecycle.orders["ABC"].average_fill_price = 22501.0
 
     db = FakeSession([api_order])
     unresolved = reconcile_api_order_projection(db, lifecycle)
@@ -40,11 +67,15 @@ def test_projection_reconciles_existing_api_order_from_lifecycle():
     assert unresolved == []
     assert api_order.status == "FILLED"
     assert api_order.broker_order_id == "BROKER-1"
+    assert api_order.filled_quantity == 1.0
+    assert api_order.average_fill_price == 22501.0
+    assert api_order.price == 22500.25
+    assert api_order.security_id == "SEC-1"
     assert db.commits == 1
 
 
 def test_projection_does_not_create_or_submit_missing_lifecycle_order_and_blocks_startup():
-    api_order = SimpleNamespace(client_order_id="ABC", user_id=7, status="PENDING", broker_order_id=None, note=None, id=1)
+    api_order = _api_order()
     db = FakeSession([api_order])
 
     unresolved = reconcile_api_order_projection(db, OrderLifecycle())
@@ -56,9 +87,14 @@ def test_projection_does_not_create_or_submit_missing_lifecycle_order_and_blocks
 
 def test_projection_materializes_owned_lifecycle_order_without_broker_side_effects():
     lifecycle = OrderLifecycle()
-    lifecycle.create("ABC", "NIFTY", "SELL", 3, owner_user_id=42)
+    lifecycle.create(
+        "ABC", "NIFTY", "SELL", 3, owner_user_id=42, order_type="LIMIT",
+        requested_price=22500.25, stop=22450.0, security_id="SEC-9",
+    )
     lifecycle.orders["ABC"].status = OrderStatus.PARTIALLY_FILLED
     lifecycle.orders["ABC"].broker_order_id = "BROKER-9"
+    lifecycle.orders["ABC"].filled_quantity = 1.0
+    lifecycle.orders["ABC"].average_fill_price = 22499.5
 
     db = FakeSession([])
     unresolved = reconcile_api_order_projection(db, lifecycle)
@@ -71,12 +107,18 @@ def test_projection_materializes_owned_lifecycle_order_without_broker_side_effec
     assert db.rows[0].symbol == "NIFTY"
     assert db.rows[0].side == "SELL"
     assert db.rows[0].quantity == 3.0
+    assert db.rows[0].order_type == "LIMIT"
+    assert db.rows[0].price == 22500.25
+    assert db.rows[0].stop == 22450.0
+    assert db.rows[0].security_id == "SEC-9"
     assert db.rows[0].status == "PARTIALLY_FILLED"
+    assert db.rows[0].filled_quantity == 1.0
+    assert db.rows[0].average_fill_price == 22499.5
     assert db.rows[0].broker_order_id == "BROKER-9"
 
 
 def test_projection_blocks_owner_mismatch():
-    api_order = SimpleNamespace(client_order_id="ABC", user_id=7, status="PENDING", broker_order_id=None, note=None, id=1)
+    api_order = _api_order()
     lifecycle = OrderLifecycle()
     lifecycle.create("ABC", "NIFTY", "BUY", 1, owner_user_id=8)
 
