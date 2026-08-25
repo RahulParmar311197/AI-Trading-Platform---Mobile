@@ -11,7 +11,7 @@ from app.api.execution_health import router as execution_health_router
 from app.app_factory import create_resources
 from app.broker_factory import build_broker_router
 from app.broker_recovery import BrokerStartupRecovery
-from app.get_settings import get_settings
+from app.config import get_settings
 from app.db import SessionLocal, init_db
 from app.api_order_reconciliation import reconcile_api_order_projection
 from app.operational_api import create_operational_router
