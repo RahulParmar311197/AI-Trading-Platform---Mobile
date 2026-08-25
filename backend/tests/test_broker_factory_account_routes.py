@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from app.broker_factory import account_route_name, validate_active_account_routes
 from app.broker_router import BrokerRoute, BrokerRouter
 
@@ -35,6 +37,15 @@ def test_account_route_name_is_canonical():
     assert account_route_name(account) == "upstox:account:42"
 
 
+def test_invalid_account_identity_fails_closed():
+    account = SimpleNamespace(id=0, broker="upstox", status="active")
+    router = BrokerRouter([BrokerRoute("paper", FakeAdapter())], "paper")
+
+    errors = validate_active_account_routes(FakeDB([account]), router)
+
+    assert errors == ["account:0:invalid_identity:broker account has invalid route identity"]
+
+
 def test_active_account_without_bound_route_fails_closed():
     account = SimpleNamespace(id=42, broker="upstox", status="active")
     router = BrokerRouter([BrokerRoute("paper", FakeAdapter())], "paper")
@@ -42,6 +53,21 @@ def test_active_account_without_bound_route_fails_closed():
     errors = validate_active_account_routes(FakeDB([account]), router)
 
     assert errors == ["account:42:upstox:account:42:route_not_registered"]
+
+
+def test_disabled_account_route_fails_closed():
+    account = SimpleNamespace(id=42, broker="upstox", status="active")
+    router = BrokerRouter(
+        [
+            BrokerRoute("paper", FakeAdapter()),
+            BrokerRoute("upstox:account:42", FakeAdapter(), enabled=False, broker_account_id=42),
+        ],
+        "paper",
+    )
+
+    errors = validate_active_account_routes(FakeDB([account]), router)
+
+    assert errors == ["account:42:upstox:account:42:route_disabled"]
 
 
 def test_bound_account_route_must_match_account_identity():
