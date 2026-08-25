@@ -26,6 +26,8 @@ class CanonicalExecutionEvent:
     price: float | None = None
     timestamp: datetime | None = None
     broker: str = ""
+    broker_account_id: int | None = None
+    broker_route: str | None = None
 
     def __post_init__(self) -> None:
         if not self.event_id or not self.broker_order_id or not self.client_order_id:
@@ -34,5 +36,9 @@ class CanonicalExecutionEvent:
             raise ValueError("quantity cannot be negative")
         if self.price is not None and self.price < 0:
             raise ValueError("price cannot be negative")
+        if self.broker_account_id is not None and self.broker_account_id <= 0:
+            raise ValueError("broker_account_id must be positive")
+        if self.broker_account_id is not None and not self.broker_route:
+            raise ValueError("broker_route is required with broker_account_id")
         object.__setattr__(self, "symbol", self.symbol.upper())
         object.__setattr__(self, "side", self.side.upper())
