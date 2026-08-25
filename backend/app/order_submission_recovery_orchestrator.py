@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.broker_submission_recovery import SubmissionRecoveryService
+from app.execution_observability import ExecutionObservability
 from app.order_submission_service import BrokerSubmissionResult, OrderIntent
 from app.submission_recovery_audit import SubmissionRecoveryAuditor
 from app.submission_recovery_authorization import RecoveryApproval, RecoveryAuthorizer
@@ -18,27 +19,23 @@ class RecoveryResult:
 
 
 class OrderSubmissionRecoveryOrchestrator:
-    """Canonical restart path for durable PENDING outbound orders with mandatory audit and authorization."""
+    """Canonical restart path for durable PENDING outbound orders with audit, authorization and metrics."""
 
-    def __init__(
-        self,
-        repository: TransactionalExecutionRepository,
-        recovery: SubmissionRecoveryService,
-        auditor: SubmissionRecoveryAuditor | None = None,
-        authorizer: RecoveryAuthorizer | None = None,
-    ) -> None:
+    def __init__(self, repository: TransactionalExecutionRepository, recovery: SubmissionRecoveryService, auditor: SubmissionRecoveryAuditor | None = None, authorizer: RecoveryAuthorizer | None = None, observability: ExecutionObservability | None = None) -> None:
         self.repository = repository
         self.recovery = recovery
         self.auditor = auditor or SubmissionRecoveryAuditor()
         if authorizer is None:
             raise ValueError("recovery authorizer is required")
         self.authorizer = authorizer
+        self.observability = observability or ExecutionObservability()
 
     def recover_pending(self, *, limit: int = 100, approval: RecoveryApproval) -> list[RecoveryResult]:
         results: list[RecoveryResult] = []
         for record in self.repository.pending_submissions(limit=limit):
             if approval.broker_account_id != record.broker_account_id or approval.broker_route != record.broker_route:
                 reason = "recovery approval is outside broker account scope"
+                self.observability.increment("quarantined")
                 self.auditor.record(event="QUARANTINE", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="QUARANTINED", reason=reason)
                 results.append(RecoveryResult(record.idempotency_key, "QUARANTINED", reason=reason))
                 continue
@@ -46,6 +43,7 @@ class OrderSubmissionRecoveryOrchestrator:
                 self.authorizer.authorize(approval)
             except PermissionError as exc:
                 reason = str(exc)
+                self.observability.increment("quarantined")
                 self.auditor.record(event="QUARANTINE", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="QUARANTINED", reason=reason)
                 results.append(RecoveryResult(record.idempotency_key, "QUARANTINED", reason=reason))
                 continue
@@ -53,6 +51,7 @@ class OrderSubmissionRecoveryOrchestrator:
             order = self.repository.get_order(record.client_order_id)
             if order is None:
                 reason = "durable order missing"
+                self.observability.increment("quarantined")
                 self.auditor.record(event="QUARANTINE", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="QUARANTINED", reason=reason)
                 results.append(RecoveryResult(record.idempotency_key, "QUARANTINED", reason=reason))
                 continue
@@ -61,10 +60,17 @@ class OrderSubmissionRecoveryOrchestrator:
                 self.auditor.record(event="BROKER_LOOKUP", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="LOOKUP")
                 result: BrokerSubmissionResult = self.recovery.recover(intent)
                 self.repository.mark_submission_submitted(record.idempotency_key, result.broker_order_id)
+                if self.recovery.adapter.find_by_idempotency_key(intent).status.value == "FOUND":
+                    self.observability.increment("recovery_found")
+                    self.observability.increment("duplicate_preventions")
+                else:
+                    self.observability.increment("recovery_safe_retries")
+                self.observability.increment("submitted")
                 self.auditor.record(event="SUBMITTED", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="SUBMITTED", broker_order_id=result.broker_order_id)
                 results.append(RecoveryResult(record.idempotency_key, "SUBMITTED", result.broker_order_id))
             except RuntimeError as exc:
                 reason = str(exc)
+                self.observability.increment("quarantined")
                 self.auditor.record(event="QUARANTINE", idempotency_key=record.idempotency_key, client_order_id=record.client_order_id, status="QUARANTINED", reason=reason)
                 results.append(RecoveryResult(record.idempotency_key, "QUARANTINED", reason=reason))
         return results
