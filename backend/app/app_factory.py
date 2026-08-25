@@ -12,6 +12,9 @@ from app.execution_alert_service import ExecutionAlertService
 from app.execution_alert_resolution import ExecutionAlertResolutionService
 from app.execution_alert_recovery import ExecutionAlertRecoveryCoordinator
 from app.execution_alert_events import ExecutionAlertEventPublisher, ExecutionAlertEventStore
+from app.execution_alert_dispatcher import ExecutionAlertDispatcher
+from app.execution_alert_worker import ExecutionAlertOutboxWorker
+from app.execution_alert_dead_letter import ExecutionAlertDeadLetterStore
 from app.execution_health import ExecutionHealth
 from app.idempotency_store import IdempotencyStore
 from app.safety_state import SafetyStateStore
@@ -34,6 +37,9 @@ class AppResources:
     execution_alert_recovery: ExecutionAlertRecoveryCoordinator
     execution_alert_event_store: ExecutionAlertEventStore
     execution_alert_event_publisher: ExecutionAlertEventPublisher
+    execution_alert_dispatcher: ExecutionAlertDispatcher
+    execution_alert_worker: ExecutionAlertOutboxWorker
+    execution_alert_dead_letter_store: ExecutionAlertDeadLetterStore
     authorization: ExecutionAuthorization | None = None
     session_local: object | None = None
     startup_execution_state: StartupExecutionStateMachine | None = None
@@ -56,9 +62,12 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     alert_store = ExecutionAlertStore(alert_path, event_publisher=event_publisher)
     alert_service = ExecutionAlertService(health, ExecutionAlertPolicy(), alert_store)
     recovery = ExecutionAlertRecoveryCoordinator(ExecutionAlertResolutionService(health, alert_store))
+    dispatcher = ExecutionAlertDispatcher(event_store)
+    worker = ExecutionAlertOutboxWorker(dispatcher)
+    dead_letter_store = ExecutionAlertDeadLetterStore(alert_event_path)
     observability.add_hook(alert_service.evaluate, priority=100)
     observability.add_hook(recovery.evaluate, priority=200)
-    return AppResources(ExecutionStateStore(execution_path), IdempotencyStore(idempotency_path), safety_store, audit_log, observability, alert_store, alert_service, recovery, event_store, event_publisher, authorization, session_local, startup_execution_state, emergency_halt_controller)
+    return AppResources(ExecutionStateStore(execution_path), IdempotencyStore(idempotency_path), safety_store, audit_log, observability, alert_store, alert_service, recovery, event_store, event_publisher, dispatcher, worker, dead_letter_store, authorization, session_local, startup_execution_state, emergency_halt_controller)
 
 
 def create_app(resources: AppResources | None = None, broker_router: BrokerRouter | None = None, execution_health_token: str | None = None) -> FastAPI:
@@ -71,6 +80,9 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     app.state.execution_alert_recovery = resources.execution_alert_recovery
     app.state.execution_alert_event_store = resources.execution_alert_event_store
     app.state.execution_alert_event_publisher = resources.execution_alert_event_publisher
+    app.state.execution_alert_dispatcher = resources.execution_alert_dispatcher
+    app.state.execution_alert_worker = resources.execution_alert_worker
+    app.state.execution_alert_dead_letter_store = resources.execution_alert_dead_letter_store
     app.state.execution_health_token = execution_health_token if execution_health_token is not None else "test-token"
     app.state.broker_router = broker_router or build_broker_router(resources.safety_store)
     app.state.startup_execution_state = resources.startup_execution_state
@@ -89,6 +101,7 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     from app.api.execution_alert_lifecycle import router as execution_alert_lifecycle_router
     from app.api.execution_alert_dashboard import router as execution_alert_dashboard_router
     from app.api.execution_alert_events import router as execution_alert_events_router
+    from app.api.execution_alert_operations import router as execution_alert_operations_router
     app.include_router(orders_router)
     app.include_router(decision_router)
     app.include_router(execution_health_router)
@@ -96,4 +109,5 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     app.include_router(execution_alert_lifecycle_router)
     app.include_router(execution_alert_dashboard_router)
     app.include_router(execution_alert_events_router)
+    app.include_router(execution_alert_operations_router)
     return app
