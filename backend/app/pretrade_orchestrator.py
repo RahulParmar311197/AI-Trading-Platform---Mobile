@@ -7,6 +7,7 @@ from app.broker_portfolio_provider import BrokerPortfolioProvider
 from app.broker_portfolio_snapshot import BrokerPortfolioSnapshot
 from app.broker_snapshot_freshness import BrokerSnapshotFreshnessPolicy
 from app.broker_snapshot_risk_adapter import BrokerSnapshotRiskAdapter
+from app.internal_trading_state_provider import InternalTradingStateProvider
 from app.order_intent import OrderIntent
 from app.operational_metrics import TradingMetricsCollector
 from app.portfolio_exposure_risk import ExposureLimits, PortfolioExposureRisk
@@ -30,7 +31,7 @@ class PreTradeResult:
 
 
 class PreTradeOrchestrator:
-    """Single fail-closed pre-trade path with broker freshness and reconciliation guards."""
+    """Single fail-closed pre-trade path with broker freshness and automatic state reconciliation."""
 
     def __init__(self, setup_engine: SetupRiskEngine | None = None,
                  circuit_breaker: TradingRiskCircuitBreaker | ObservableRiskCircuitBreaker | None = None,
@@ -42,7 +43,8 @@ class PreTradeOrchestrator:
                  snapshot_adapter: BrokerSnapshotRiskAdapter | None = None,
                  broker_provider: BrokerPortfolioProvider | None = None,
                  snapshot_freshness: BrokerSnapshotFreshnessPolicy | None = None,
-                 reconciliation_guard: TradingStateReconciliationGuard | None = None):
+                 reconciliation_guard: TradingStateReconciliationGuard | None = None,
+                 internal_state_provider: InternalTradingStateProvider | None = None):
         self.setup_engine = setup_engine or SetupRiskEngine()
         self.metrics = metrics or TradingMetricsCollector()
         self.audit = audit or TradingAuditLogger()
@@ -53,6 +55,7 @@ class PreTradeOrchestrator:
         self.broker_provider = broker_provider
         self.snapshot_freshness = snapshot_freshness or BrokerSnapshotFreshnessPolicy()
         self.reconciliation_guard = reconciliation_guard or TradingStateReconciliationGuard()
+        self.internal_state_provider = internal_state_provider
         if isinstance(circuit_breaker, ObservableRiskCircuitBreaker):
             self.circuit_breaker = circuit_breaker
         else:
@@ -74,6 +77,7 @@ class PreTradeOrchestrator:
         fetch_broker_snapshot: bool = True,
         internal_positions: dict[str, float] | None = None,
         internal_open_order_ids: set[str] | frozenset[str] | None = None,
+        fetch_internal_state: bool = True,
     ) -> PreTradeResult:
         breaker = self.circuit_breaker.evaluate(
             daily_pnl=daily_pnl, drawdown=drawdown, consecutive_losses=recent_losses,
@@ -97,6 +101,15 @@ class PreTradeOrchestrator:
                 self.audit.emit("BROKER_SNAPSHOT_FETCH_FAILED", symbol=symbol, severity="ERROR", data={"error": str(exc)})
                 return PreTradeResult(setup, None, False, "broker portfolio snapshot unavailable")
 
+        if self.internal_state_provider is not None and fetch_internal_state and internal_positions is None and internal_open_order_ids is None:
+            try:
+                internal_state = self.internal_state_provider.get_state()
+                internal_positions = internal_state.positions
+                internal_open_order_ids = internal_state.open_order_ids
+            except Exception as exc:
+                self.audit.emit("INTERNAL_STATE_FETCH_FAILED", symbol=symbol, severity="ERROR", data={"error": str(exc)})
+                return PreTradeResult(setup, None, False, "internal trading state unavailable")
+
         exposure_positions = positions or {}
         exposure_positions_available = positions_available
         if broker_snapshot is not None:
@@ -115,7 +128,7 @@ class PreTradeOrchestrator:
             open_risk = None
             portfolio_risk_data_available = None
 
-            if internal_positions is not None or internal_open_order_ids is not None:
+            if self.internal_state_provider is not None or internal_positions is not None or internal_open_order_ids is not None:
                 broker_order_ids = {o.order_id for o in broker_snapshot.open_orders}
                 reconciliation = self.reconciliation_guard.evaluate(
                     ReconciliationState(
@@ -128,12 +141,10 @@ class PreTradeOrchestrator:
                 if not reconciliation.clean:
                     self.audit.emit(
                         "RECONCILIATION_DRIFT_BLOCKED", symbol=symbol, severity="ERROR",
-                        data={
-                            "reason": reconciliation.reason,
-                            "position_differences": list(reconciliation.position_differences),
-                            "missing_internal_orders": list(reconciliation.missing_internal_orders),
-                            "missing_broker_orders": list(reconciliation.missing_broker_orders),
-                        },
+                        data={"reason": reconciliation.reason,
+                              "position_differences": list(reconciliation.position_differences),
+                              "missing_internal_orders": list(reconciliation.missing_internal_orders),
+                              "missing_broker_orders": list(reconciliation.missing_broker_orders)},
                     )
                     return PreTradeResult(setup, None, False, reconciliation.reason)
 
