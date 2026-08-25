@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from app.ai_decision_engine import TradingDecision
 from app.broker_portfolio_provider import BrokerPortfolioProvider
 from app.broker_portfolio_snapshot import BrokerPortfolioSnapshot
+from app.broker_snapshot_freshness import BrokerSnapshotFreshnessPolicy
 from app.broker_snapshot_risk_adapter import BrokerSnapshotRiskAdapter
 from app.order_intent import OrderIntent
 from app.operational_metrics import TradingMetricsCollector
@@ -28,7 +29,7 @@ class PreTradeResult:
 
 
 class PreTradeOrchestrator:
-    """Single fail-closed pre-trade path with automatic broker portfolio snapshots."""
+    """Single fail-closed pre-trade path with automatic, freshness-validated broker snapshots."""
 
     def __init__(self, setup_engine: SetupRiskEngine | None = None,
                  circuit_breaker: TradingRiskCircuitBreaker | ObservableRiskCircuitBreaker | None = None,
@@ -38,7 +39,8 @@ class PreTradeOrchestrator:
                  portfolio_loss_risk: PortfolioLossRisk | None = None,
                  risk_aggregator: PortfolioRiskAggregator | None = None,
                  snapshot_adapter: BrokerSnapshotRiskAdapter | None = None,
-                 broker_provider: BrokerPortfolioProvider | None = None):
+                 broker_provider: BrokerPortfolioProvider | None = None,
+                 snapshot_freshness: BrokerSnapshotFreshnessPolicy | None = None):
         self.setup_engine = setup_engine or SetupRiskEngine()
         self.metrics = metrics or TradingMetricsCollector()
         self.audit = audit or TradingAuditLogger()
@@ -47,6 +49,7 @@ class PreTradeOrchestrator:
         self.risk_aggregator = risk_aggregator or PortfolioRiskAggregator()
         self.snapshot_adapter = snapshot_adapter or BrokerSnapshotRiskAdapter()
         self.broker_provider = broker_provider
+        self.snapshot_freshness = snapshot_freshness or BrokerSnapshotFreshnessPolicy()
         if isinstance(circuit_breaker, ObservableRiskCircuitBreaker):
             self.circuit_breaker = circuit_breaker
         else:
@@ -94,6 +97,10 @@ class PreTradeOrchestrator:
         exposure_positions = positions or {}
         exposure_positions_available = positions_available
         if broker_snapshot is not None:
+            freshness = self.snapshot_freshness.evaluate(broker_snapshot)
+            if not freshness.fresh:
+                self.audit.emit("BROKER_SNAPSHOT_STALE", symbol=symbol, severity="WARNING", data={"reason": freshness.reason, "age_seconds": freshness.age_seconds})
+                return PreTradeResult(setup, None, False, freshness.reason)
             adapted = self.snapshot_adapter.adapt(broker_snapshot)
             if not adapted.available:
                 self.audit.emit("BROKER_SNAPSHOT_RISK_REJECTED", symbol=symbol, severity="WARNING", data={"reason": adapted.reason})
