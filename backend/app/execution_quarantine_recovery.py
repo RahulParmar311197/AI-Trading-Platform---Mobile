@@ -27,10 +27,14 @@ class ExecutionQuarantineRecovery:
         items = self.quarantine.pending(limit)
         recovered = 0
         for item in items:
-            identity = self.registry.by_broker(item["broker"], item["broker_order_id"])
+            payload = item["payload"]
+            account_id = payload.get("broker_account_id")
+            route = payload.get("broker_route")
+            if account_id is None or not route:
+                continue
+            identity = self.registry.by_broker(item["broker"], item["broker_order_id"], broker_account_id=int(account_id), broker_route=str(route))
             if identity is None:
                 continue
-            payload = item["payload"]
             event = CanonicalExecutionEvent(
                 event_id=item["event_id"],
                 broker_order_id=item["broker_order_id"],
@@ -41,6 +45,8 @@ class ExecutionQuarantineRecovery:
                 quantity=float(payload.get("quantity", 0)),
                 price=payload.get("price"),
                 broker=item["broker"],
+                broker_account_id=int(account_id),
+                broker_route=str(route),
             )
             result = self.dispatcher.dispatch(event)
             if result.applied:
