@@ -80,9 +80,11 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     from app.api.execution_health import router as execution_health_router
     from app.api.execution_alerts import router as execution_alerts_router
     from app.api.execution_alert_lifecycle import router as execution_alert_lifecycle_router
+    from app.api.execution_alert_dashboard import router as execution_alert_dashboard_router
     app.include_router(orders_router)
     app.include_router(decision_router)
     app.include_router(execution_health_router)
     app.include_router(execution_alerts_router)
     app.include_router(execution_alert_lifecycle_router)
+    app.include_router(execution_alert_dashboard_router)
     return app
