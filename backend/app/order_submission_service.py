@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.execution_observability import ExecutionObservability
 from app.execution_safety_gate import ExecutionSafetyContext, ExecutionSafetyGate
 from app.transactional_execution_repository import TransactionalExecutionRepository
 
@@ -29,14 +30,16 @@ class BrokerOrderAdapter(Protocol):
 
 
 class OrderSubmissionService:
-    """Single outbound order boundary backed by durable submission state."""
+    """Single outbound order boundary backed by durable state and execution metrics."""
 
-    def __init__(self, repository: TransactionalExecutionRepository, adapter: BrokerOrderAdapter, safety_gate: ExecutionSafetyGate | None = None) -> None:
+    def __init__(self, repository: TransactionalExecutionRepository, adapter: BrokerOrderAdapter, safety_gate: ExecutionSafetyGate | None = None, observability: ExecutionObservability | None = None) -> None:
         self.repository = repository
         self.adapter = adapter
         self.safety_gate = safety_gate or ExecutionSafetyGate()
+        self.observability = observability or ExecutionObservability()
 
     def submit(self, intent: OrderIntent, *, reconciliation_ready: bool = True, broker_healthy: bool = True, risk_allowed: bool = True, emergency_halt: bool = False) -> BrokerSubmissionResult:
+        self.observability.increment("submissions")
         if not intent.idempotency_key:
             raise ValueError("idempotency key is required")
         if intent.quantity <= 0 or not intent.symbol or intent.side not in {"BUY", "SELL"}:
@@ -51,9 +54,15 @@ class OrderSubmissionService:
             raise ValueError("order intent does not match durable order scope")
         record = self.repository.register_submission(intent.idempotency_key, intent.client_order_id, intent.broker_account_id, intent.broker_route)
         if record.status == "SUBMITTED" and record.broker_order_id:
+            self.observability.increment("duplicate_preventions")
             return BrokerSubmissionResult(record.broker_order_id, record.client_order_id)
-        result = self.adapter.submit(intent)
+        try:
+            result = self.adapter.submit(intent)
+        except Exception:
+            self.observability.increment("broker_failures")
+            raise
         self.repository.mark_submission_submitted(intent.idempotency_key, result.broker_order_id)
+        self.observability.increment("submitted")
         return result
 
     def recover_pending(self, *, limit: int = 100) -> list[BrokerSubmissionResult]:
