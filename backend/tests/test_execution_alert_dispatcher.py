@@ -23,3 +23,18 @@ def test_failed_delivery_can_retry_without_duplicate_success(tmp_path):
     assert second.attempts == 2
     assert third.attempts == 2
     assert calls == [event.event_id, event.event_id]
+
+
+def test_delivery_event_exposes_stable_idempotency_key(tmp_path):
+    event_store = ExecutionAlertEventStore(str(tmp_path / "events.db"))
+    event = event_store.emit_once(type("Alert", (), {"alert_id": 9})(), "CREATED")
+    seen = []
+
+    def publish(item):
+        seen.append((item.event_id, item.idempotency_key))
+
+    dispatcher = ExecutionAlertDispatcher(event_store, publish=publish)
+    result = dispatcher.dispatch_once(event.event_id)
+
+    assert result.delivered is True
+    assert seen == [(event.event_id, f"execution-alert:{event.event_id}")]
