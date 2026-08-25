@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.ai_decision_engine import TradingDecision
+from app.broker_portfolio_snapshot import BrokerPortfolioSnapshot
+from app.broker_snapshot_risk_adapter import BrokerSnapshotRiskAdapter
 from app.order_intent import OrderIntent
 from app.operational_metrics import TradingMetricsCollector
 from app.portfolio_exposure_risk import ExposureLimits, PortfolioExposureRisk
@@ -25,7 +27,7 @@ class PreTradeResult:
 
 
 class PreTradeOrchestrator:
-    """Single fail-closed pre-trade path with live portfolio risk aggregation."""
+    """Single fail-closed pre-trade path with canonical broker risk snapshots."""
 
     def __init__(self, setup_engine: SetupRiskEngine | None = None,
                  circuit_breaker: TradingRiskCircuitBreaker | ObservableRiskCircuitBreaker | None = None,
@@ -33,13 +35,15 @@ class PreTradeOrchestrator:
                  audit: TradingAuditLogger | None = None,
                  exposure_risk: PortfolioExposureRisk | None = None,
                  portfolio_loss_risk: PortfolioLossRisk | None = None,
-                 risk_aggregator: PortfolioRiskAggregator | None = None):
+                 risk_aggregator: PortfolioRiskAggregator | None = None,
+                 snapshot_adapter: BrokerSnapshotRiskAdapter | None = None):
         self.setup_engine = setup_engine or SetupRiskEngine()
         self.metrics = metrics or TradingMetricsCollector()
         self.audit = audit or TradingAuditLogger()
         self.exposure_risk = exposure_risk or PortfolioExposureRisk(ExposureLimits())
         self.portfolio_loss_risk = portfolio_loss_risk or PortfolioLossRisk(PortfolioRiskLimits())
         self.risk_aggregator = risk_aggregator or PortfolioRiskAggregator()
+        self.snapshot_adapter = snapshot_adapter or BrokerSnapshotRiskAdapter()
         if isinstance(circuit_breaker, ObservableRiskCircuitBreaker):
             self.circuit_breaker = circuit_breaker
         else:
@@ -59,6 +63,7 @@ class PreTradeOrchestrator:
         open_risk: float | None = None, portfolio_risk_data_available: bool | None = None,
         position_risk_inputs: list[PositionRiskInput] | None = None,
         open_order_risk_inputs: list[OpenOrderRiskInput] | None = None,
+        broker_snapshot: BrokerPortfolioSnapshot | None = None,
     ) -> PreTradeResult:
         breaker = self.circuit_breaker.evaluate(
             daily_pnl=daily_pnl, drawdown=drawdown, consecutive_losses=recent_losses,
@@ -75,11 +80,25 @@ class PreTradeOrchestrator:
             self.audit.emit("RISK_REJECTED", symbol=symbol, severity="WARNING", data={"reason": setup.reason})
             return PreTradeResult(setup, None, False, setup.reason)
 
+        exposure_positions = positions or {}
+        exposure_positions_available = positions_available
+        if broker_snapshot is not None:
+            adapted = self.snapshot_adapter.adapt(broker_snapshot)
+            if not adapted.available:
+                self.audit.emit("BROKER_SNAPSHOT_RISK_REJECTED", symbol=symbol, severity="WARNING", data={"reason": adapted.reason})
+                return PreTradeResult(setup, None, False, adapted.reason)
+            exposure_positions = {p.symbol.upper(): p.quantity for p in adapted.positions}
+            exposure_positions_available = True
+            position_risk_inputs = list(adapted.positions)
+            open_order_risk_inputs = list(adapted.open_orders)
+            open_risk = None
+            portfolio_risk_data_available = None
+
         exposure = self.exposure_risk.evaluate(
             symbol=symbol, side=setup.side, quantity=setup.quantity,
             price=exposure_price if exposure_price is not None else setup.entry,
-            positions=positions or {}, open_order_notional=open_order_notional,
-            positions_available=positions_available,
+            positions=exposure_positions, open_order_notional=open_order_notional,
+            positions_available=exposure_positions_available,
         )
         if not exposure.approved:
             self.audit.emit("EXPOSURE_REJECTED", symbol=symbol, severity="WARNING", data={"reason": exposure.reason})
@@ -90,8 +109,7 @@ class PreTradeOrchestrator:
             open_risk = snapshot.total_open_risk
             portfolio_risk_data_available = snapshot.risk_data_available
             if not snapshot.risk_data_available:
-                self.audit.emit("PORTFOLIO_RISK_DATA_UNAVAILABLE", symbol=symbol, severity="WARNING",
-                                data={"unresolved_symbols": list(snapshot.unresolved_symbols)})
+                self.audit.emit("PORTFOLIO_RISK_DATA_UNAVAILABLE", symbol=symbol, severity="WARNING", data={"unresolved_symbols": list(snapshot.unresolved_symbols)})
 
         portfolio = self.portfolio_loss_risk.evaluate(
             daily_pnl=daily_pnl, current_drawdown=drawdown,
