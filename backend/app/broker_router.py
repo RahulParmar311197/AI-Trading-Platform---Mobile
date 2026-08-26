@@ -36,10 +36,37 @@ class BrokerRouter:
     def _request_fingerprint(request:BrokerOrderRequest)->str:
         data=asdict(request); return hashlib.sha256(json.dumps(data,sort_keys=True,separators=(",",":"),default=str).encode("utf-8")).hexdigest()
     def unresolved_submission_intents(self):
-        """Expose durable unresolved intents for startup/reconciliation gates."""
         return self.submission_intent_store.unresolved()
     def unresolved_submission_intent_count(self)->int:
         return self.submission_intent_store.unresolved_count()
+    def reconcile_unresolved_submission_intents(self,route=None)->list[str]:
+        """Resolve persisted intents using a complete broker order snapshot; never resubmit."""
+        resolved=[]
+        with self._route_lifecycle_lock:
+            intents=self.submission_intent_store.unresolved()
+            grouped={}
+            for intent in intents: grouped.setdefault(intent.route,[]).append(intent)
+            for route_name, route_intents in grouped.items():
+                selected=self.get(route_name if route is None else route)
+                get_orders=getattr(selected.adapter,"get_orders",None)
+                if get_orders is None: raise RuntimeError("broker open-order snapshot is required to recover submission intents")
+                orders=get_orders()
+                if not isinstance(orders,list): raise RuntimeError("broker open-order snapshot is invalid")
+                for intent in route_intents:
+                    matches=[dict(o) for o in orders if str(o.get("client_order_id",""))==intent.client_order_id]
+                    if len(matches)>1:
+                        if self.safety_store is not None: self.safety_store.halt(f"ambiguous unresolved submission intent: {intent.client_order_id}")
+                        raise RuntimeError(f"ambiguous unresolved submission intent: {intent.client_order_id}")
+                    if len(matches)==1:
+                        match=matches[0]
+                        if intent.account_id is not None and selected.broker_account_id is not None and str(intent.account_id)!=str(selected.broker_account_id):
+                            if self.safety_store is not None: self.safety_store.halt(f"submission intent account mismatch: {intent.client_order_id}")
+                            raise RuntimeError(f"submission intent account mismatch: {intent.client_order_id}")
+                        self.submission_intent_store.resolve(intent.client_order_id); resolved.append(intent.client_order_id); continue
+                    # A complete broker order snapshot with zero matches is safe evidence that the
+                    # intent did not produce a broker order. Never resubmit automatically.
+                    self.submission_intent_store.resolve(intent.client_order_id); resolved.append(intent.client_order_id)
+        return resolved
     def _current_snapshot_fingerprint(self,route:BrokerRoute)->str:
         get_snapshot=getattr(route.adapter,"get_snapshot",None)
         if get_snapshot is not None:
@@ -76,14 +103,11 @@ class BrokerRouter:
         if request.broker_route_generation is None: raise RuntimeError("broker account route generation is required")
         if route.generation is None or str(route.generation)!=str(request.broker_route_generation): raise RuntimeError("broker account route generation is stale")
     def _recover_after_submit_failure(self,request:BrokerOrderRequest,selected:BrokerRoute,original:Exception)->BrokerOrderUpdate:
-        try:
-            existing=self.find_order_by_client_id(request.client_order_id,selected.name)
+        try: existing=self.find_order_by_client_id(request.client_order_id,selected.name)
         except Exception as lookup_error:
-            if self.safety_store is not None:
-                self.safety_store.halt(f"ambiguous broker submission for {request.client_order_id}: {lookup_error}")
+            if self.safety_store is not None: self.safety_store.halt(f"ambiguous broker submission for {request.client_order_id}: {lookup_error}")
             raise RuntimeError("broker submission outcome is unknown; trading halted") from lookup_error
-        if existing is None:
-            raise original
+        if existing is None: raise original
         self.submission_intent_store.resolve(request.client_order_id)
         return BrokerOrderUpdate(order_id=str(existing.get("order_id",existing.get("broker_order_id"))),status=str(existing.get("status","NEW")),client_order_id=existing.get("client_order_id"),symbol=existing.get("symbol"),side=existing.get("side"),quantity=existing.get("quantity"),filled_quantity=existing.get("filled_quantity",existing.get("filledQty",0)),price=existing.get("price"),average_price=existing.get("average_price",existing.get("averagePrice")),message="BROKER_SUBMISSION_RECOVERED")
     def submit(self,request:BrokerOrderRequest,route=None):
@@ -107,11 +131,8 @@ class BrokerRouter:
                     if current!=expected: raise RuntimeError("broker state changed immediately before submission")
                 self.submission_intent_store.create(client_order_id=request.client_order_id,route=selected.name,account_id=str(selected.broker_account_id) if selected.broker_account_id is not None else None,symbol=request.symbol,side=request.side,quantity=request.quantity,request_fingerprint=self._request_fingerprint(request))
                 try:
-                    result=selected.adapter.submit_order(request)
-                    self.submission_intent_store.resolve(request.client_order_id)
-                    return result
-                except Exception as submit_error:
-                    return self._recover_after_submit_failure(request,selected,submit_error)
+                    result=selected.adapter.submit_order(request); self.submission_intent_store.resolve(request.client_order_id); return result
+                except Exception as submit_error: return self._recover_after_submit_failure(request,selected,submit_error)
             finally:
                 with self._submission_lock: self._submission_claims.discard(key)
     def cancel(self,order_id,route=None):
