@@ -3,12 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from typing import Any
-
 import httpx
-
 from app.broker_adapter import BrokerAdapter, BrokerOrderRequest, BrokerOrderUpdate, normalize_broker_update
 from app.broker_order_snapshot import BrokerOrderSnapshot
-
+from app.broker_position_snapshot import BrokerPositionSnapshot
 
 @dataclass(frozen=True)
 class UpstoxConfig:
@@ -18,25 +16,20 @@ class UpstoxConfig:
     timeout_seconds: float = 10.0
     slice_orders: bool = False
     market_protection: int = -1
-
     def __post_init__(self) -> None:
         if self.timeout_seconds <= 0: raise ValueError("Upstox HTTP timeout must be greater than zero")
         if not (-1 <= self.market_protection <= 25): raise ValueError("Upstox market protection must be -1 or between 1 and 25")
         if self.slice_orders: raise ValueError("UPSTOX_SLICE is unsupported until child-order persistence is implemented")
-
     @classmethod
     def from_env(cls) -> "UpstoxConfig":
         return cls(access_token=os.getenv("UPSTOX_ACCESS_TOKEN", ""),base_url=os.getenv("UPSTOX_API_BASE_URL", "https://api-hft.upstox.com").rstrip("/"),live_enabled=os.getenv("UPSTOX_LIVE_ENABLED", "false").lower() == "true",timeout_seconds=float(os.getenv("UPSTOX_HTTP_TIMEOUT_SECONDS", "10")),slice_orders=os.getenv("UPSTOX_SLICE", "false").lower() == "true",market_protection=int(os.getenv("UPSTOX_MARKET_PROTECTION", "-1")))
-
 
 class UpstoxHttpTransport:
     def __init__(self, timeout_seconds: float = 10.0, client: httpx.Client | None = None):
         if timeout_seconds <= 0: raise ValueError("Upstox HTTP timeout must be greater than zero")
         self.timeout_seconds = timeout_seconds; self.client = client or httpx.Client(timeout=timeout_seconds)
-    def request(self, method: str, url: str, **kwargs):
-        kwargs.setdefault("timeout", self.timeout_seconds); return self.client.request(method, url, **kwargs)
+    def request(self, method: str, url: str, **kwargs): kwargs.setdefault("timeout", self.timeout_seconds); return self.client.request(method, url, **kwargs)
     def close(self) -> None: self.client.close()
-
 
 class UpstoxAdapter(BrokerAdapter):
     name = "upstox"
@@ -54,8 +47,7 @@ class UpstoxAdapter(BrokerAdapter):
         if order_type in {"MARKET","SL-M"} and not (-1 <= self.config.market_protection <= 25): raise ValueError("Upstox market protection must be -1 or between 1 and 25")
         payload={"quantity":int(request.quantity),"product":{"INTRADAY":"I","I":"I","CNC":"D","D":"D","MTF":"MTF"}.get(request.product_type.upper(),request.product_type.upper()),"validity":request.validity.upper(),"price":float(request.price or 0),"tag":tag,"instrument_token":request.security_id,"order_type":order_type,"transaction_type":request.side.upper(),"disclosed_quantity":0,"trigger_price":float(request.trigger_price or request.stop or 0),"is_amo":False,"slice":self.config.slice_orders}
         if order_type in {"MARKET","SL-M"}: payload["market_protection"]=self.config.market_protection
-        response=self.transport.request("POST",f"{self.config.base_url}/v3/order/place",headers=self._headers(),json=payload); response.raise_for_status(); body=response.json(); data=body.get("data",body)
-        order_ids=data.get("order_ids") or ([data.get("order_id")] if data.get("order_id") else [])
+        response=self.transport.request("POST",f"{self.config.base_url}/v3/order/place",headers=self._headers(),json=payload); response.raise_for_status(); body=response.json(); data=body.get("data",body); order_ids=data.get("order_ids") or ([data.get("order_id")] if data.get("order_id") else [])
         if not order_ids: raise RuntimeError("Upstox placement response did not contain an order id")
         if len(order_ids)>1: raise RuntimeError("Upstox sliced order returned multiple broker order ids; child-order persistence is required")
         raw={"order_id":str(order_ids[0]),"status":"NEW","client_order_id":tag,"symbol":request.symbol,"side":request.side.upper(),"quantity":request.quantity,"price":request.price,"message":";".join(map(str,order_ids))}
@@ -85,12 +77,14 @@ class UpstoxAdapter(BrokerAdapter):
         if not isinstance(data,list): raise RuntimeError("Upstox trades response is invalid")
         return data
     def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
-        self._require_live(); response=self.transport.request("DELETE",f"{self.config.base_url}/v3/order/cancel",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); data=body.get("data",body)
-        raw={"order_id":str(data.get("order_id",broker_order_id)),"status":"CANCELLED","message":str(data.get("message","")) or None}
-        return normalize_broker_update(raw)
+        self._require_live(); response=self.transport.request("DELETE",f"{self.config.base_url}/v3/order/cancel",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); data=body.get("data",body); raw={"order_id":str(data.get("order_id",broker_order_id)),"status":"CANCELLED","message":str(data.get("message","")) or None}; return normalize_broker_update(raw)
     def get_positions(self) -> list[dict[str, Any]]:
         self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/portfolio/short-term-positions",headers=self._headers()); response.raise_for_status(); body=response.json(); data=body.get("data",body)
         if not isinstance(data,list): raise RuntimeError("Upstox positions response is invalid")
         return data
+    def get_position_snapshot(self) -> BrokerPositionSnapshot:
+        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/portfolio/short-term-positions",headers=self._headers()); response.raise_for_status(); body=response.json(); data=body.get("data",body)
+        if not isinstance(data,list): raise RuntimeError("Upstox position snapshot is not authoritative")
+        return BrokerPositionSnapshot(positions=[dict(position) for position in data],complete=True,source="upstox")
     def get_account(self) -> dict[str, Any]:
         self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/user/get-funds-and-margin",headers=self._headers()); response.raise_for_status(); body=response.json(); return body.get("data",body)
