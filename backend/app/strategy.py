@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from app.confluence import score
-from app.market_data import Candle, validate_freshness
+from app.market_data import Candle, validate_candle_sequence, validate_freshness
 from app.mtf_engine import confirm
 
 @dataclass(frozen=True)
@@ -11,8 +11,11 @@ class TradeSignal:
 
 def generate_signal(candles:list[Candle],min_score:int=2,htf_candles:list[Candle]|None=None,require_mtf:bool=False,max_age_seconds:float|None=None,now:datetime|None=None)->TradeSignal|None:
     if len(candles)<20:return None
+    if not validate_candle_sequence(candles, now=now):return None
     if max_age_seconds is not None and not validate_freshness(candles[-1].timestamp,max_age_seconds=max_age_seconds,now=now).fresh:return None
-    if htf_candles is not None and max_age_seconds is not None and not validate_freshness(htf_candles[-1].timestamp,max_age_seconds=max_age_seconds,now=now).fresh:return None
+    if htf_candles is not None:
+        if not validate_candle_sequence(htf_candles, now=now):return None
+        if max_age_seconds is not None and not validate_freshness(htf_candles[-1].timestamp,max_age_seconds=max_age_seconds,now=now).fresh:return None
     result=score(candles); reasons=list(result.get('reasons',[])); mtf_score=0
     if htf_candles is not None:
         mtf=confirm(htf_candles,candles); reasons.append(f"MTF: {mtf.htf_bias} HTF / {mtf.ltf_bias} LTF")
