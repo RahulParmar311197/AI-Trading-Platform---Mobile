@@ -105,7 +105,11 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
         if resources.session_local is None:
             init_db()
         stop_event = asyncio.Event()
-        health_worker = BrokerHealthWorker(app.state.broker_router, resources.connectivity_registry)
+        health_worker = BrokerHealthWorker(
+            app.state.broker_router,
+            resources.connectivity_registry,
+            readiness_check=lambda: resources.startup_execution_state is not None and resources.startup_execution_state.execution_allowed,
+        )
         app.state.broker_health_worker = health_worker
         app.state.broker_health_stop_event = stop_event
         app.state.broker_health_task = asyncio.create_task(health_worker.run(stop_event), name="broker-health-worker")
