@@ -35,6 +35,11 @@ class BrokerRouter:
     @staticmethod
     def _request_fingerprint(request:BrokerOrderRequest)->str:
         data=asdict(request); return hashlib.sha256(json.dumps(data,sort_keys=True,separators=(",",":"),default=str).encode("utf-8")).hexdigest()
+    def unresolved_submission_intents(self):
+        """Expose durable unresolved intents for startup/reconciliation gates."""
+        return self.submission_intent_store.unresolved()
+    def unresolved_submission_intent_count(self)->int:
+        return self.submission_intent_store.unresolved_count()
     def _current_snapshot_fingerprint(self,route:BrokerRoute)->str:
         get_snapshot=getattr(route.adapter,"get_snapshot",None)
         if get_snapshot is not None:
