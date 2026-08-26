@@ -2,17 +2,39 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from app.reconciliation_result import ReconciliationResult
 from app.reconciliation_validation import validate_reconciliation_inputs
 
+_CHECK_TOKEN = object()
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, init=False)
 class ReconciliationCheckResult:
-    """Result of a drift comparison; not sufficient to clear a safety halt."""
+    """Authenticated result of one reconciliation engine execution."""
     ok: bool
     trading_halted: bool
     order_drift: list[dict]
     position_drift: list[dict]
     checked_at: str
+    _verification_token: object
+
+    def __init__(self, *, ok: bool, trading_halted: bool, order_drift: list[dict], position_drift: list[dict], checked_at: str, _verification_token: object) -> None:
+        if _verification_token is not _CHECK_TOKEN:
+            raise TypeError("use ReconciliationEngine.check")
+        if ok and (order_drift or position_drift):
+            raise ValueError("successful reconciliation cannot contain drift")
+        if not checked_at.strip():
+            raise ValueError("checked_at is required")
+        object.__setattr__(self, "ok", bool(ok))
+        object.__setattr__(self, "trading_halted", bool(trading_halted))
+        object.__setattr__(self, "order_drift", list(order_drift))
+        object.__setattr__(self, "position_drift", list(position_drift))
+        object.__setattr__(self, "checked_at", checked_at)
+        object.__setattr__(self, "_verification_token", _CHECK_TOKEN)
+
+    @property
+    def verified(self) -> bool:
+        return self._verification_token is _CHECK_TOKEN
 
 
 def normalize_order_status(status: object) -> str:
@@ -108,7 +130,24 @@ class ReconciliationEngine:
         ok = not order_drift and not position_drift
         if not ok:
             self.trading_halted = True
-        return ReconciliationCheckResult(ok, self.trading_halted, order_drift, position_drift, datetime.now(timezone.utc).isoformat())
+        return ReconciliationCheckResult(ok=ok, trading_halted=self.trading_halted, order_drift=order_drift, position_drift=position_drift, checked_at=datetime.now(timezone.utc).isoformat(), _verification_token=_CHECK_TOKEN)
+
+    def build_verified_result(self, check: ReconciliationCheckResult, *, account_id: str, generation: int, reconciled_at: datetime, open_orders_reconciled: bool, positions_reconciled: bool, submission_intents_resolved: int, broker_ready: bool, broker_snapshot_fingerprint: str) -> ReconciliationResult:
+        if not isinstance(check, ReconciliationCheckResult) or not check.verified:
+            raise ValueError("authenticated reconciliation check is required")
+        if not check.ok or check.trading_halted or check.order_drift or check.position_drift:
+            raise ValueError("cannot build verified result from failed reconciliation")
+        return ReconciliationResult.from_verified_check(
+            account_id=account_id,
+            generation=generation,
+            reconciled_at=reconciled_at,
+            open_orders_reconciled=open_orders_reconciled,
+            positions_reconciled=positions_reconciled,
+            submission_intents_resolved=submission_intents_resolved,
+            broker_ready=broker_ready,
+            broker_snapshot_fingerprint=broker_snapshot_fingerprint,
+            _check_token=_CHECK_TOKEN,
+        )
 
     def reset_halt(self):
         self.trading_halted = False
