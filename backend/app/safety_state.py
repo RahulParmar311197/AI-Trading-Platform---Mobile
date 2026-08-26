@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 
+from app.reconciliation_result import ReconciliationResult
+
 
 @dataclass
 class SafetyState:
@@ -13,6 +15,8 @@ class SafetyState:
     halt_reason: str | None = None
     last_reconciliation_at: datetime | None = None
     halted_at: datetime | None = None
+    reconciliation_generation: int | None = None
+    reconciliation_account_id: str | None = None
 
 
 class SafetyStateStore:
@@ -27,6 +31,8 @@ class SafetyStateStore:
             "halt_reason": state.halt_reason,
             "last_reconciliation_at": state.last_reconciliation_at.isoformat() if state.last_reconciliation_at else None,
             "halted_at": state.halted_at.isoformat() if state.halted_at else None,
+            "reconciliation_generation": state.reconciliation_generation,
+            "reconciliation_account_id": state.reconciliation_account_id,
         }
         encoded = json.dumps(payload, indent=2).encode("utf-8")
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
@@ -63,6 +69,8 @@ class SafetyStateStore:
             data.get("halt_reason"),
             reconciliation_at,
             halted_at,
+            data.get("reconciliation_generation"),
+            data.get("reconciliation_account_id"),
         )
 
     def load(self) -> SafetyState:
@@ -78,8 +86,7 @@ class SafetyStateStore:
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as primary_exc:
             if self.backup_path.exists():
                 try:
-                    restored = self._decode(self.backup_path)
-                    return restored
+                    return self._decode(self.backup_path)
                 except (OSError, ValueError, TypeError, json.JSONDecodeError) as backup_exc:
                     raise RuntimeError("invalid persisted safety state") from backup_exc
             raise RuntimeError("invalid persisted safety state") from primary_exc
@@ -88,24 +95,25 @@ class SafetyStateStore:
         if not reason.strip():
             raise ValueError("halt reason is required")
         now = datetime.now(timezone.utc)
-        state = SafetyState(True, reason, None, now)
+        state = SafetyState(True, reason, None, now, None, None)
         self.save(state)
         return state
 
-    def clear(self, reconciled_at: datetime | None = None) -> SafetyState:
+    def clear(self, reconciliation: ReconciliationResult) -> SafetyState:
+        if not isinstance(reconciliation, ReconciliationResult) or not reconciliation.verified:
+            raise ValueError("verified reconciliation result is required before clearing safety halt")
         state = self.load()
+        reconciled_at = reconciliation.reconciled_at.astimezone(timezone.utc)
         if state.trading_halted:
-            if reconciled_at is None:
-                raise RuntimeError("post-halt broker reconciliation is required before clearing safety halt")
-            if reconciled_at.tzinfo is None:
-                raise ValueError("reconciled_at must be timezone-aware")
-            reconciled_at = reconciled_at.astimezone(timezone.utc)
-            now = datetime.now(timezone.utc)
-            if reconciled_at > now:
-                raise RuntimeError("reconciliation timestamp cannot be in the future")
             if state.halted_at is not None and reconciled_at <= state.halted_at:
                 raise RuntimeError("reconciliation must occur after the safety halt")
-        cleared_at = datetime.now(timezone.utc)
-        state = SafetyState(False, None, reconciled_at or state.last_reconciliation_at or cleared_at, None)
+        state = SafetyState(
+            False,
+            None,
+            reconciled_at,
+            None,
+            reconciliation.generation,
+            reconciliation.account_id,
+        )
         self.save(state)
         return state
