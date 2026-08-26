@@ -56,6 +56,30 @@ def test_corrupt_state_fails_closed(tmp_path):
         SafetyStateStore(str(path)).load()
 
 
+def test_corrupt_primary_recovers_from_backup(tmp_path):
+    path = tmp_path / "safety.json"
+    store = SafetyStateStore(str(path))
+    first = store.halt("FIRST_HALT")
+    store.clear(first.halted_at + timedelta(seconds=1))
+    second = store.halt("SECOND_HALT")
+    path.write_text("{not-json", encoding="utf-8")
+
+    restored = SafetyStateStore(str(path)).load()
+    assert restored.trading_halted is False
+    assert restored.halt_reason is None
+
+
+def test_corrupt_primary_and_backup_fail_closed(tmp_path):
+    path = tmp_path / "safety.json"
+    store = SafetyStateStore(str(path))
+    store.halt("DRIFT")
+    path.write_text("{not-json", encoding="utf-8")
+    store.backup_path.write_text("{also-not-json", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="invalid persisted safety state"):
+        SafetyStateStore(str(path)).load()
+
+
 def test_blank_halt_reason_rejected(tmp_path):
     with pytest.raises(ValueError, match="halt reason"):
         SafetyStateStore(str(tmp_path / "safety.json")).halt("  ")
