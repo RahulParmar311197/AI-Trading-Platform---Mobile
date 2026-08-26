@@ -31,6 +31,7 @@ class BrokerOrderRequest:
     owner_user_id: int | None = None
     broker_account_id: int | None = None
     broker_route: str | None = None
+    broker_route_generation: str | None = None
 
 @dataclass(frozen=True)
 class BrokerOrderUpdate:
@@ -87,30 +88,3 @@ class BrokerAdapter(ABC):
         matches=[dict(o) for o in get_orders() if str(o.get("client_order_id",""))==client_order_id]
         if len(matches)>1: raise RuntimeError(f"ambiguous broker order identity for client_order_id: {client_order_id}")
         return matches[0] if matches else None
-
-class PaperBrokerAdapter(BrokerAdapter):
-    def __init__(self): self.orders={}; self.positions={}; self.next_id=1
-    def submit_order(self, order):
-        if order.quantity<=0: raise ValueError("quantity must be positive")
-        cid=order.client_order_id if isinstance(order,BrokerOrderRequest) else f"client-{self.next_id}"; existing=self.find_order_by_client_id(cid)
-        if existing: return normalize_broker_update(existing)
-        oid=f"PAPER-{self.next_id}"; self.next_id+=1; record={"order_id":oid,"status":"NEW","client_order_id":cid,"symbol":order.symbol.upper(),"side":order.side.upper(),"quantity":order.quantity,"filled_quantity":0,"price":order.price,"average_price":order.price}; self.orders[oid]=record; return normalize_broker_update(record)
-    def fill_order(self, broker_order_id, filled_quantity, price=None):
-        record=self._open(broker_order_id); remaining=record["quantity"]-record["filled_quantity"]
-        if filled_quantity<=0 or filled_quantity>remaining: raise ValueError("invalid fill quantity")
-        old_qty=record["filled_quantity"]; old_avg=record.get("average_price") or 0; new_price=price if price is not None else record.get("price")
-        if new_price is not None and (not math.isfinite(float(new_price)) or float(new_price)<0): raise ValueError("invalid fill price")
-        record["filled_quantity"]+=filled_quantity; record["price"]=new_price; record["average_price"]=((old_qty*old_avg)+(filled_quantity*new_price))/record["filled_quantity"] if record["filled_quantity"]>0 and new_price is not None else old_avg; record["status"]="FILLED" if record["filled_quantity"]==record["quantity"] else "PARTIALLY_FILLED"; pos=self.positions.setdefault(record["symbol"],{"symbol":record["symbol"],"quantity":0}); pos["quantity"]+=filled_quantity if record["side"]=="BUY" else -filled_quantity; return normalize_broker_update(record)
-    def reject_order(self, broker_order_id, message="broker rejected"): record=self._open(broker_order_id); record["status"]="REJECTED"; record["message"]=message; return normalize_broker_update(record)
-    def cancel_order(self, broker_order_id): record=self._open(broker_order_id); record["status"]="CANCELLED"; return normalize_broker_update(record)
-    def _open(self, broker_order_id):
-        if broker_order_id not in self.orders: raise KeyError("order not found")
-        record=self.orders[broker_order_id]
-        if record["status"] in {"FILLED","CANCELLED","REJECTED"}: raise ValueError("order is terminal")
-        return record
-    def get_order(self, broker_order_id):
-        if broker_order_id not in self.orders: raise KeyError("order not found")
-        return self.orders[broker_order_id].copy()
-    def get_orders(self): return [o.copy() for o in self.orders.values()]
-    def get_positions(self): return [p.copy() for p in self.positions.values()]
-    def get_account(self): return {"mode":"paper","status":"READY"}
