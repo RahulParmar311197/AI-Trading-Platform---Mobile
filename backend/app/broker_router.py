@@ -1,6 +1,6 @@
 from __future__ import annotations
 from contextlib import contextmanager
-from dataclasses import dataclass, replace, asdict
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from threading import Lock, RLock
 from typing import Iterator
@@ -114,7 +114,7 @@ class BrokerRouter:
         if not actual_client_id or not actual_symbol or not actual_side or actual_quantity in (None, ""):
             if self.safety_store is not None: self.safety_store.halt(f"incomplete broker recovery payload for {request.client_order_id}")
             raise RuntimeError("broker submission outcome is unknown; recovery payload is incomplete")
-        raw={"order_id":str(existing.get("order_id",existing.get("broker_order_id",""))),"status":str(existing.get("status","")),"client_order_id":actual_client_id,"symbol":actual_symbol,"side":actual_side,"quantity":actual_quantity,"filled_quantity":existing.get("filled_quantity",existing.get("filledQty",existing.get("filled_qty"),)),"price":existing.get("price"),"average_price":existing.get("average_price",existing.get("averagePrice")),"message":"BROKER_SUBMISSION_RECOVERED"}
+        raw={"order_id":str(existing.get("order_id",existing.get("broker_order_id",""))),"status":str(existing.get("status","")),"client_order_id":actual_client_id,"symbol":actual_symbol,"side":actual_side,"quantity":actual_quantity,"filled_quantity":existing.get("filled_quantity",existing.get("filledQty",existing.get("filled_qty"))),"price":existing.get("price"),"average_price":existing.get("average_price",existing.get("averagePrice")),"message":"BROKER_SUBMISSION_RECOVERED"}
         result=normalize_broker_update(raw,expected=request); self.submission_intent_store.resolve(request.client_order_id); return result
     def submit(self,request:BrokerOrderRequest,route=None):
         with self._route_lifecycle_lock:
