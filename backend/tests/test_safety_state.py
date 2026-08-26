@@ -14,22 +14,12 @@ def context(at: datetime, *, account_id: str = "acct-1", generation: int = 1, fi
 
 def verified_result(at: datetime, *, account_id: str = "acct-1", generation: int = 1, fingerprint: str = "fp-1") -> ReconciliationResult:
     engine = ReconciliationEngine()
-    observation = at - timedelta(microseconds=1)
     check = engine.check([], [], [], [])
-    # The authenticated check timestamp is the broker observation used by the context.
     observed = datetime.fromisoformat(check.checked_at)
     if at < observed:
         at = observed
     execution_context = context(observed, account_id=account_id, generation=generation, fingerprint=fingerprint)
-    return engine.build_verified_result(
-        check,
-        context=execution_context,
-        reconciled_at=at,
-        open_orders_reconciled=True,
-        positions_reconciled=True,
-        submission_intents_resolved=0,
-        broker_ready=True,
-    )
+    return engine.build_verified_result(check, context=execution_context, reconciled_at=at, open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True)
 
 
 def clear(store, result):
@@ -55,7 +45,7 @@ def test_clear_requires_verified_post_halt_reconciliation(tmp_path):
     result = verified_result(halted.halted_at)
     with pytest.raises(RuntimeError, match="after the safety halt"):
         clear(store, result)
-    reconciled_at = halted.halted_at + timedelta(seconds=1)
+    reconciled_at = datetime.now(timezone.utc)
     cleared = clear(store, verified_result(reconciled_at))
     restored = store.load()
     assert cleared.trading_halted is False
@@ -76,24 +66,20 @@ def test_drift_check_result_cannot_clear_safety_halt(tmp_path):
         store.clear(check, active_context=context(datetime.now(timezone.utc)))
 
 
-@pytest.mark.parametrize("field,value,pattern", [
-    ("account_id", "other", "context"),
-    ("generation", 2, "context"),
-    ("fingerprint", "old-fp", "context"),
-])
-def test_clear_rejects_mismatched_execution_context(tmp_path, field, value, pattern):
+@pytest.mark.parametrize("field,value", [("account_id", "other"), ("generation", 2), ("fingerprint", "old-fp")])
+def test_clear_rejects_mismatched_execution_context(tmp_path, field, value):
     store = SafetyStateStore(str(tmp_path / "safety.json"))
     store.halt("DRIFT")
-    result = verified_result(datetime.now(timezone.utc) + timedelta(seconds=1))
+    result = verified_result(datetime.now(timezone.utc))
     kwargs = {"account_id": "acct-1", "generation": 1, "fingerprint": "fp-1", field: value}
-    with pytest.raises(RuntimeError, match=pattern):
+    with pytest.raises(RuntimeError, match="context"):
         store.clear(result, active_context=context(result.context.observed_at, **kwargs))
 
 
 def test_clear_rejects_missing_active_context(tmp_path):
     store = SafetyStateStore(str(tmp_path / "safety.json"))
     store.halt("DRIFT")
-    result = verified_result(datetime.now(timezone.utc) + timedelta(seconds=1))
+    result = verified_result(datetime.now(timezone.utc))
     with pytest.raises(ValueError, match="active broker execution context"):
         store.clear(result, active_context=None)
 
