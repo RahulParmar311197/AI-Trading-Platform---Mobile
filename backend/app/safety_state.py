@@ -99,6 +99,10 @@ class SafetyStateStore:
                 raise RuntimeError("post-halt broker reconciliation is required before clearing safety halt")
             if reconciled_at.tzinfo is None:
                 raise ValueError("reconciled_at must be timezone-aware")
+            reconciled_at = reconciled_at.astimezone(timezone.utc)
+            now = datetime.now(timezone.utc)
+            if reconciled_at > now:
+                raise RuntimeError("reconciliation timestamp cannot be in the future")
             if state.halted_at is not None and reconciled_at <= state.halted_at:
                 raise RuntimeError("reconciliation must occur after the safety halt")
         cleared_at = datetime.now(timezone.utc)
