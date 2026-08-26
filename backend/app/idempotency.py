@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from threading import RLock
 from typing import Any, Protocol
 
 
@@ -16,17 +17,20 @@ class InMemoryIdempotencyStore:
 
     def __init__(self) -> None:
         self._values: dict[str, str] = {}
+        self._lock = RLock()
 
     def claim(self, key: str, value: str, ttl_seconds: int) -> bool:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
-        if key in self._values:
-            return False
-        self._values[key] = value
-        return True
+        with self._lock:
+            if key in self._values:
+                return False
+            self._values[key] = value
+            return True
 
     def get(self, key: str) -> str | None:
-        return self._values.get(key)
+        with self._lock:
+            return self._values.get(key)
 
 
 class RedisIdempotencyStore:
