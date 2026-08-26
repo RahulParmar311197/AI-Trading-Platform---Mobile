@@ -15,6 +15,7 @@ class Order(Base):
     user_id: Mapped[int] = mapped_column(index=True)
     broker_account_id: Mapped[int | None] = mapped_column(index=True, nullable=True)
     broker_route: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    broker_route_generation: Mapped[str | None] = mapped_column(String(160), nullable=True)
     client_order_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     symbol: Mapped[str] = mapped_column(String(64), index=True)
     side: Mapped[str] = mapped_column(String(8))
