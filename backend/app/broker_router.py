@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from threading import Lock, RLock
 from typing import Iterator
 
@@ -21,11 +22,14 @@ class BrokerRoute:
 
 
 class BrokerRouter:
-    def __init__(self, routes: list[BrokerRoute], default_route: str, safety_store: SafetyStateStore | None = None, trading_gate: TradingGate | None = None):
+    def __init__(self, routes: list[BrokerRoute], default_route: str, safety_store: SafetyStateStore | None = None, trading_gate: TradingGate | None = None, max_reconciliation_age_seconds: float = 2.0):
+        if max_reconciliation_age_seconds <= 0:
+            raise ValueError("max_reconciliation_age_seconds must be positive")
         self.routes = {r.name: r for r in routes}
         self.default_route = default_route
         self.safety_store = safety_store
         self.trading_gate = trading_gate or TradingGate()
+        self.max_reconciliation_age_seconds = float(max_reconciliation_age_seconds)
         self._submission_lock = Lock()
         self._submission_claims = set()
         self._route_lifecycle_lock = RLock()
@@ -64,6 +68,12 @@ class BrokerRouter:
                 raise RuntimeError("broker account has not been reconciled")
             if str(state.reconciliation_account_id) != str(route.broker_account_id):
                 raise RuntimeError("broker account is not reconciled")
+        reconciled_at = state.last_reconciliation_at
+        if reconciled_at is None or reconciled_at.tzinfo is None:
+            raise RuntimeError("broker reconciliation timestamp is unavailable")
+        age = (datetime.now(timezone.utc) - reconciled_at.astimezone(timezone.utc)).total_seconds()
+        if age < 0 or age > self.max_reconciliation_age_seconds:
+            raise RuntimeError("broker reconciliation is stale")
 
     def _require_account_binding(self, request: BrokerOrderRequest, route: BrokerRoute) -> None:
         if request.broker_account_id is None:
