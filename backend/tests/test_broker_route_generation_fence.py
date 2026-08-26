@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.broker_adapter import BrokerOrderRequest, PaperBrokerAdapter
-from app.broker_factory import account_route_generation, build_account_route
+from app.broker_factory import account_route_generation
 from app.broker_router import BrokerRoute, BrokerRouter
 from app.models.broker_account import BrokerAccount
 from app.safety_state import SafetyStateStore
