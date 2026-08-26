@@ -2,7 +2,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from app.reconciliation import ReconciliationEngine
 from app.reconciliation_result import ReconciliationResult
+
+
+def _valid_check():
+    engine = ReconciliationEngine()
+    return engine.check([], [], [], [])
 
 
 def _valid(**overrides):
@@ -14,12 +20,13 @@ def _valid(**overrides):
         "positions_reconciled": True,
         "submission_intents_resolved": 0,
         "broker_ready": True,
+        "broker_snapshot_fingerprint": "fp-1",
     }
     values.update(overrides)
-    return ReconciliationResult.from_verified_state(**values)
+    return ReconciliationEngine().build_verified_result(_valid_check(), **values)
 
 
-def test_verified_reconciliation_requires_all_broker_state_domains():
+def test_verified_reconciliation_requires_authenticated_engine_check():
     result = _valid()
     assert result.verified is True
 
@@ -55,4 +62,9 @@ def test_direct_construction_is_not_allowed():
             positions_reconciled=True,
             submission_intents_resolved=0,
             broker_ready=True,
+            broker_snapshot_fingerprint="fp-1",
         )
+
+
+def test_old_unbound_factory_is_removed():
+    assert not hasattr(ReconciliationResult, "from_verified_state")
