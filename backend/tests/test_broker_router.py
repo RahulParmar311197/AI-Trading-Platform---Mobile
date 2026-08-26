@@ -1,15 +1,15 @@
 import time
-from datetime import timedelta, datetime, timezone
+from datetime import datetime, timedelta
 
 import pytest
 
-from app.broker_adapter import PaperBrokerAdapter, BrokerAdapter, BrokerOrderRequest
-from app.broker_router import BrokerRoute, BrokerRouter
-from app.broker_order_snapshot import BrokerOrderSnapshot
-from app.broker_snapshot import BrokerSnapshot
+from app.broker_adapter import PaperBrokerAdapter, BrokerOrderRequest
 from app.broker_execution_context import BrokerExecutionContext
-from app.safety_state import SafetyStateStore
+from app.broker_order_snapshot import BrokerOrderSnapshot
+from app.broker_router import BrokerRoute, BrokerRouter
+from app.broker_snapshot import BrokerSnapshot
 from app.reconciliation import ReconciliationEngine
+from app.safety_state import SafetyStateStore
 
 
 def test_default_route_submits():
@@ -35,24 +35,9 @@ def _verified_result_after_halt(store, router, *, generation=1, account_id='pape
     check=ReconciliationEngine().check([], [], [], [])
     observed=datetime.fromisoformat(check.checked_at)
     fingerprint=router._current_snapshot_fingerprint(router.get(route))
-    context=BrokerExecutionContext(
-        account_id=account_id,
-        broker_route=route,
-        route_generation=route_generation,
-        generation=generation,
-        snapshot_fingerprint=fingerprint,
-        observed_at=observed,
-    )
+    context=BrokerExecutionContext(account_id=account_id, broker_route=route, route_generation=route_generation, generation=generation, snapshot_fingerprint=fingerprint, observed_at=observed)
     reconciled_at=max(halted.halted_at + timedelta(seconds=0.001), observed)
-    return ReconciliationEngine().build_verified_result(
-        check,
-        context=context,
-        reconciled_at=reconciled_at,
-        open_orders_reconciled=True,
-        positions_reconciled=True,
-        submission_intents_resolved=0,
-        broker_ready=True,
-    )
+    return ReconciliationEngine().build_verified_result(check, context=context, reconciled_at=reconciled_at, open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True)
 
 
 def _clear_with_current_reconciliation(store, router=None):
@@ -62,10 +47,11 @@ def _clear_with_current_reconciliation(store, router=None):
 
 def test_cancel_allowed_when_halted(tmp_path):
     router, store = _ready_router(tmp_path)
-    order = router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1)) if False else None
+    broker = router.get('paper').adapter
+    created = broker.submit_order(BrokerOrderRequest('c1','NIFTY','BUY',1))
     store.halt('test halt')
-    with pytest.raises(Exception):
-        router.cancel('paper-order')
+    cancelled = router.cancel(created['order_id'])
+    assert cancelled['status'] == 'CANCELLED'
 
 
 def test_cancel_requires_order_id(tmp_path):
@@ -151,11 +137,7 @@ def test_immediate_broker_state_change_blocks_submission(tmp_path):
     def get_orders_with_external_change():
         calls['count'] += 1
         if calls['count'] == 3:
-            broker._orders['external'] = {
-                'order_id': 'external', 'broker_order_id': 'external',
-                'client_order_id': 'manual-1', 'symbol': 'NIFTY', 'side': 'BUY',
-                'quantity': 1, 'filled_quantity': 0, 'status': 'OPEN',
-            }
+            broker._orders['external'] = {'order_id':'external','broker_order_id':'external','client_order_id':'manual-1','symbol':'NIFTY','side':'BUY','quantity':1,'filled_quantity':0,'status':'OPEN'}
         return original_get_orders()
 
     broker.get_orders = get_orders_with_external_change
@@ -191,12 +173,7 @@ def test_reconciliation_snapshot_contains_route_and_account_identity():
 def test_unresolved_submission_intent_zero_match_remains_unresolved(tmp_path):
     router, store=_ready_router(tmp_path)
     store.halt('recovery')
-    store_path=store
-    store_path
-    intent=router.submission_intent_store.create(
-        client_order_id='missing-client', route='paper', account_id=None,
-        symbol='NIFTY', side='BUY', quantity=1, request_fingerprint='fp'
-    )
+    intent=router.submission_intent_store.create(client_order_id='missing-client', route='paper', account_id=None, symbol='NIFTY', side='BUY', quantity=1, request_fingerprint='fp')
     assert intent.client_order_id == 'missing-client'
     assert router.reconcile_unresolved_submission_intents('paper') == []
     assert router.submission_intent_store.unresolved_count() == 1
