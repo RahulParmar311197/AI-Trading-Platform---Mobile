@@ -24,9 +24,11 @@ class BrokerReconciliationService:
         self,
         router: BrokerRouter,
         config: ReconciliationConfig,
-        lifecycle: OrderLifecycle | None = None,
+        lifecycle: OrderLifecycle,
         unresolved_submission_intents: Callable[[], int] | None = None,
     ) -> None:
+        if lifecycle is None:
+            raise ValueError("local lifecycle state is required for reconciliation")
         self.router = router
         self.config = config
         self.lifecycle = lifecycle
@@ -55,17 +57,16 @@ class BrokerReconciliationService:
             if not isinstance(positions, list):
                 raise RuntimeError("broker position snapshot is unavailable")
 
-            if self.lifecycle is not None:
-                mismatches = compare_broker_state(
-                    self.lifecycle,
-                    broker_orders=orders,
-                    broker_positions=positions,
+            mismatches = compare_broker_state(
+                self.lifecycle,
+                broker_orders=orders,
+                broker_positions=positions,
+            )
+            if mismatches:
+                details = "; ".join(
+                    f"{item.domain}:{item.identity}:{item.reason}" for item in mismatches[:20]
                 )
-                if mismatches:
-                    details = "; ".join(
-                        f"{item.domain}:{item.identity}:{item.reason}" for item in mismatches[:20]
-                    )
-                    raise RuntimeError(f"RECONCILIATION_MISMATCH: {details}")
+                raise RuntimeError(f"RECONCILIATION_MISMATCH: {details}")
 
             unresolved = int(self._unresolved_submission_intents())
             if unresolved < 0:
