@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 import math
+from threading import RLock
 
 class BrokerOrderStatus(str, Enum):
     NEW = "NEW"
@@ -98,3 +99,46 @@ class BrokerAdapter(ABC):
         matches=[dict(o) for o in get_orders() if str(o.get("client_order_id",""))==client_order_id]
         if len(matches)>1: raise RuntimeError(f"ambiguous broker order identity for client_order_id: {client_order_id}")
         return matches[0] if matches else None
+
+class PaperBrokerAdapter(BrokerAdapter):
+    """Deterministic in-memory adapter for paper execution and reconciliation tests."""
+    def __init__(self):
+        self._lock=RLock(); self._orders={}; self._positions={}; self._sequence=0
+    def _new_id(self):
+        self._sequence += 1; return f"PAPER-{self._sequence:08d}"
+    @staticmethod
+    def _validate(symbol, side, quantity):
+        symbol=str(symbol or "").strip().upper(); side=str(side or "").strip().upper(); quantity=float(quantity)
+        if not symbol: raise ValueError("symbol is required")
+        if side not in {"BUY","SELL"}: raise ValueError("side must be BUY or SELL")
+        if not math.isfinite(quantity) or quantity<=0: raise ValueError("quantity must be positive and finite")
+        return symbol,side,quantity
+    def submit_order(self, order):
+        symbol,side,quantity=self._validate(order.symbol,order.side,order.quantity); client_id=getattr(order,"client_order_id",None)
+        with self._lock:
+            if client_id:
+                existing=self.find_order_by_client_id(client_id)
+                if existing is not None: return dict(existing)
+            oid=self._new_id(); price=float(order.price) if getattr(order,"price",None) is not None else 0.0
+            record={"order_id":oid,"broker_order_id":oid,"client_order_id":client_id,"symbol":symbol,"side":side,"quantity":quantity,"filled_quantity":quantity,"status":"FILLED","price":price,"average_price":price}
+            self._orders[oid]=record; self._positions[symbol]=self._positions.get(symbol,0.0)+(quantity if side=="BUY" else -quantity)
+            return dict(record)
+    def cancel_order(self, broker_order_id):
+        with self._lock:
+            record=self._orders.get(str(broker_order_id))
+            if record is None: raise ValueError("unknown broker order")
+            if record["status"] != "FILLED": record["status"]="CANCELLED"
+            return dict(record)
+    def get_order(self, broker_order_id):
+        with self._lock:
+            record=self._orders.get(str(broker_order_id))
+            if record is None: raise ValueError("unknown broker order")
+            return dict(record)
+    def get_orders(self):
+        with self._lock: return [dict(order) for order in self._orders.values()]
+    def get_positions(self):
+        with self._lock: return [{"symbol":s,"quantity":q} for s,q in self._positions.items() if q != 0]
+    def get_account(self):
+        return {"mode":"paper","healthy":True,"authenticated":True,"live_trading_enabled":False}
+    def health(self):
+        return BrokerHealth(broker=self.__class__.__name__,healthy=True,authenticated=True,live_trading_enabled=False,message="paper broker")
