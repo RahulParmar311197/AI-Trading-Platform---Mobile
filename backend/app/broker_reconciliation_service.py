@@ -1,14 +1,12 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
-
 from app.broker_router import BrokerRouter
+from app.broker_snapshot import BrokerSnapshot
 from app.reconciliation_compare import compare_broker_state
 from app.reconciliation_result import ReconciliationResult
 from app.order_lifecycle import OrderLifecycle
-
 
 @dataclass(frozen=True)
 class ReconciliationConfig:
@@ -16,70 +14,26 @@ class ReconciliationConfig:
     account_id: str
     generation: int
 
-
 class BrokerReconciliationService:
-    """Single production boundary that can produce an unlockable reconciliation result."""
-
-    def __init__(
-        self,
-        router: BrokerRouter,
-        config: ReconciliationConfig,
-        lifecycle: OrderLifecycle,
-        unresolved_submission_intents: Callable[[], int] | None = None,
-    ) -> None:
-        if lifecycle is None:
-            raise ValueError("local lifecycle state is required for reconciliation")
-        self.router = router
-        self.config = config
-        self.lifecycle = lifecycle
-        self._unresolved_submission_intents = unresolved_submission_intents or (lambda: 0)
-
-    def reconcile(self) -> ReconciliationResult:
+    def __init__(self,router:BrokerRouter,config:ReconciliationConfig,lifecycle:OrderLifecycle,unresolved_submission_intents:Callable[[],int]|None=None)->None:
+        if lifecycle is None: raise ValueError("local lifecycle state is required for reconciliation")
+        self.router=router; self.config=config; self.lifecycle=lifecycle; self._unresolved_submission_intents=unresolved_submission_intents or (lambda:0)
+    def reconcile(self)->ReconciliationResult:
         with self.router.route_lifecycle_lock():
-            route = self.router.get(self.config.route)
-            if route.broker_account_id is not None and str(route.broker_account_id) != str(self.config.account_id):
-                raise RuntimeError("reconciliation account does not match broker route")
-            if route.generation is not None and str(route.generation) != str(self.config.generation):
-                raise RuntimeError("reconciliation generation does not match broker route")
-
-            account = route.adapter.get_account()
-            if not isinstance(account, dict):
-                raise RuntimeError("broker account snapshot is invalid")
-            healthy = account.get("healthy") is True
-            authenticated = account.get("authenticated") is True
-            if not healthy or not authenticated:
-                raise RuntimeError("broker account is not ready for reconciliation")
-
-            orders = route.adapter.get_orders() if hasattr(route.adapter, "get_orders") else None
-            if orders is None or not isinstance(orders, list):
-                raise RuntimeError("broker open-order snapshot is unavailable")
-            positions = route.adapter.get_positions()
-            if not isinstance(positions, list):
-                raise RuntimeError("broker position snapshot is unavailable")
-
-            mismatches = compare_broker_state(
-                self.lifecycle,
-                broker_orders=orders,
-                broker_positions=positions,
-            )
+            route=self.router.get(self.config.route)
+            if route.broker_account_id is not None and str(route.broker_account_id)!=str(self.config.account_id): raise RuntimeError("reconciliation account does not match broker route")
+            if route.generation is not None and str(route.generation)!=str(self.config.generation): raise RuntimeError("reconciliation generation does not match broker route")
+            account=route.adapter.get_account()
+            if not isinstance(account,dict) or account.get("healthy") is not True or account.get("authenticated") is not True: raise RuntimeError("broker account is not ready for reconciliation")
+            orders=route.adapter.get_orders() if hasattr(route.adapter,"get_orders") else None
+            positions=route.adapter.get_positions()
+            if not isinstance(orders,list): raise RuntimeError("broker open-order snapshot is unavailable")
+            if not isinstance(positions,list): raise RuntimeError("broker position snapshot is unavailable")
+            mismatches=compare_broker_state(self.lifecycle,broker_orders=orders,broker_positions=positions)
             if mismatches:
-                details = "; ".join(
-                    f"{item.domain}:{item.identity}:{item.reason}" for item in mismatches[:20]
-                )
-                raise RuntimeError(f"RECONCILIATION_MISMATCH: {details}")
-
-            unresolved = int(self._unresolved_submission_intents())
-            if unresolved < 0:
-                raise RuntimeError("unresolved submission-intent count is invalid")
-            if unresolved != 0:
-                raise RuntimeError("unresolved broker submission intents remain")
-
-            return ReconciliationResult.from_verified_state(
-                account_id=self.config.account_id,
-                generation=self.config.generation,
-                reconciled_at=datetime.now(timezone.utc),
-                open_orders_reconciled=True,
-                positions_reconciled=True,
-                submission_intents_resolved=0,
-                broker_ready=True,
-            )
+                details="; ".join(f"{m.domain}:{m.identity}:{m.reason}" for m in mismatches[:20]); raise RuntimeError(f"RECONCILIATION_MISMATCH: {details}")
+            unresolved=int(self._unresolved_submission_intents())
+            if unresolved<0: raise RuntimeError("unresolved submission-intent count is invalid")
+            if unresolved!=0: raise RuntimeError("unresolved broker submission intents remain")
+            snapshot=BrokerSnapshot(orders=[dict(x) for x in orders],positions=[dict(x) for x in positions],broker_route=route.name,broker_account_id=route.broker_account_id)
+            return ReconciliationResult.from_verified_state(account_id=self.config.account_id,generation=self.config.generation,reconciled_at=datetime.now(timezone.utc),open_orders_reconciled=True,positions_reconciled=True,submission_intents_resolved=0,broker_ready=True,broker_snapshot_fingerprint=snapshot.fingerprint())
