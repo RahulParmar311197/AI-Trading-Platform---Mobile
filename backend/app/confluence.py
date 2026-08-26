@@ -6,10 +6,12 @@ from app.market_data import Candle
 def score(candles:list[Candle])->dict:
     if not candles:return {'score':0,'bias':'NEUTRAL','reasons':[]}
     closes=[c.close for c in candles]; highs=[c.high for c in candles]; lows=[c.low for c in candles]; ict=structure(candles); fast=ema(closes,min(20,len(closes))); a=atr(highs,lows,closes,min(14,len(closes))); last=closes[-1]; points=0; reasons=[]
-    if ict['bos']=='BULLISH':points+=2;reasons.append('bullish BOS')
-    elif ict['bos']=='BEARISH':points-=2;reasons.append('bearish BOS')
+    # BOS and CHoCH describe the same structural state transition family.
+    # Count only one structural signal so a single event cannot receive +4/-4.
     if ict['choch']=='BULLISH':points+=2;reasons.append('bullish CHoCH')
     elif ict['choch']=='BEARISH':points-=2;reasons.append('bearish CHoCH')
+    elif ict['bos']=='BULLISH':points+=2;reasons.append('bullish BOS')
+    elif ict['bos']=='BEARISH':points-=2;reasons.append('bearish BOS')
     if ict['liquidity_sweeps']:
         s=ict['liquidity_sweeps'][-1]; points+=2 if s['direction']=='BULLISH' else -2; reasons.append(s['direction'].lower()+' liquidity sweep')
     if ict['fvg']:
