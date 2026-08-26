@@ -6,4 +6,5 @@ def test_authenticated_broker_accounts_api_is_registered():
 
     assert any(path == "/broker-accounts" and "POST" in methods for path, methods in routes)
     assert any(path == "/broker-accounts" and "GET" in methods for path, methods in routes)
+    assert any(path == "/broker-accounts/{account_id}" and "PATCH" in methods for path, methods in routes)
     assert any(path == "/broker-accounts/{account_id}" and "DELETE" in methods for path, methods in routes)
