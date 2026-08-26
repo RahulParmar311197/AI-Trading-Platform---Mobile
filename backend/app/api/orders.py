@@ -104,8 +104,6 @@ def create_order(payload:OrderRequest,request:Request,response:Response,db:Sessi
     try: broker_router.get(broker_route)
     except Exception as exc: raise HTTPException(status_code=409,detail="BROKER_ACCOUNT_ROUTE_UNAVAILABLE") from exc
     symbol=payload.symbol.upper(); order=Order(user_id=user_id,broker_account_id=account.id,broker_route=broker_route,broker_route_generation=route_generation,client_order_id=client_order_id,symbol=symbol,side=payload.side,quantity=payload.quantity,order_type=payload.order_type,price=payload.price,stop=payload.stop,security_id=payload.security_id,status="PENDING"); db.add(order)
-    try: broker_router.get(broker_route)
-    except Exception as exc: raise HTTPException(status_code=409,detail="BROKER_ACCOUNT_ROUTE_UNAVAILABLE") from exc
     try: db.flush()
     except IntegrityError:
         db.rollback(); existing=db.query(Order).filter(Order.client_order_id==client_order_id,Order.user_id==user_id).first()
