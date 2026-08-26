@@ -37,6 +37,11 @@ class BrokerRouter:
         data=asdict(request); return hashlib.sha256(json.dumps(data,sort_keys=True,separators=(",",":"),default=str).encode("utf-8")).hexdigest()
     def unresolved_submission_intents(self): return self.submission_intent_store.unresolved()
     def unresolved_submission_intent_count(self)->int: return self.submission_intent_store.unresolved_count()
+    def _halt_if_unresolved_submission_intents(self)->None:
+        count=self.submission_intent_store.unresolved_count()
+        if count:
+            if self.safety_store is not None: self.safety_store.halt(f"{count} unresolved submission intent(s) remain")
+            raise RuntimeError("unresolved submission intents remain; trading halted")
     def reconcile_unresolved_submission_intents(self,route=None)->list[str]:
         resolved=[]
         with self._route_lifecycle_lock:
@@ -61,6 +66,8 @@ class BrokerRouter:
                             if self.safety_store is not None: self.safety_store.halt(f"submission intent account mismatch: {intent.client_order_id}")
                             raise RuntimeError(f"submission intent account mismatch: {intent.client_order_id}")
                         self.submission_intent_store.resolve(intent.client_order_id); resolved.append(intent.client_order_id); continue
+            if self.submission_intent_store.unresolved_count():
+                if self.safety_store is not None: self.safety_store.halt("unresolved submission intents remain after broker reconciliation")
         return resolved
     def _authoritative_reconciliation_snapshot(self,route:BrokerRoute)->BrokerSnapshot:
         """Build the single broker state used for readiness fingerprints.
@@ -75,6 +82,7 @@ class BrokerRouter:
         return BrokerSnapshot(orders=[dict(x) for x in orders],positions=[dict(x) for x in positions],broker_route=route.name,broker_account_id=route.broker_account_id)
     def _current_snapshot_fingerprint(self,route:BrokerRoute)->str: return self._authoritative_reconciliation_snapshot(route).fingerprint()
     def _require_execution_ready(self,route:BrokerRoute)->None:
+        self._halt_if_unresolved_submission_intents()
         if self.safety_store is None: halted=True; state=None
         else: state=self.safety_store.load(); halted=state.trading_halted
         self.trading_gate.require_ready(halted)
