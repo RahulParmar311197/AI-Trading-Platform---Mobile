@@ -15,6 +15,7 @@ from app.safety_state import SafetyStateStore
 from app.execution_authorization import ExecutionAuthorization
 from app.trading_audit import TradingAuditLog
 from app.execution_observability import ExecutionObservability
+from app.broker_connectivity_registry import BrokerConnectivityRegistry
 
 @dataclass(frozen=True)
 class ExecutionResult:
@@ -22,8 +23,8 @@ class ExecutionResult:
 
 class OrderExecutionService:
     _claim_lock=Lock()
-    def __init__(self,router,lifecycle,store,idempotency_store=None,recovery=None,risk_gate=None,risk_snapshot_provider=None,safety_state_store=None,authorization=None,startup_state=None,audit_log=None,observability=None):
-        self.router=router; self.lifecycle=lifecycle; self.store=store; self.idempotency_store=idempotency_store; self.recovery=recovery or StartupRecoveryCoordinator(); self.risk_gate=risk_gate; self.risk_snapshot_provider=risk_snapshot_provider; self.safety_state_store=safety_state_store; self.observability=observability or ExecutionObservability()
+    def __init__(self,router,lifecycle,store,idempotency_store=None,recovery=None,risk_gate=None,risk_snapshot_provider=None,safety_state_store=None,authorization=None,startup_state=None,audit_log=None,observability=None,connectivity_registry=None):
+        self.router=router; self.lifecycle=lifecycle; self.store=store; self.idempotency_store=idempotency_store; self.recovery=recovery or StartupRecoveryCoordinator(); self.risk_gate=risk_gate; self.risk_snapshot_provider=risk_snapshot_provider; self.safety_state_store=safety_state_store; self.observability=observability or ExecutionObservability(); self.connectivity_registry=connectivity_registry
         if startup_state is None: raise ValueError("startup_state is required for live execution")
         self.startup_state=startup_state; self.audit_log=audit_log or getattr(startup_state,"audit_log",None) or TradingAuditLog(); self.authorization=authorization or ExecutionAuthorization(safety_state_store or SafetyStateStore(),risk_gate,risk_snapshot_provider,audit_log=self.audit_log)
         if self.risk_gate is not None:self.risk_gate.rebuild_from_lifecycle(self.lifecycle)
@@ -32,18 +33,23 @@ class OrderExecutionService:
         try:
             self.observability.increment(metric,amount)
             if request.broker_account_id and request.broker_route:self.observability.increment_scoped(metric,int(request.broker_account_id),str(request.broker_route),amount)
-        except Exception:
-            return
+        except Exception:return
     def _metric_latency(self,metric,request,milliseconds):
         try:
             self.observability.observe_latency(metric,milliseconds)
             if request.broker_account_id and request.broker_route:self.observability.observe_latency_scoped(metric,int(request.broker_account_id),str(request.broker_route),milliseconds)
-        except Exception:
-            return
+        except Exception:return
     def _assert_safety_ready(self):
         result=self.authorization.check_safety()
         if not result.allowed:return ExecutionResult("",OrderStatus.REJECTED.value,message=f"{result.code}: {result.reason or 'execution blocked'}")
         if not self.startup_state.execution_allowed:return ExecutionResult("",OrderStatus.REJECTED.value,message=f"STARTUP_EXECUTION_LOCKED: {self.startup_state.status.reason or self.startup_state.state.value}")
+    def _assert_broker_connectivity(self,request):
+        if self.connectivity_registry is None:return None
+        if request.broker_account_id is None or not request.broker_route: return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message="BROKER_ACCOUNT_BINDING_REQUIRED")
+        snapshot=self.connectivity_registry.snapshot(int(request.broker_account_id),str(request.broker_route))
+        if not snapshot.can_trade:
+            return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message=f"BROKER_CONNECTIVITY_{snapshot.state.value}: execution blocked")
+        return None
     @staticmethod
     def _validate_recovered_identity(request,recovered):
         for key,expected in (("client_order_id",request.client_order_id),("symbol",request.symbol),("side",request.side)):
@@ -108,15 +114,17 @@ class OrderExecutionService:
             self._metric_increment("recovery_found",request);self._metric_increment("duplicate_preventions",request)
             try:return self._save_recovered(request,recovered,"BROKER_ORDER_RECOVERED_AFTER_AMBIGUOUS_SUBMISSION",execution_id)
             except Exception as recovery_error:self._audit("BROKER_RECOVERY_ERROR",execution_id,request,error=str(recovery_error));return None
-        self._metric_increment("recovery_safe_retries",request)
-        self._audit("BROKER_SUBMISSION_UNRESOLVED",execution_id,request,reason="no broker order found after ambiguous submission");return None
+        self._metric_increment("recovery_safe_retries",request);self._audit("BROKER_SUBMISSION_UNRESOLVED",execution_id,request,reason="no broker order found after ambiguous submission");return None
     def _release_reservation(self,request,execution_id,reason):
         if self.risk_gate is not None:self.risk_gate.release(request.client_order_id);self._audit("RISK_EXPOSURE_RELEASED",execution_id,request,reason=reason)
     def submit(self,request):
-        self._metric_increment("submissions",request)
-        execution_id=str(uuid.uuid4());self._audit("EXECUTION_STARTED",execution_id,request);safety_result=self._assert_safety_ready()
+        self._metric_increment("submissions",request);execution_id=str(uuid.uuid4());self._audit("EXECUTION_STARTED",execution_id,request);safety_result=self._assert_safety_ready()
         if safety_result is not None:self._audit("EXECUTION_BLOCKED",execution_id,request,reason=safety_result.message);return ExecutionResult(request.client_order_id,safety_result.status,message=safety_result.message,execution_id=execution_id)
         if not request.broker_account_id or not request.broker_route:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message="BROKER_ACCOUNT_BINDING_REQUIRED",execution_id=execution_id)
+        connectivity_result=self._assert_broker_connectivity(request)
+        if connectivity_result is not None:
+            self._audit("EXECUTION_BLOCKED",execution_id,request,reason=connectivity_result.message)
+            return ExecutionResult(request.client_order_id,connectivity_result.status,message=connectivity_result.message,execution_id=execution_id)
         with self._claim_lock:
             authorization_result=self.authorization.check(request);self._audit("EXECUTION_AUTHORIZATION_CORRELATED",execution_id,request,allowed=authorization_result.allowed,code=authorization_result.code,reason=authorization_result.reason)
             if not authorization_result.allowed:return ExecutionResult(request.client_order_id,OrderStatus.REJECTED.value,message=f"{authorization_result.code}: {authorization_result.reason or 'execution blocked'}",execution_id=execution_id)
