@@ -14,6 +14,14 @@ class BrokerOrderStatus(str, Enum):
     REJECTED = "REJECTED"
 
 @dataclass(frozen=True)
+class BrokerHealth:
+    broker: str
+    healthy: bool
+    authenticated: bool = False
+    live_trading_enabled: bool = False
+    message: str = ""
+
+@dataclass(frozen=True)
 class BrokerOrderRequest:
     client_order_id: str
     symbol: str
@@ -82,6 +90,8 @@ class BrokerAdapter(ABC):
     def get_positions(self) -> list[dict[str, Any]]: ...
     @abstractmethod
     def get_account(self) -> dict[str, Any]: ...
+    def health(self) -> BrokerHealth:
+        return BrokerHealth(broker=self.__class__.__name__, healthy=False, message="broker health capability not implemented")
     def find_order_by_client_id(self, client_order_id: str):
         get_orders=getattr(self,"get_orders",None)
         if get_orders is None: raise NotImplementedError("broker does not support client-order reconciliation")
