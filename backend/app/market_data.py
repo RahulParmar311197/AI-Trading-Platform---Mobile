@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
+import math
 
 
 @dataclass(frozen=True, init=False)
@@ -62,18 +63,55 @@ class MarketDataFreshness:
     message: str = ""
 
 
+def _utc(timestamp: datetime) -> datetime:
+    return timestamp if timestamp.tzinfo is not None else timestamp.replace(tzinfo=timezone.utc)
+
+
 def validate_freshness(timestamp: datetime, *, max_age_seconds: float, now: datetime | None = None) -> MarketDataFreshness:
     if max_age_seconds < 0:
         raise ValueError("max_age_seconds must be non-negative")
-    now = now or datetime.now(timezone.utc)
-    ts = timestamp if timestamp.tzinfo is not None else timestamp.replace(tzinfo=timezone.utc)
-    current = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    current = _utc(now or datetime.now(timezone.utc))
+    ts = _utc(timestamp)
     age = (current - ts).total_seconds()
     if age < 0:
         return MarketDataFreshness(False, age, max_age_seconds, "market-data timestamp is in the future")
     if age > max_age_seconds:
         return MarketDataFreshness(False, age, max_age_seconds, "market data is stale")
     return MarketDataFreshness(True, age, max_age_seconds, "ok")
+
+
+def validate_candle_sequence(candles: list[Candle], *, now: datetime | None = None) -> bool:
+    """Reject malformed, mixed, out-of-order, or future-dated candle series before indicators run."""
+    if not candles:
+        return False
+    current = _utc(now or datetime.now(timezone.utc))
+    first = candles[0]
+    symbol = str(first.symbol).strip().upper()
+    timeframe = str(first.timeframe).strip()
+    if not symbol or not timeframe:
+        return False
+    previous = None
+    for candle in candles:
+        if str(candle.symbol).strip().upper() != symbol or str(candle.timeframe).strip() != timeframe:
+            return False
+        timestamp = _utc(candle.timestamp)
+        if timestamp > current:
+            return False
+        if previous is not None and timestamp <= previous:
+            return False
+        try:
+            values = (float(candle.open), float(candle.high), float(candle.low), float(candle.close), float(candle.volume))
+        except (TypeError, ValueError):
+            return False
+        if not all(math.isfinite(value) for value in values):
+            return False
+        open_price, high, low, close, volume = values
+        if min(open_price, high, low, close) <= 0 or volume < 0:
+            return False
+        if high < max(open_price, close) or low > min(open_price, close):
+            return False
+        previous = timestamp
+    return True
 
 
 class MarketDataProvider(Protocol):
