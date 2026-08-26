@@ -3,8 +3,9 @@ from datetime import timedelta
 
 import pytest
 
-from app.broker_adapter import PaperBrokerAdapter, BrokerOrderRequest
+from app.broker_adapter import PaperBrokerAdapter, BrokerAdapter, BrokerOrderRequest
 from app.broker_router import BrokerRoute, BrokerRouter
+from app.broker_order_snapshot import BrokerOrderSnapshot
 from app.broker_snapshot import BrokerSnapshot
 from app.safety_state import SafetyStateStore
 from app.reconciliation_result import ReconciliationResult
@@ -154,3 +155,22 @@ def test_immediate_broker_state_change_blocks_submission(tmp_path):
 def test_invalid_reconciliation_age_configuration_is_rejected(tmp_path):
     with pytest.raises(ValueError, match='positive'):
         _ready_router(tmp_path, max_age=0)
+
+
+class IncompleteOrderSnapshotBroker(PaperBrokerAdapter):
+    def get_order_snapshot(self):
+        return BrokerOrderSnapshot(orders=self.get_orders(), complete=False, source='incomplete-test')
+
+
+def test_reconciliation_fingerprint_requires_authoritative_order_snapshot():
+    router=BrokerRouter([BrokerRoute('paper',IncompleteOrderSnapshotBroker())],'paper')
+    with pytest.raises(RuntimeError, match='not authoritative'):
+        router._current_snapshot_fingerprint(router.get('paper'))
+
+
+def test_reconciliation_snapshot_contains_route_and_account_identity():
+    router=BrokerRouter([BrokerRoute('paper',PaperBrokerAdapter(),broker_account_id=17)],'paper')
+    snapshot=router.get_snapshot('paper')
+    assert isinstance(snapshot, BrokerSnapshot)
+    assert snapshot.broker_route == 'paper'
+    assert snapshot.broker_account_id == 17
