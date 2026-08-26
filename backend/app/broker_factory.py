@@ -36,6 +36,15 @@ def account_route_name(account: BrokerAccount) -> str:
     return f"{broker}:account:{int(account.id)}"
 
 
+def account_route_generation(account: BrokerAccount) -> str:
+    """Return the persisted version token used to fence stale account routes."""
+    if account.id is None or int(account.id) <= 0:
+        raise ValueError("broker account has invalid route identity")
+    if account.updated_at is None:
+        return f"account:{int(account.id)}:bootstrap"
+    return f"account:{int(account.id)}:{account.updated_at.isoformat()}"
+
+
 def _credential_payload(account: BrokerAccount) -> dict:
     try:
         payload = json.loads(decrypt_credentials(account.encrypted_credentials))
@@ -49,6 +58,7 @@ def _credential_payload(account: BrokerAccount) -> dict:
 def build_account_route(account: BrokerAccount) -> BrokerRoute:
     """Build an account-bound adapter from its encrypted credentials."""
     route_name = account_route_name(account)
+    generation = account_route_generation(account)
     broker = str(account.broker).strip().lower()
     credentials = _credential_payload(account)
 
@@ -70,7 +80,7 @@ def build_account_route(account: BrokerAccount) -> BrokerRoute:
     else:
         raise ValueError(f"account:{account.id}:unsupported_broker:{broker}")
 
-    return BrokerRoute(route_name, adapter, enabled=True, broker_account_id=int(account.id))
+    return BrokerRoute(route_name, adapter, enabled=True, broker_account_id=int(account.id), generation=generation)
 
 
 def provision_active_account_routes(db: Session, router: BrokerRouter) -> list[str]:
@@ -108,6 +118,7 @@ def validate_active_account_routes(db: Session, router: BrokerRouter) -> list[st
     for account in accounts:
         try:
             route_name = account_route_name(account)
+            generation = account_route_generation(account)
         except ValueError as exc:
             errors.append(f"account:{account.id}:invalid_identity:{exc}")
             continue
@@ -120,4 +131,7 @@ def validate_active_account_routes(db: Session, router: BrokerRouter) -> list[st
             continue
         if route.broker_account_id != int(account.id):
             errors.append(f"account:{account.id}:{route_name}:route_account_mismatch")
+            continue
+        if route.generation != generation:
+            errors.append(f"account:{account.id}:{route_name}:route_generation_stale")
     return errors
