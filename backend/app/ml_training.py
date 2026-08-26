@@ -1,42 +1,83 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from app.ai_features import build_features
-from app.market_data import Candle
+from typing import Sequence
+
+from app.ml_dataset import TrainingExample
+from app.ml_estimator import TrainableModel, fit_centroid_model
+from app.ml_baseline import ClassificationMetrics
+from app.ml_walkforward import WalkForwardFold, walk_forward_baseline
+from app.ml_model_gate import ModelGateConfig, ModelGateResult, evaluate_model_gate
+from app.ml_features import FeatureVector
 
 
 @dataclass(frozen=True)
-class TrainingExample:
-    features: dict
-    label: int
+class TrainingRun:
+    model: TrainableModel
+    folds: tuple[WalkForwardFold, ...]
+    baseline_folds: tuple[WalkForwardFold, ...]
+    gate: ModelGateResult
 
 
-def make_dataset(candles: list[Candle], horizon: int = 5, threshold: float = 0.0) -> list[TrainingExample]:
-    if horizon < 1:
-        raise ValueError("horizon must be positive")
-    examples: list[TrainingExample] = []
-    for end in range(30, len(candles) - horizon):
-        window = candles[:end]
-        features = build_features(window)
-        future_return = candles[end + horizon - 1].close / candles[end - 1].close - 1
-        label = 1 if future_return > threshold else 0
-        examples.append(TrainingExample(features, label))
-    return examples
+def _to_features(example: TrainingExample) -> FeatureVector:
+    values = dict(example.features)
+    return FeatureVector(
+        timestamp=values['timestamp'],
+        symbol=values['symbol'],
+        ema_distance=float(values['ema_distance']),
+        atr_normalized=float(values['atr_normalized']),
+        volatility_normalized=float(values['volatility_normalized']),
+        structure_score=float(values['structure_score']),
+        bullish=int(values['bullish']),
+        bearish=int(values['bearish']),
+        liquidity_sweep=int(values['liquidity_sweep']),
+        fvg_state=int(values['fvg_state']),
+        order_block_state=int(values['order_block_state']),
+        premium_discount=int(values['premium_discount']),
+    )
 
 
-def chronological_split(examples: list[TrainingExample], train_ratio: float = 0.7, validation_ratio: float = 0.15):
-    if not 0 < train_ratio < 1 or not 0 < validation_ratio < 1 or train_ratio + validation_ratio >= 1:
-        raise ValueError("invalid split ratios")
-    n = len(examples)
-    train_end = int(n * train_ratio)
-    validation_end = train_end + int(n * validation_ratio)
-    return examples[:train_end], examples[train_end:validation_end], examples[validation_end:]
+def train_and_gate(
+    examples: Sequence[TrainingExample],
+    feature_names: tuple[str, ...],
+    *,
+    folds: int = 3,
+    min_train_size: int | None = None,
+    config: ModelGateConfig | None = None,
+) -> TrainingRun:
+    data = sorted(examples, key=lambda x: x.timestamp)
+    if not data:
+        raise ValueError('training examples cannot be empty')
+    if not feature_names:
+        raise ValueError('feature_names cannot be empty')
+    if folds <= 0:
+        raise ValueError('folds must be positive')
 
+    minimum = min_train_size if min_train_size is not None else max(1, len(data) // (folds + 1))
+    available = len(data) - minimum
+    if available < folds:
+        raise ValueError('not enough examples for walk-forward training')
+    step = max(1, available // folds)
 
-def baseline_metrics(examples: list[TrainingExample]) -> dict:
-    if not examples:
-        return {"samples": 0, "accuracy": 0.0, "positive_rate": 0.0}
-    predictions = [1 if x.features["ema_spread_pct"] > 0 else 0 for x in examples]
-    correct = sum(p == x.label for p, x in zip(predictions, examples))
-    positives = sum(x.label for x in examples)
-    return {"samples": len(examples), "accuracy": correct / len(examples), "positive_rate": positives / len(examples)}
+    candidate_folds: list[WalkForwardFold] = []
+    for fold in range(folds):
+        train_end = minimum + step * fold
+        validation_end = len(data) if fold == folds - 1 else minimum + step * (fold + 1)
+        validation = data[train_end:validation_end]
+        if not validation:
+            continue
+        model = fit_centroid_model(data[:train_end], feature_names)
+        predictions = model.predict([_to_features(x) for x in validation])
+        correct = sum(prediction == example.label for prediction, example in zip(predictions, validation))
+        candidate_folds.append(
+            WalkForwardFold(
+                train_end,
+                len(validation),
+                ClassificationMetrics(correct / len(validation), len(validation), correct),
+            )
+        )
+
+    baseline_folds = walk_forward_baseline(data, folds=folds, min_train_size=min_train_size)
+    gate = evaluate_model_gate(data, candidate_folds, baseline_folds, config)
+    final_model = fit_centroid_model(data, feature_names)
+    return TrainingRun(final_model, tuple(candidate_folds), tuple(baseline_folds), gate)
