@@ -23,7 +23,7 @@ from app.portfolio_reconciliation_service import PortfolioReconciliationService
 from app.recovery_manager import StartupRecoveryManager
 from app.risk_circuit_observability import ObservableRiskCircuitBreaker
 from app.risk_circuit_api import create_risk_circuit_router
-from app.startup_execution_state import StartupExecutionState, StartupExecutionStateMachine
+from app.startup_execution_state import StartupExecutionState
 from app.startup_order_recovery import StartupOrderRecovery
 from app.startup_reconciliation_gate import StartupReconciliationGate
 from app.system_health import TradingSystemHealth
@@ -77,9 +77,9 @@ async def lifespan(app: FastAPI):
     app.state.order_lifecycle = lifecycle
 
     with SessionLocal() as db:
-        account_route_errors = provision_active_account_routes(db, execution_broker_router)
-        if account_route_errors:
-            account_route_errors.extend(validate_active_account_routes(db, execution_broker_router))
+        provisioning_errors = provision_active_account_routes(db, execution_broker_router)
+        route_validation_errors = validate_active_account_routes(db, execution_broker_router)
+    account_route_errors = provisioning_errors + route_validation_errors
     app.state.account_route_validation = account_route_errors
     if account_route_errors:
         reason = "active broker account route provisioning failed: " + "; ".join(account_route_errors)
