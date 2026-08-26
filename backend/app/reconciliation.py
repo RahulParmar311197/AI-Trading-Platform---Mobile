@@ -6,7 +6,8 @@ from app.reconciliation_validation import validate_reconciliation_inputs
 
 
 @dataclass(frozen=True)
-class ReconciliationResult:
+class ReconciliationCheckResult:
+    """Result of a drift comparison; not sufficient to clear a safety halt."""
     ok: bool
     trading_halted: bool
     order_drift: list[dict]
@@ -66,7 +67,7 @@ class ReconciliationEngine:
     def __init__(self):
         self.trading_halted = False
 
-    def check(self, internal_orders, broker_orders, internal_positions, broker_positions):
+    def check(self, internal_orders, broker_orders, internal_positions, broker_positions) -> ReconciliationCheckResult:
         io_list, bo_list, ip_list, bp_list = validate_reconciliation_inputs(
             internal_orders, broker_orders, internal_positions, broker_positions
         )
@@ -107,7 +108,7 @@ class ReconciliationEngine:
         ok = not order_drift and not position_drift
         if not ok:
             self.trading_halted = True
-        return ReconciliationResult(ok, self.trading_halted, order_drift, position_drift, datetime.now(timezone.utc).isoformat())
+        return ReconciliationCheckResult(ok, self.trading_halted, order_drift, position_drift, datetime.now(timezone.utc).isoformat())
 
     def reset_halt(self):
         self.trading_halted = False
