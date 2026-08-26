@@ -188,8 +188,6 @@ def test_unresolved_submission_intent_zero_match_remains_unresolved(tmp_path):
 def test_submit_recovery_rejects_incomplete_broker_payload(tmp_path):
     router, store = _ready_router(tmp_path)
     _clear_with_current_reconciliation(store, router)
-    broker = router.get('paper').adapter
-    broker.__class__
     recovery = RecoveryPayloadBroker()
     router.routes['paper'] = BrokerRoute('paper', recovery)
     fingerprint = router._current_snapshot_fingerprint(router.get('paper'))
