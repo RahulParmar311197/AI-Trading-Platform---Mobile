@@ -75,7 +75,15 @@ class BrokerRouter:
                 existing=self.find_order_by_client_id(request.client_order_id,selected_route)
                 if existing is not None: return BrokerOrderUpdate(order_id=str(existing.get("order_id",existing.get("broker_order_id"))),status=str(existing.get("status","NEW")),client_order_id=existing.get("client_order_id"),symbol=existing.get("symbol"),side=existing.get("side"),quantity=existing.get("quantity"),filled_quantity=existing.get("filled_quantity",existing.get("filledQty",0)),price=existing.get("price"),average_price=existing.get("average_price",existing.get("averagePrice")),message="BROKER_CLIENT_ID_REPLAY")
                 self._submission_claims.add(key)
-            try: return selected.adapter.submit_order(request)
+            try:
+                if self.safety_store is not None:
+                    state=self.safety_store.load()
+                    if state.trading_halted: raise RuntimeError("trading is halted")
+                    expected=state.broker_snapshot_fingerprint
+                    if expected is None: raise RuntimeError("broker reconciliation fingerprint is unavailable")
+                    current=self._current_snapshot_fingerprint(selected)
+                    if current!=expected: raise RuntimeError("broker state changed immediately before submission")
+                return selected.adapter.submit_order(request)
             finally:
                 with self._submission_lock: self._submission_claims.discard(key)
     def cancel(self,order_id,route=None):
