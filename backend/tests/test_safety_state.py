@@ -44,6 +44,15 @@ def test_clear_rejects_naive_reconciliation_timestamp(tmp_path):
         store.clear(datetime.now())
 
 
+def test_clear_rejects_future_reconciliation_timestamp(tmp_path):
+    store = SafetyStateStore(str(tmp_path / "safety.json"))
+    halted = store.halt("DRIFT")
+    future = datetime.now(timezone.utc) + timedelta(minutes=5)
+    assert future > halted.halted_at
+    with pytest.raises(RuntimeError, match="cannot be in the future"):
+        store.clear(future)
+
+
 def test_missing_state_is_fail_open_for_uninitialized_store(tmp_path):
     state = SafetyStateStore(str(tmp_path / "missing.json")).load()
     assert state == SafetyState()
@@ -77,7 +86,7 @@ def test_corrupt_primary_and_backup_fail_closed(tmp_path):
     store.backup_path.write_text("{also-not-json", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="invalid persisted safety state"):
-        SafetyStateStore(str(path)).load()
+        store.load()
 
 
 def test_blank_halt_reason_rejected(tmp_path):
