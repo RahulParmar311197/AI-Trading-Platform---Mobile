@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.broker_execution_context import BrokerExecutionContext
 
@@ -25,6 +25,8 @@ class ReconciliationResult:
             raise TypeError("use ReconciliationResult.from_verified_check")
         if reconciled_at.tzinfo is None:
             raise ValueError("reconciled_at must be timezone-aware")
+        if reconciled_at > datetime.now(timezone.utc):
+            raise ValueError("reconciled_at cannot be in the future")
         if submission_intents_resolved < 0:
             raise ValueError("submission_intents_resolved must be non-negative")
         if not broker_ready:
