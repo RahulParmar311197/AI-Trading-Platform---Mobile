@@ -2,7 +2,22 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from app.reconciliation import ReconciliationEngine, ReconciliationCheckResult
+from app.reconciliation_result import ReconciliationResult
 from app.safety_state import SafetyState, SafetyStateStore
+
+
+def verified_result(at: datetime) -> ReconciliationResult:
+    return ReconciliationResult.from_verified_state(
+        account_id="acct-1",
+        generation=1,
+        reconciled_at=at,
+        open_orders_reconciled=True,
+        positions_reconciled=True,
+        submission_intents_resolved=0,
+        broker_ready=True,
+        broker_snapshot_fingerprint="fp-1",
+    )
 
 
 def test_halt_survives_restart(tmp_path):
@@ -17,31 +32,48 @@ def test_halt_survives_restart(tmp_path):
     assert restored.last_reconciliation_at is None
 
 
-def test_clear_requires_post_halt_reconciliation(tmp_path):
+def test_clear_requires_verified_post_halt_reconciliation(tmp_path):
     store = SafetyStateStore(str(tmp_path / "safety.json"))
     halted = store.halt("DRIFT")
 
-    with pytest.raises(RuntimeError, match="post-halt broker reconciliation"):
-        store.clear()
+    with pytest.raises(ValueError, match="verified reconciliation result"):
+        store.clear(None)
 
     with pytest.raises(RuntimeError, match="after the safety halt"):
-        store.clear(halted.halted_at)
+        store.clear(verified_result(halted.halted_at))
 
     reconciled_at = halted.halted_at + timedelta(seconds=1)
-    cleared = store.clear(reconciled_at)
+    cleared = store.clear(verified_result(reconciled_at))
     restored = store.load()
     assert cleared.trading_halted is False
     assert restored.trading_halted is False
     assert restored.halt_reason is None
     assert restored.halted_at is None
     assert restored.last_reconciliation_at == reconciled_at
+    assert restored.reconciliation_generation == 1
+    assert restored.reconciliation_account_id == "acct-1"
+    assert restored.broker_snapshot_fingerprint == "fp-1"
+
+
+def test_drift_check_result_cannot_clear_safety_halt(tmp_path):
+    store = SafetyStateStore(str(tmp_path / "safety.json"))
+    store.halt("DRIFT")
+    check = ReconciliationEngine().check([], [], [], [])
+    assert isinstance(check, ReconciliationCheckResult)
+    with pytest.raises(ValueError, match="verified reconciliation result"):
+        store.clear(check)
 
 
 def test_clear_rejects_naive_reconciliation_timestamp(tmp_path):
     store = SafetyStateStore(str(tmp_path / "safety.json"))
     store.halt("DRIFT")
     with pytest.raises(ValueError, match="timezone-aware"):
-        store.clear(datetime.now())
+        ReconciliationResult.from_verified_state(
+            account_id="acct-1", generation=1, reconciled_at=datetime.now(),
+            open_orders_reconciled=True, positions_reconciled=True,
+            submission_intents_resolved=0, broker_ready=True,
+            broker_snapshot_fingerprint="fp-1",
+        )
 
 
 def test_clear_rejects_future_reconciliation_timestamp(tmp_path):
@@ -49,8 +81,8 @@ def test_clear_rejects_future_reconciliation_timestamp(tmp_path):
     halted = store.halt("DRIFT")
     future = datetime.now(timezone.utc) + timedelta(minutes=5)
     assert future > halted.halted_at
-    with pytest.raises(RuntimeError, match="cannot be in the future"):
-        store.clear(future)
+    with pytest.raises(ValueError, match="cannot be in the future"):
+        verified_result(future)
 
 
 def test_missing_state_is_fail_open_for_uninitialized_store(tmp_path):
@@ -69,7 +101,7 @@ def test_corrupt_primary_recovers_from_backup(tmp_path):
     path = tmp_path / "safety.json"
     store = SafetyStateStore(str(path))
     first = store.halt("FIRST_HALT")
-    store.clear(first.halted_at + timedelta(seconds=1))
+    store.clear(verified_result(first.halted_at + timedelta(seconds=1)))
     second = store.halt("SECOND_HALT")
     path.write_text("{not-json", encoding="utf-8")
 
