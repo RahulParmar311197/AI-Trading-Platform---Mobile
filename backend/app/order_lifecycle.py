@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from app.trading_audit import TradingAuditLog
 from app.order_state_machine import InvalidOrderTransition, OrderState, OrderStateMachine
 
@@ -40,6 +41,14 @@ class OrderLifecycle:
         if order.broker_route is not None and not str(order.broker_route).strip(): raise ValueError("broker_route must not be empty")
         self.orders[order_id]=order; self._machines[order_id]=OrderStateMachine(OrderState.CREATED)
         self.audit_log.record("ORDER_CREATED",metadata={"order_id":order_id,"symbol":order.symbol,"side":order.side,"quantity":quantity,"execution_id":order.execution_id,"owner_user_id":order.owner_user_id,"broker_account_id":order.broker_account_id,"broker_route":order.broker_route}); return order
+    def mark_pending_reconciliation(self,order_id,reason="BROKER_SUBMISSION_AMBIGUOUS"):
+        order=self.orders[order_id]
+        if order.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
+            raise ValueError("terminal order cannot enter reconciliation")
+        self._transition_machine(order_id,OrderStatus.PENDING_RECONCILIATION)
+        previous=order.status; order.status=OrderStatus.PENDING_RECONCILIATION; order.updated_at=datetime.now(timezone.utc)
+        self.audit_log.record("ORDER_PENDING_RECONCILIATION",metadata={"order_id":order_id,"previous_status":previous.value,"reason":reason,"broker_order_id":order.broker_order_id,"execution_id":order.execution_id})
+        return order
     def apply_fill(self,order_id,quantity,price,fill_id=None):
         if fill_id is not None and fill_id in self._applied_fill_ids:return self.orders[order_id]
         order=self.orders[order_id]; quantity=float(quantity); price=float(price)
