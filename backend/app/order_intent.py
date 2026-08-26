@@ -1,6 +1,8 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
+
+from app.instrument_constraints import InstrumentConstraints
 
 Side = Literal['BUY','SELL']
 
@@ -15,6 +17,20 @@ class OrderIntent:
     risk_amount: float
     source: str
     confidence: float = 0.0
+    constraints: InstrumentConstraints | None = None
+
+    def normalized(self) -> 'OrderIntent':
+        """Return a broker-safe order using the configured instrument constraints."""
+        if self.constraints is None:
+            return self
+        normalized_entry = self.constraints.normalize_price(self.entry)
+        return replace(
+            self,
+            entry=normalized_entry,
+            stop_loss=self.constraints.normalize_price(self.stop_loss),
+            take_profit=self.constraints.normalize_price(self.take_profit),
+            quantity=self.constraints.normalize_quantity(self.quantity, price=normalized_entry),
+        )
 
     def validate(self) -> None:
         if not self.symbol or self.entry <= 0 or self.stop_loss <= 0 or self.take_profit <= 0:
