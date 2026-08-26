@@ -9,6 +9,8 @@ from app.risk_gateway import authorize
 from app.risk_engine import RiskLimits
 from app.execution import PaperBroker, execute_paper
 from app.portfolio import PaperPortfolio
+from app.ml_decision import MLDecisionConfig, apply_ml_decision
+from app.ml_inference import Prediction
 
 @dataclass
 class BacktestTrade:
@@ -20,11 +22,13 @@ class BacktestTrade:
     reason: str
 
 
-def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_percent: float = 1.0, fee_bps: float = 3.0, slippage_bps: float = 1.0, limits: RiskLimits | None = None) -> dict:
+def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_percent: float = 1.0, fee_bps: float = 3.0, slippage_bps: float = 1.0, limits: RiskLimits | None = None, *, enable_ml: bool = False, ml_predictor=None, ml_artifact=None, ml_confidence: float = 0.0, ml_config: MLDecisionConfig | None = None, ml_expected_features: tuple[str, ...] = (), ml_horizon: int = 5, ml_threshold: float = 0.002) -> dict:
     if starting_equity <= 0 or risk_percent <= 0 or risk_percent > 5 or len(candles) < 25:
         raise ValueError('invalid capital/risk or insufficient candles')
     if fee_bps < 0 or slippage_bps < 0:
         raise ValueError('cost parameters cannot be negative')
+    if enable_ml and (ml_predictor is None or ml_artifact is None):
+        raise ValueError('ML predictor and artifact are required when enable_ml=True')
     portfolio = PaperPortfolio(starting_equity)
     broker = PaperBroker()
     peak = starting_equity
@@ -34,16 +38,31 @@ def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_
     equity_curve = [starting_equity]
     i = 20
     skipped_risk = 0
+    ml_rejected = 0
     while i < len(candles) - 1:
-        signal = generate_signal(candles[:i + 1])
+        history = candles[:i + 1]
+        signal = generate_signal(history)
         if signal is None:
             i += 1
             continue
+        if enable_ml:
+            from app.ml_features import build_feature_vector
+            from app.ml_inference import predict_one
+            features = build_feature_vector(history)
+            if features is None:
+                i += 1
+                continue
+            prediction = predict_one(ml_predictor, ml_artifact, features, ml_expected_features, ml_horizon, ml_threshold)
+            signal = apply_ml_decision(signal, prediction, ml_confidence, ml_config)
+            if signal is None:
+                ml_rejected += 1
+                i += 1
+                continue
         entry_bar = i + 1
         direction = 1 if signal.action == 'BUY' else -1
         raw_entry = candles[entry_bar].open
         entry = raw_entry * (1 + direction * slippage_bps / 10000)
-        if (direction == 1 and not signal.stop_loss < entry < signal.target) or (direction == -1 and signal.target < entry < signal.stop_loss):
+        if (direction == 1 and not signal.stop_loss < entry < signal.target) or (direction == -1 and not signal.target < entry < signal.stop_loss):
             i += 1
             continue
         sizing = size_position(portfolio.equity, risk_percent, entry, signal.stop_loss)
@@ -63,7 +82,6 @@ def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_
             stop_hit = bar.low <= signal.stop_loss if direction == 1 else bar.high >= signal.stop_loss
             target_hit = bar.high >= signal.target if direction == 1 else bar.low <= signal.target
             if stop_hit or target_hit:
-                # Conservative rule when both levels are touched in one candle: stop wins.
                 if stop_hit:
                     exit_price = signal.stop_loss
                     reason = 'STOP_LOSS'
@@ -86,7 +104,6 @@ def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_
         max_dd = max(max_dd, (peak - portfolio.equity) / peak if peak else 0)
         trades.append(BacktestTrade(signal.action, entry, exit_price, pnl, exit_i - entry_bar + 1, reason))
         i = max(i + 1, exit_i + 1)
-
     wins = [t for t in trades if t.pnl > 0]
     losses = [t for t in trades if t.pnl < 0]
     gross_profit = sum(t.pnl for t in wins)
@@ -94,19 +111,4 @@ def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_
     avg = mean(returns) if returns else 0.0
     sd = pstdev(returns) if len(returns) > 1 else 0.0
     ending = portfolio.equity
-    return {
-        'starting_equity': starting_equity,
-        'ending_equity': ending,
-        'net_pnl': ending - starting_equity,
-        'return_percent': (ending / starting_equity - 1) * 100,
-        'trades': len(trades),
-        'wins': len(wins),
-        'losses': len(losses),
-        'win_rate': len(wins) / len(trades) if trades else 0,
-        'profit_factor': gross_profit / gross_loss if gross_loss else None,
-        'max_drawdown_percent': max_dd * 100,
-        'sharpe': (avg / sd) * (len(returns) ** 0.5) if sd else 0,
-        'risk_rejected': skipped_risk,
-        'equity_curve': equity_curve,
-        'trade_journal': [t.__dict__ for t in trades],
-    }
+    return {'starting_equity': starting_equity, 'ending_equity': ending, 'net_pnl': ending - starting_equity, 'return_percent': (ending / starting_equity - 1) * 100, 'trades': len(trades), 'wins': len(wins), 'losses': len(losses), 'win_rate': len(wins) / len(trades) if trades else 0, 'profit_factor': gross_profit / gross_loss if gross_loss else None, 'max_drawdown_percent': max_dd * 100, 'sharpe': (avg / sd) * (len(returns) ** 0.5) if sd else 0, 'risk_rejected': skipped_risk, 'ml_rejected': ml_rejected, 'equity_curve': equity_curve, 'trade_journal': [t.__dict__ for t in trades]}
