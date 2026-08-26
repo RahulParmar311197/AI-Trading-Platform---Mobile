@@ -18,8 +18,7 @@ def verified_result(at: datetime, *, account_id: str = "acct-1", generation: int
     observed = datetime.fromisoformat(check.checked_at)
     if at < observed:
         at = observed
-    execution_context = context(observed, account_id=account_id, generation=generation, fingerprint=fingerprint)
-    return engine.build_verified_result(check, context=execution_context, reconciled_at=at, open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True)
+    return engine.build_verified_result(check, context=context(observed, account_id=account_id, generation=generation, fingerprint=fingerprint), reconciled_at=at, open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True)
 
 
 def clear(store, result):
@@ -39,14 +38,16 @@ def test_halt_survives_restart(tmp_path):
 
 def test_clear_requires_verified_post_halt_reconciliation(tmp_path):
     store = SafetyStateStore(str(tmp_path / "safety.json"))
+    engine = ReconciliationEngine()
+    check = engine.check([], [], [], [])
+    observed = datetime.fromisoformat(check.checked_at)
+    stale = engine.build_verified_result(check, context=context(observed), reconciled_at=observed, open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True)
     halted = store.halt("DRIFT")
     with pytest.raises(ValueError, match="verified reconciliation result"):
-        store.clear(None, active_context=context(datetime.now(timezone.utc)))
-    result = verified_result(halted.halted_at)
+        store.clear(None, active_context=stale.context)
     with pytest.raises(RuntimeError, match="after the safety halt"):
-        clear(store, result)
-    reconciled_at = datetime.now(timezone.utc)
-    cleared = clear(store, verified_result(reconciled_at))
+        clear(store, stale)
+    cleared = clear(store, verified_result(datetime.now(timezone.utc)))
     restored = store.load()
     assert cleared.trading_halted is False
     assert restored.trading_halted is False
