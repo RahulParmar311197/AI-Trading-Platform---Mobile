@@ -108,6 +108,7 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     from app.api.execution_alert_operations import router as execution_alert_operations_router
     from app.api.execution_alert_worker_health import router as execution_alert_worker_health_router
     from app.api.execution_notification_health import router as execution_notification_health_router
+    from app.api.mobile_notification_health import router as mobile_notification_health_router
     app.include_router(orders_router)
     app.include_router(decision_router)
     app.include_router(execution_health_router)
@@ -118,4 +119,5 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     app.include_router(execution_alert_operations_router)
     app.include_router(execution_alert_worker_health_router)
     app.include_router(execution_notification_health_router)
+    app.include_router(mobile_notification_health_router)
     return app
