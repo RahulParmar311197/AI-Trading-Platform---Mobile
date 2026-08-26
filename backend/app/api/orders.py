@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.auth.security import get_current_user
 from app.broker_adapter import BrokerOrderRequest
+from app.broker_factory import account_route_generation
 from app.db import get_db
 from app.models import BrokerAccount, Order, User
 from app.risk_gate import PreTradeRiskGate, RiskLimits
@@ -63,8 +64,8 @@ def _execution_service(broker_router,execution_store,idempotency_store,recovery,
     startup_state=resources.startup_execution_state
     return OrderExecutionService(broker_router,lifecycle,execution_store,idempotency_store,recovery=recovery,risk_gate=gate,risk_snapshot_provider=provider,safety_state_store=resources.safety_store,authorization=authorization,startup_state=startup_state,audit_log=resources.audit_log,observability=resources.execution_observability)
 
-def _broker_request(client_order_id,symbol,side,quantity,order_type="MARKET",price=None,stop=None,security_id="",owner_user_id=None,broker_account_id=None,broker_route=None):
-    return BrokerOrderRequest(client_order_id=client_order_id,symbol=symbol,side=side,quantity=quantity,order_type=order_type,price=price,stop=stop,security_id=security_id,owner_user_id=owner_user_id,broker_account_id=broker_account_id,broker_route=broker_route)
+def _broker_request(client_order_id,symbol,side,quantity,order_type="MARKET",price=None,stop=None,security_id="",owner_user_id=None,broker_account_id=None,broker_route=None,broker_route_generation=None):
+    return BrokerOrderRequest(client_order_id=client_order_id,symbol=symbol,side=side,quantity=quantity,order_type=order_type,price=price,stop=stop,security_id=security_id,owner_user_id=owner_user_id,broker_account_id=broker_account_id,broker_route=broker_route,broker_route_generation=broker_route_generation)
 
 def _broker_route_for_account(account:BrokerAccount)->str:
     broker=str(account.broker).strip().lower()
@@ -95,18 +96,20 @@ def create_order(payload:OrderRequest,request:Request,response:Response,db:Sessi
     existing=db.query(Order).filter(Order.client_order_id==client_order_id,Order.user_id==user_id).first()
     if existing is not None:
         if existing.status in {"PENDING","SUBMISSION_INTENT","SUBMITTED","PARTIALLY_FILLED"} or existing.note=="EXECUTION_PENDING_RECONCILIATION":
-            if existing.broker_account_id is None or not existing.broker_route: raise HTTPException(status_code=409,detail="BROKER_ACCOUNT_BINDING_MISSING")
+            if existing.broker_account_id is None or not existing.broker_route or not existing.broker_route_generation: raise HTTPException(status_code=409,detail="BROKER_ACCOUNT_BINDING_MISSING_OR_STALE")
             service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources)
-            result=service.submit(_broker_request(client_order_id,existing.symbol,existing.side,existing.quantity,existing.order_type,existing.price,existing.stop,existing.security_id,existing.user_id,existing.broker_account_id,existing.broker_route)); existing.status=result.status; existing.broker_order_id=result.broker_order_id; existing.note=result.message; _commit_execution_projection(db,existing); _set_execution_response_status(response,result.status); return _order_response(existing,result.message,result.execution_id)
+            result=service.submit(_broker_request(client_order_id,existing.symbol,existing.side,existing.quantity,existing.order_type,existing.price,existing.stop,existing.security_id,existing.user_id,existing.broker_account_id,existing.broker_route,existing.broker_route_generation)); existing.status=result.status; existing.broker_order_id=result.broker_order_id; existing.note=result.message; _commit_execution_projection(db,existing); _set_execution_response_status(response,result.status); return _order_response(existing,result.message,result.execution_id)
         return _order_response(existing,"IDEMPOTENT_REPLAY")
-    account=_resolve_broker_account(db,user_id,payload.broker_account_id); broker_route=_broker_route_for_account(account)
+    account=_resolve_broker_account(db,user_id,payload.broker_account_id); broker_route=_broker_route_for_account(account); route_generation=account_route_generation(account)
     try: broker_router.get(broker_route)
     except Exception as exc: raise HTTPException(status_code=409,detail="BROKER_ACCOUNT_ROUTE_UNAVAILABLE") from exc
-    symbol=payload.symbol.upper(); order=Order(user_id=user_id,broker_account_id=account.id,broker_route=broker_route,client_order_id=client_order_id,symbol=symbol,side=payload.side,quantity=payload.quantity,order_type=payload.order_type,price=payload.price,stop=payload.stop,security_id=payload.security_id,status="PENDING"); db.add(order)
+    symbol=payload.symbol.upper(); order=Order(user_id=user_id,broker_account_id=account.id,broker_route=broker_route,broker_route_generation=route_generation,client_order_id=client_order_id,symbol=symbol,side=payload.side,quantity=payload.quantity,order_type=payload.order_type,price=payload.price,stop=payload.stop,security_id=payload.security_id,status="PENDING"); db.add(order)
+    try: broker_router.get(broker_route)
+    except Exception as exc: raise HTTPException(status_code=409,detail="BROKER_ACCOUNT_ROUTE_UNAVAILABLE") from exc
     try: db.flush()
     except IntegrityError:
         db.rollback(); existing=db.query(Order).filter(Order.client_order_id==client_order_id,Order.user_id==user_id).first()
         if existing is None: raise HTTPException(status_code=409,detail="ORDER_CREATION_CONFLICT")
         return _order_response(existing,"IDEMPOTENT_REPLAY")
     _commit_execution_intent(db,order)
-    service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources); result=service.submit(_broker_request(client_order_id,symbol,payload.side,payload.quantity,payload.order_type,payload.price,payload.stop,payload.security_id,user_id,account.id,broker_route)); order.status=result.status; order.broker_order_id=result.broker_order_id; order.note=result.message; _commit_execution_projection(db,order); _set_execution_response_status(response,result.status); return _order_response(order,result.message,result.execution_id)
+    service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources); result=service.submit(_broker_request(client_order_id,symbol,payload.side,payload.quantity,payload.order_type,payload.price,payload.stop,payload.security_id,user_id,account.id,broker_route,route_generation)); order.status=result.status; order.broker_order_id=result.broker_order_id; order.note=result.message; _commit_execution_projection(db,order); _set_execution_response_status(response,result.status); return _order_response(order,result.message,result.execution_id)
