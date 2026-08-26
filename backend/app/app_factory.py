@@ -25,6 +25,7 @@ from app.execution_authorization import ExecutionAuthorization
 from app.startup_execution_state import StartupExecutionStateMachine
 from app.trading_audit import TradingAuditLog
 from app.emergency_halt import EmergencyHaltController
+from app.broker_connectivity_registry import BrokerConnectivityRegistry
 
 @dataclass
 class AppResources:
@@ -42,6 +43,7 @@ class AppResources:
     execution_alert_worker: ExecutionAlertOutboxWorker
     execution_alert_worker_health: ExecutionAlertWorkerHealth
     execution_alert_dead_letter_store: ExecutionAlertDeadLetterStore
+    connectivity_registry: BrokerConnectivityRegistry
     authorization: ExecutionAuthorization | None = None
     session_local: object | None = None
     startup_execution_state: StartupExecutionStateMachine | None = None
@@ -70,7 +72,7 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     dead_letter_store = ExecutionAlertDeadLetterStore(alert_event_path)
     observability.add_hook(alert_service.evaluate, priority=100)
     observability.add_hook(recovery.evaluate, priority=200)
-    return AppResources(ExecutionStateStore(execution_path), IdempotencyStore(idempotency_path), safety_store, audit_log, observability, alert_store, alert_service, recovery, event_store, event_publisher, dispatcher, worker, worker_health, dead_letter_store, authorization, session_local, startup_execution_state, emergency_halt_controller)
+    return AppResources(ExecutionStateStore(execution_path), IdempotencyStore(idempotency_path), safety_store, audit_log, observability, alert_store, alert_service, recovery, event_store, event_publisher, dispatcher, worker, worker_health, dead_letter_store, BrokerConnectivityRegistry(), authorization, session_local, startup_execution_state, emergency_halt_controller)
 
 
 def create_app(resources: AppResources | None = None, broker_router: BrokerRouter | None = None, execution_health_token: str | None = None) -> FastAPI:
