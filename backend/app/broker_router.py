@@ -40,7 +40,7 @@ class BrokerRouter:
     def unresolved_submission_intent_count(self)->int:
         return self.submission_intent_store.unresolved_count()
     def reconcile_unresolved_submission_intents(self,route=None)->list[str]:
-        """Resolve persisted intents using a complete broker order snapshot; never resubmit."""
+        """Resolve persisted intents only from an authoritative broker order snapshot; never resubmit."""
         resolved=[]
         with self._route_lifecycle_lock:
             intents=self.submission_intent_store.unresolved()
@@ -48,10 +48,14 @@ class BrokerRouter:
             for intent in intents: grouped.setdefault(intent.route,[]).append(intent)
             for route_name, route_intents in grouped.items():
                 selected=self.get(route_name if route is None else route)
-                get_orders=getattr(selected.adapter,"get_orders",None)
-                if get_orders is None: raise RuntimeError("broker open-order snapshot is required to recover submission intents")
-                orders=get_orders()
-                if not isinstance(orders,list): raise RuntimeError("broker open-order snapshot is invalid")
+                snapshot_fn=getattr(selected.adapter,"get_order_snapshot",None)
+                if snapshot_fn is None: raise RuntimeError("authoritative broker order snapshot is required to recover submission intents")
+                try:
+                    snapshot=snapshot_fn()
+                    orders=snapshot.require_authoritative()
+                except Exception as snapshot_error:
+                    if self.safety_store is not None: self.safety_store.halt(f"unresolved submission intent snapshot unavailable: {snapshot_error}")
+                    raise RuntimeError("broker order snapshot is not authoritative; trading halted") from snapshot_error
                 for intent in route_intents:
                     matches=[dict(o) for o in orders if str(o.get("client_order_id",""))==intent.client_order_id]
                     if len(matches)>1:
@@ -63,8 +67,6 @@ class BrokerRouter:
                             if self.safety_store is not None: self.safety_store.halt(f"submission intent account mismatch: {intent.client_order_id}")
                             raise RuntimeError(f"submission intent account mismatch: {intent.client_order_id}")
                         self.submission_intent_store.resolve(intent.client_order_id); resolved.append(intent.client_order_id); continue
-                    # A complete broker order snapshot with zero matches is safe evidence that the
-                    # intent did not produce a broker order. Never resubmit automatically.
                     self.submission_intent_store.resolve(intent.client_order_id); resolved.append(intent.client_order_id)
         return resolved
     def _current_snapshot_fingerprint(self,route:BrokerRoute)->str:
@@ -148,12 +150,15 @@ class BrokerRouter:
             return fn()
     def find_order_by_client_id(self,client_order_id,route=None):
         with self._route_lifecycle_lock:
-            selected=self.get(route); fn=getattr(selected.adapter,"get_orders",None)
-            if fn is not None:
-                matches=[dict(o) for o in fn() if str(o.get("client_order_id",""))==str(client_order_id)]
+            selected=self.get(route)
+            try:
+                snapshot=selected.adapter.get_order_snapshot()
+                orders=snapshot.require_authoritative()
+                matches=[dict(o) for o in orders if str(o.get("client_order_id",""))==str(client_order_id)]
                 if len(matches)>1: raise RuntimeError(f"ambiguous broker order identity for client_order_id: {client_order_id}")
                 return matches[0] if matches else None
-            return selected.adapter.find_order_by_client_id(client_order_id)
+            except NotImplementedError:
+                return selected.adapter.find_order_by_client_id(client_order_id)
     def get_positions(self,route=None):
         with self._route_lifecycle_lock: return self.get(route).adapter.get_positions()
     def get_account(self,route=None):
