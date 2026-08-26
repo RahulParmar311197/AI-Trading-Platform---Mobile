@@ -96,7 +96,13 @@ def build_account_route(account: BrokerAccount) -> BrokerRoute:
 
 
 def provision_active_account_routes(db: Session, router: BrokerRouter) -> list[str]:
-    """Provision dedicated adapter routes for every active persisted account."""
+    """Synchronize account-bound routes to exactly the active persisted accounts.
+
+    Account-bound routes are authoritative: disabled/deleted accounts are
+    removed before new routes are provisioned, and a failed replacement never
+    leaves an old credential-bearing adapter usable under the same route name.
+    Global unbound routes (paper/dhan/upstox) are preserved.
+    """
     errors: list[str] = []
     accounts = (
         db.query(BrokerAccount)
@@ -104,8 +110,25 @@ def provision_active_account_routes(db: Session, router: BrokerRouter) -> list[s
         .order_by(BrokerAccount.id.asc())
         .all()
     )
+    desired_route_names: set[str] = set()
     for account in accounts:
         try:
+            desired_route_names.add(account_route_name(account))
+        except ValueError as exc:
+            errors.append(f"account:{account.id}:invalid_identity:{exc}")
+
+    stale_route_names = [
+        name
+        for name, route in list(router.routes.items())
+        if route.broker_account_id is not None and name not in desired_route_names
+    ]
+    for name in stale_route_names:
+        router.routes.pop(name, None)
+
+    for account in accounts:
+        try:
+            route_name = account_route_name(account)
+            router.routes.pop(route_name, None)
             route = build_account_route(account)
         except (TypeError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
             errors.append(f"account:{account.id}:provision_failed:{exc}")
