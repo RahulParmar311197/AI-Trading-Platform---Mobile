@@ -27,6 +27,30 @@ class DhanAdapter(BrokerAdapter):
         result = self.client.get_positions()
         return result if isinstance(result, list) else []
 
+    def get_orders(self) -> list[dict[str, Any]]:
+        if not self.client:
+            return []
+        result = self.client.get_orders()
+        return result if isinstance(result, list) else []
+
+    def get_order(self, broker_order_id: str) -> dict[str, Any]:
+        if not self.client:
+            return {}
+        result = self.client.get_order(broker_order_id)
+        return result if isinstance(result, dict) else {}
+
+    def get_trades(self) -> list[dict[str, Any]]:
+        if not self.client:
+            return []
+        result = self.client.get_trades()
+        return result if isinstance(result, list) else []
+
+    def get_trades_for_order(self, broker_order_id: str) -> list[dict[str, Any]]:
+        if not self.client:
+            return []
+        result = self.client.get_trades_for_order(broker_order_id)
+        return result if isinstance(result, list) else []
+
     def place_order(self, order: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError(
             "Live Dhan order placement is disabled until execution validation is complete"
