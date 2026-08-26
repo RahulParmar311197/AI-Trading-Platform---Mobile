@@ -46,8 +46,7 @@ class BrokerRouter:
                 selected=self.get(route_name if route is None else route)
                 snapshot_fn=getattr(selected.adapter,"get_order_snapshot",None)
                 if snapshot_fn is None: raise RuntimeError("authoritative broker order snapshot is required to recover submission intents")
-                try:
-                    snapshot=snapshot_fn(); orders=snapshot.require_authoritative()
+                try: snapshot=snapshot_fn(); orders=snapshot.require_authoritative()
                 except Exception as snapshot_error:
                     if self.safety_store is not None: self.safety_store.halt(f"unresolved submission intent snapshot unavailable: {snapshot_error}")
                     raise RuntimeError("broker order snapshot is not authoritative; trading halted") from snapshot_error
@@ -66,21 +65,15 @@ class BrokerRouter:
     def _authoritative_reconciliation_snapshot(self,route:BrokerRoute)->BrokerSnapshot:
         """Build the single broker state used for readiness fingerprints.
 
-        Order data must come from the explicit authoritative snapshot contract.  The older
-        get_orders()/get_snapshot() fallbacks are deliberately not accepted here because a
-        partial order response must never authorize live execution.
+        Both orders and positions must come from explicit authoritative contracts. Partial
+        broker state must never authorize live execution.
         """
-        snapshot_fn=getattr(route.adapter,"get_order_snapshot",None)
-        if snapshot_fn is None:
-            raise RuntimeError("authoritative broker order snapshot is required for reconciliation")
-        snapshot=snapshot_fn()
-        orders=snapshot.require_authoritative()
-        positions=route.adapter.get_positions()
-        if not isinstance(positions,list):
-            raise RuntimeError("broker positions snapshot is unavailable")
+        order_snapshot_fn=getattr(route.adapter,"get_order_snapshot",None); position_snapshot_fn=getattr(route.adapter,"get_position_snapshot",None)
+        if order_snapshot_fn is None: raise RuntimeError("authoritative broker order snapshot is required for reconciliation")
+        if position_snapshot_fn is None: raise RuntimeError("authoritative broker position snapshot is required for reconciliation")
+        orders=order_snapshot_fn().require_authoritative(); positions=position_snapshot_fn().require_authoritative()
         return BrokerSnapshot(orders=[dict(x) for x in orders],positions=[dict(x) for x in positions],broker_route=route.name,broker_account_id=route.broker_account_id)
-    def _current_snapshot_fingerprint(self,route:BrokerRoute)->str:
-        return self._authoritative_reconciliation_snapshot(route).fingerprint()
+    def _current_snapshot_fingerprint(self,route:BrokerRoute)->str: return self._authoritative_reconciliation_snapshot(route).fingerprint()
     def _require_execution_ready(self,route:BrokerRoute)->None:
         if self.safety_store is None: halted=True; state=None
         else: state=self.safety_store.load(); halted=state.trading_halted
@@ -115,9 +108,7 @@ class BrokerRouter:
             if self.safety_store is not None: self.safety_store.halt(f"multiple broker orders found for {request.client_order_id}")
             raise RuntimeError("multiple broker orders found; child-order aggregation is required")
         raw={"order_id":str(existing.get("order_id",existing.get("broker_order_id",""))),"status":str(existing.get("status","NEW")),"client_order_id":existing.get("client_order_id",existing.get("tag",request.client_order_id)),"symbol":existing.get("symbol",request.symbol),"side":existing.get("side",request.side),"quantity":existing.get("quantity",request.quantity),"filled_quantity":existing.get("filled_quantity",existing.get("filledQty")),"price":existing.get("price"),"average_price":existing.get("average_price",existing.get("averagePrice")),"message":"BROKER_SUBMISSION_RECOVERED"}
-        result=normalize_broker_update(raw,expected=request)
-        self.submission_intent_store.resolve(request.client_order_id)
-        return result
+        result=normalize_broker_update(raw,expected=request); self.submission_intent_store.resolve(request.client_order_id); return result
     def submit(self,request:BrokerOrderRequest,route=None):
         with self._route_lifecycle_lock:
             selected_route=route or request.broker_route or self.default_route; selected=self.get(selected_route); self._require_execution_ready(selected); self._require_account_binding(request,selected); key=(selected_route,str(request.client_order_id))
@@ -138,8 +129,7 @@ class BrokerRouter:
                     current=self._current_snapshot_fingerprint(selected)
                     if current!=expected: raise RuntimeError("broker state changed immediately before submission")
                 self.submission_intent_store.create(client_order_id=request.client_order_id,route=selected.name,account_id=str(selected.broker_account_id) if selected.broker_account_id is not None else None,symbol=request.symbol,side=request.side,quantity=request.quantity,request_fingerprint=self._request_fingerprint(request))
-                try:
-                    result=selected.adapter.submit_order(request); self.submission_intent_store.resolve(request.client_order_id); return result
+                try: result=selected.adapter.submit_order(request); self.submission_intent_store.resolve(request.client_order_id); return result
                 except Exception as submit_error: return self._recover_after_submit_failure(request,selected,submit_error)
             finally:
                 with self._submission_lock: self._submission_claims.discard(key)
@@ -163,10 +153,8 @@ class BrokerRouter:
                 return matches[0] if matches else None
             except NotImplementedError: return selected.adapter.find_order_by_client_id(client_order_id)
     def get_positions(self,route=None):
-        with self._route_lifecycle_lock: return self.get(route).adapter.get_positions()
+        with self._route_lifecycle_lock: return self.get(route).get_positions() if False else self.get(route).adapter.get_positions()
     def get_account(self,route=None):
         with self._route_lifecycle_lock: return self.get(route).adapter.get_account()
     def get_snapshot(self,route=None):
-        with self._route_lifecycle_lock:
-            selected=self.get(route); snapshot=self._authoritative_reconciliation_snapshot(selected)
-            return snapshot
+        with self._route_lifecycle_lock: return self._authoritative_reconciliation_snapshot(self.get(route))
