@@ -14,12 +14,17 @@ def context(at: datetime, *, account_id: str = "acct-1", generation: int = 1, fi
 
 def verified_result(at: datetime, *, account_id: str = "acct-1", generation: int = 1, fingerprint: str = "fp-1") -> ReconciliationResult:
     engine = ReconciliationEngine()
+    observation = at - timedelta(microseconds=1)
     check = engine.check([], [], [], [])
+    # The authenticated check timestamp is the broker observation used by the context.
     observed = datetime.fromisoformat(check.checked_at)
+    if at < observed:
+        at = observed
+    execution_context = context(observed, account_id=account_id, generation=generation, fingerprint=fingerprint)
     return engine.build_verified_result(
         check,
-        context=context(observed, account_id=account_id, generation=generation, fingerprint=fingerprint),
-        reconciled_at=at if at >= observed else observed,
+        context=execution_context,
+        reconciled_at=at,
         open_orders_reconciled=True,
         positions_reconciled=True,
         submission_intents_resolved=0,
@@ -47,11 +52,11 @@ def test_clear_requires_verified_post_halt_reconciliation(tmp_path):
     halted = store.halt("DRIFT")
     with pytest.raises(ValueError, match="verified reconciliation result"):
         store.clear(None, active_context=context(datetime.now(timezone.utc)))
-    same_time = halted.halted_at
-    result = verified_result(same_time + timedelta(microseconds=1))
+    result = verified_result(halted.halted_at)
     with pytest.raises(RuntimeError, match="after the safety halt"):
-        clear(store, verified_result(same_time))
-    cleared = clear(store, result)
+        clear(store, result)
+    reconciled_at = halted.halted_at + timedelta(seconds=1)
+    cleared = clear(store, verified_result(reconciled_at))
     restored = store.load()
     assert cleared.trading_halted is False
     assert restored.trading_halted is False
@@ -101,6 +106,11 @@ def test_context_rejects_naive_observation():
 def test_context_rejects_future_observation():
     with pytest.raises(ValueError, match="cannot be in the future"):
         context(datetime.now(timezone.utc) + timedelta(minutes=5))
+
+
+def test_verified_result_rejects_future_reconciliation():
+    with pytest.raises(ValueError, match="cannot be in the future"):
+        verified_result(datetime.now(timezone.utc) + timedelta(minutes=5))
 
 
 def test_missing_state_is_fail_open_for_uninitialized_store(tmp_path):
