@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from app.broker_adapter import BrokerAdapter, BrokerOrderRequest, BrokerOrderUpdate
+from app.broker_order_snapshot import BrokerOrderSnapshot
 
 
 @dataclass(frozen=True)
@@ -138,7 +139,28 @@ class UpstoxAdapter(BrokerAdapter):
         response.raise_for_status()
         body = response.json()
         data = body.get("data", body)
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            raise RuntimeError("Upstox retrieve-all order response is not a complete order list")
+        return data
+
+    def get_order_snapshot(self) -> BrokerOrderSnapshot:
+        """Return the retrieve-all result only when the API returned the expected complete list."""
+        self._require_live()
+        response = self.transport.request(
+            "GET",
+            f"{self.config.base_url}/v2/order/retrieve-all",
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        body = response.json()
+        data = body.get("data", body)
+        if not isinstance(data, list):
+            raise RuntimeError("Upstox retrieve-all order snapshot is not authoritative")
+        return BrokerOrderSnapshot(
+            orders=[dict(order) for order in data],
+            complete=True,
+            source="upstox",
+        )
 
     def get_trades_by_order(self, broker_order_id: str) -> list[dict[str, Any]]:
         self._require_live()
