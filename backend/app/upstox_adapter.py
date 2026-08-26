@@ -72,10 +72,6 @@ class UpstoxAdapter(BrokerAdapter):
             raise ValueError("Upstox tag must be between 1 and 40 characters")
         return client_order_id
 
-    @staticmethod
-    def _status(data: dict[str, Any]) -> str:
-        return str(data.get("status") or data.get("order_status") or "UNKNOWN").upper()
-
     def submit_order(self, request: BrokerOrderRequest) -> BrokerOrderUpdate:
         self._require_live()
         tag = self._validate_tag(request.client_order_id)
@@ -105,6 +101,8 @@ class UpstoxAdapter(BrokerAdapter):
         order_ids = data.get("order_ids") or ([data.get("order_id")] if data.get("order_id") else [])
         if not order_ids:
             raise RuntimeError("Upstox placement response did not contain an order id")
+        if len(order_ids) > 1:
+            raise RuntimeError("Upstox sliced order returned multiple broker order ids; child-order persistence is required")
         return BrokerOrderUpdate(order_id=str(order_ids[0]), status="SUBMITTED", client_order_id=tag, symbol=request.symbol, side=request.side.upper(), quantity=request.quantity, price=request.price, message=";".join(map(str, order_ids)))
 
     def find_order_by_client_id(self, client_order_id: str) -> dict[str, Any] | None:
@@ -144,23 +142,14 @@ class UpstoxAdapter(BrokerAdapter):
         return data
 
     def get_order_snapshot(self) -> BrokerOrderSnapshot:
-        """Return the retrieve-all result only when the API returned the expected complete list."""
         self._require_live()
-        response = self.transport.request(
-            "GET",
-            f"{self.config.base_url}/v2/order/retrieve-all",
-            headers=self._headers(),
-        )
+        response = self.transport.request("GET", f"{self.config.base_url}/v2/order/retrieve-all", headers=self._headers())
         response.raise_for_status()
         body = response.json()
         data = body.get("data", body)
         if not isinstance(data, list):
             raise RuntimeError("Upstox retrieve-all order snapshot is not authoritative")
-        return BrokerOrderSnapshot(
-            orders=[dict(order) for order in data],
-            complete=True,
-            source="upstox",
-        )
+        return BrokerOrderSnapshot(orders=[dict(order) for order in data], complete=True, source="upstox")
 
     def get_trades_by_order(self, broker_order_id: str) -> list[dict[str, Any]]:
         self._require_live()
