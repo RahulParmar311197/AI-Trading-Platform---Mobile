@@ -10,7 +10,7 @@ from app.api.orders import router as orders_router
 from app.api.health import router as health_router
 from app.api.execution_health import router as execution_health_router
 from app.app_factory import create_resources
-from app.broker_factory import build_broker_router, validate_active_account_routes
+from app.broker_factory import build_broker_router, provision_active_account_routes, validate_active_account_routes
 from app.broker_recovery import BrokerStartupRecovery
 from app.config import get_settings
 from app.db import SessionLocal, init_db
@@ -77,10 +77,12 @@ async def lifespan(app: FastAPI):
     app.state.order_lifecycle = lifecycle
 
     with SessionLocal() as db:
-        account_route_errors = validate_active_account_routes(db, execution_broker_router)
+        account_route_errors = provision_active_account_routes(db, execution_broker_router)
+        if account_route_errors:
+            account_route_errors.extend(validate_active_account_routes(db, execution_broker_router))
     app.state.account_route_validation = account_route_errors
     if account_route_errors:
-        reason = "active broker account route validation failed: " + "; ".join(account_route_errors)
+        reason = "active broker account route provisioning failed: " + "; ".join(account_route_errors)
         trading_health.record("broker_account_routes", False, reason)
         startup_state.fail(reason)
         yield
