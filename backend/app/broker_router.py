@@ -64,6 +64,16 @@ class BrokerRouter:
         if int(route.broker_account_id)!=int(request.broker_account_id): raise RuntimeError("broker account does not match broker route")
         if request.broker_route_generation is None: raise RuntimeError("broker account route generation is required")
         if route.generation is None or str(route.generation)!=str(request.broker_route_generation): raise RuntimeError("broker account route generation is stale")
+    def _recover_after_submit_failure(self,request:BrokerOrderRequest,selected:BrokerRoute,original:Exception)->BrokerOrderUpdate:
+        try:
+            existing=self.find_order_by_client_id(request.client_order_id,selected.name)
+        except Exception as lookup_error:
+            if self.safety_store is not None:
+                self.safety_store.halt(f"ambiguous broker submission for {request.client_order_id}: {lookup_error}")
+            raise RuntimeError("broker submission outcome is unknown; trading halted") from lookup_error
+        if existing is None:
+            raise original
+        return BrokerOrderUpdate(order_id=str(existing.get("order_id",existing.get("broker_order_id"))),status=str(existing.get("status","NEW")),client_order_id=existing.get("client_order_id"),symbol=existing.get("symbol"),side=existing.get("side"),quantity=existing.get("quantity"),filled_quantity=existing.get("filled_quantity",existing.get("filledQty",0)),price=existing.get("price"),average_price=existing.get("average_price",existing.get("averagePrice")),message="BROKER_SUBMISSION_RECOVERED")
     def submit(self,request:BrokerOrderRequest,route=None):
         with self._route_lifecycle_lock:
             selected_route=route or request.broker_route or self.default_route; selected=self.get(selected_route); self._require_execution_ready(selected); self._require_account_binding(request,selected); key=(selected_route,str(request.client_order_id))
@@ -83,7 +93,10 @@ class BrokerRouter:
                     if expected is None: raise RuntimeError("broker reconciliation fingerprint is unavailable")
                     current=self._current_snapshot_fingerprint(selected)
                     if current!=expected: raise RuntimeError("broker state changed immediately before submission")
-                return selected.adapter.submit_order(request)
+                try:
+                    return selected.adapter.submit_order(request)
+                except Exception as submit_error:
+                    return self._recover_after_submit_failure(request,selected,submit_error)
             finally:
                 with self._submission_lock: self._submission_claims.discard(key)
     def cancel(self,order_id,route=None):
