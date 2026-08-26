@@ -1,3 +1,6 @@
+import time
+from datetime import timedelta
+
 import pytest
 
 from app.broker_adapter import PaperBrokerAdapter, BrokerOrderRequest
@@ -18,10 +21,19 @@ def test_disabled_route_rejected():
         router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1))
 
 
-def _ready_router(tmp_path):
+def _ready_router(tmp_path, max_age=2.0):
     store=SafetyStateStore(str(tmp_path/'safety.json'))
-    router=BrokerRouter([BrokerRoute('paper',PaperBrokerAdapter())],'paper', safety_store=store)
+    router=BrokerRouter([BrokerRoute('paper',PaperBrokerAdapter())],'paper', safety_store=store, max_reconciliation_age_seconds=max_age)
     return router, store
+
+
+def _clear_with_current_reconciliation(store):
+    halted = store.halt('reconcile')
+    result = ReconciliationResult.from_verified_state(
+        account_id='paper', generation=1, reconciled_at=halted.halted_at + timedelta(seconds=0.001),
+        open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True,
+    )
+    store.clear(result)
 
 
 def test_cancel_allowed_when_halted(tmp_path):
@@ -85,9 +97,29 @@ def test_stale_reconciliation_generation_blocks_submission(tmp_path):
     router=BrokerRouter([BrokerRoute('live',PaperBrokerAdapter(),broker_account_id=7,generation='g2')],'live', safety_store=store)
     halted = store.halt('reconcile')
     result = ReconciliationResult.from_verified_state(
-        account_id='7', generation=1, reconciled_at=halted.halted_at + __import__('datetime').timedelta(seconds=1),
+        account_id='7', generation=1, reconciled_at=halted.halted_at + timedelta(seconds=1),
         open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True,
     )
     store.clear(result)
     with pytest.raises(RuntimeError, match='generation is not reconciled'):
         router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1,broker_route='live'))
+
+
+def test_stale_reconciliation_timestamp_blocks_submission(tmp_path):
+    router, store = _ready_router(tmp_path, max_age=0.01)
+    _clear_with_current_reconciliation(store)
+    time.sleep(0.03)
+    with pytest.raises(RuntimeError, match='reconciliation is stale'):
+        router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1))
+
+
+def test_fresh_reconciliation_allows_submission(tmp_path):
+    router, store = _ready_router(tmp_path, max_age=2.0)
+    _clear_with_current_reconciliation(store)
+    order = router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1))
+    assert order.order_id
+
+
+def test_invalid_reconciliation_age_configuration_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match='positive'):
+        _ready_router(tmp_path, max_age=0)
