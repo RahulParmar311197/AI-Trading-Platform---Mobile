@@ -19,6 +19,14 @@ class UpstoxConfig:
     slice_orders: bool = False
     market_protection: int = -1
 
+    def __post_init__(self) -> None:
+        if self.timeout_seconds <= 0:
+            raise ValueError("Upstox HTTP timeout must be greater than zero")
+        if not (-1 <= self.market_protection <= 25):
+            raise ValueError("Upstox market protection must be -1 or between 1 and 25")
+        if self.slice_orders:
+            raise ValueError("UPSTOX_SLICE is unsupported until child-order persistence is implemented")
+
     @classmethod
     def from_env(cls) -> "UpstoxConfig":
         return cls(
@@ -129,7 +137,8 @@ class UpstoxAdapter(BrokerAdapter):
         self._require_live()
         response = self.transport.request("GET", f"{self.config.base_url}/v2/order/details", headers=self._headers(), params={"order_id": broker_order_id})
         response.raise_for_status()
-        return response.json().get("data", response.json())
+        body = response.json()
+        return body.get("data", body)
 
     def get_orders(self) -> list[dict[str, Any]]:
         self._require_live()
@@ -179,4 +188,5 @@ class UpstoxAdapter(BrokerAdapter):
         self._require_live()
         response = self.transport.request("GET", f"{self.config.base_url}/v2/user/get-funds-and-margin", headers=self._headers())
         response.raise_for_status()
-        return response.json().get("data", response.json())
+        body = response.json()
+        return body.get("data", body)
