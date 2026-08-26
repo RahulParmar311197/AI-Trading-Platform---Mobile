@@ -35,13 +35,15 @@ class ReconciliationEvent:
     reason: str
 
 
+class AmbiguousBrokerOrderIdentity(RuntimeError):
+    """Raised when one broker update can safely match more than one local order."""
+
+
 class OrderReconciler:
     def __init__(self, lifecycle: OrderLifecycle):
         self.lifecycle = lifecycle
 
     def _find_local(self, remote: BrokerOrder):
-        # Account identity is part of the lookup boundary. Never attach a
-        # broker order from one account/route to another account's lifecycle.
         candidates = []
         direct = self.lifecycle.orders.get(remote.order_id)
         if direct is not None:
@@ -52,9 +54,14 @@ class OrderReconciler:
             ):
                 if order not in candidates:
                     candidates.append(order)
-        for local in candidates:
-            if self._validate_account_identity(local, remote) is None:
-                return local
+
+        valid = [candidate for candidate in candidates if self._validate_account_identity(candidate, remote) is None]
+        if len(valid) > 1:
+            raise AmbiguousBrokerOrderIdentity(
+                f"multiple local orders match broker order {remote.order_id}"
+            )
+        if valid:
+            return valid[0]
         return candidates[0] if candidates else None
 
     @staticmethod
@@ -94,26 +101,21 @@ class OrderReconciler:
                 events.append(ReconciliationEvent(remote.order_id, ReconciliationAction.ALERT, "DUPLICATE_BROKER_UPDATE"))
                 continue
             seen.add(remote.order_id)
-            local = self._find_local(remote)
+            try:
+                local = self._find_local(remote)
+            except AmbiguousBrokerOrderIdentity as exc:
+                events.append(ReconciliationEvent(remote.order_id, ReconciliationAction.ALERT, f"AMBIGUOUS_BROKER_ORDER_IDENTITY:{exc}"))
+                continue
             if local is None:
                 local_id = remote.client_order_id or remote.order_id
                 if local_id in self.lifecycle.orders:
                     events.append(ReconciliationEvent(remote.order_id, ReconciliationAction.ALERT, "BROKER_CLIENT_ORDER_ID_COLLISION"))
                     continue
-                # A broker order without account identity cannot be safely
-                # materialized into the multi-account execution lifecycle.
                 if remote.broker_account_id is None or not remote.broker_route:
                     events.append(ReconciliationEvent(remote.order_id, ReconciliationAction.ALERT, "BROKER_ACCOUNT_IDENTITY_MISSING"))
                     continue
                 try:
-                    self.lifecycle.create(
-                        local_id,
-                        remote.symbol,
-                        remote.side,
-                        remote.quantity,
-                        broker_account_id=remote.broker_account_id,
-                        broker_route=remote.broker_route,
-                    )
+                    self.lifecycle.create(local_id, remote.symbol, remote.side, remote.quantity, broker_account_id=remote.broker_account_id, broker_route=remote.broker_route)
                     local = self.lifecycle.orders[local_id]
                     local.broker_order_id = remote.order_id
                     self.lifecycle.transition(local_id, remote.status, remote.filled_quantity, remote.average_fill_price)
@@ -143,14 +145,17 @@ class OrderReconciler:
         return events
 
     def reconcile_pending(self, broker_orders: list[BrokerOrder]) -> list[ReconciliationEvent]:
-        """Resolve only local orders explicitly parked in PENDING_RECONCILIATION."""
         pending = {o.order_id for o in self.lifecycle.orders.values() if o.status == OrderStatus.PENDING_RECONCILIATION}
         if not pending:
             return []
         events = []
         matched = set()
         for remote in broker_orders:
-            local = self._find_local(remote)
+            try:
+                local = self._find_local(remote)
+            except AmbiguousBrokerOrderIdentity as exc:
+                events.append(ReconciliationEvent(remote.order_id, ReconciliationAction.ALERT, f"AMBIGUOUS_BROKER_ORDER_IDENTITY:{exc}"))
+                continue
             if local is None or local.order_id not in pending:
                 continue
             matched.add(local.order_id)
