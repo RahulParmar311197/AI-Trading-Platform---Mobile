@@ -1,13 +1,13 @@
-from app.broker_adapter import BrokerOrder, PaperBrokerAdapter
+from app.broker_adapter import BrokerOrder, BrokerOrderRequest, PaperBrokerAdapter
 
 
-def test_paper_adapter_submits_and_cancels():
+def test_paper_adapter_submits_and_filled_order_cannot_be_cancelled():
     broker=PaperBrokerAdapter()
     result=broker.submit_order(BrokerOrder('NIFTY','BUY',10))
     assert result['status']=='FILLED'
     oid=result['broker_order_id']
     cancelled=broker.cancel_order(oid)
-    assert cancelled['status']=='CANCELLED'
+    assert cancelled['status']=='FILLED'
 
 
 def test_paper_adapter_rejects_invalid_quantity():
@@ -69,3 +69,11 @@ def test_client_order_lookup_fails_closed_on_duplicate_identity():
         assert False
     except RuntimeError as exc:
         assert 'ambiguous broker order identity' in str(exc)
+
+
+def test_paper_broker_client_id_submission_is_idempotent():
+    broker=PaperBrokerAdapter()
+    first=broker.submit_order(BrokerOrderRequest('c1','NIFTY','BUY',10))
+    second=broker.submit_order(BrokerOrderRequest('c1','NIFTY','BUY',10))
+    assert first['broker_order_id']==second['broker_order_id']
+    assert len(broker.get_orders())==1
