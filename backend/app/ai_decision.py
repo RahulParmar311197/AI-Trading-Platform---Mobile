@@ -2,6 +2,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from app.unified_signal import UnifiedSignalEngine
 from app.market_data import Candle
+from app.ml_decision import MLDecisionConfig, apply_ml_decision
+from app.ml_inference import Prediction
+from app.strategy import TradeSignal
 
 @dataclass(frozen=True)
 class AIDecision:
@@ -12,11 +15,12 @@ class AIDecision:
     reasons:tuple[str,...]
 
 class AIDecisionEngine:
-    def __init__(self,min_confidence:float=0.60):
+    def __init__(self,min_confidence:float=0.60, ml_config:MLDecisionConfig|None=None):
         if not 0<=min_confidence<=1: raise ValueError('min_confidence must be between 0 and 1')
         self.min_confidence=min_confidence
+        self.ml_config=ml_config
 
-    def decide(self,candles:list[Candle])->AIDecision:
+    def decide(self,candles:list[Candle], prediction:Prediction|None=None, ml_confidence:float=0.0)->AIDecision:
         signal=UnifiedSignalEngine().analyze(candles)
         reasons=list(signal['reasons'])
         if signal['direction']=='NEUTRAL':
@@ -26,4 +30,14 @@ class AIDecisionEngine:
         if not signal['tradeable']:
             reasons.append('SIGNAL_NOT_TRADEABLE'); return AIDecision('WAIT',signal['confidence'],signal['score'],False,tuple(reasons))
         action='BUY' if signal['direction']=='BULLISH' else 'SELL'
+        if prediction is not None:
+            trade_signal=TradeSignal(action,0.0,0.0,0.0,0.0,signal['confidence'],reasons)
+            blended=apply_ml_decision(trade_signal,prediction,ml_confidence,self.ml_config)
+            if blended is None:
+                reasons.append('ML_DISAGREEMENT'); return AIDecision('WAIT',signal['confidence'],signal['score'],False,tuple(reasons))
+            confidence=blended.confidence
+            reasons=list(blended.reason)
+            if confidence<self.min_confidence:
+                reasons.append('ML_ADJUSTED_CONFIDENCE_BELOW_THRESHOLD'); return AIDecision('WAIT',confidence,signal['score'],False,tuple(reasons))
+            return AIDecision(action,confidence,signal['score'],True,tuple(reasons))
         return AIDecision(action,signal['confidence'],signal['score'],True,tuple(reasons))
