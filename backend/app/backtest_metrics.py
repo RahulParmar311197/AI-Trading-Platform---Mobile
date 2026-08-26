@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from math import sqrt
+from typing import Any
 
 @dataclass(frozen=True)
 class BacktestMetrics:
@@ -18,15 +19,21 @@ def calculate_metrics(starting_equity:float, ending_equity:float, trade_journal:
     peak=starting_equity; max_dd=0.0
     for value in equity_curve:
         peak=max(peak,value); max_dd=max(max_dd,(peak-value)/peak if peak else 0.0)
-    returns=[]
-    previous=starting_equity
+    returns=[]; previous=starting_equity
     for value in equity_curve:
         if previous: returns.append((value-previous)/previous)
         previous=value
     if len(returns)>1:
-        mean=sum(returns)/len(returns); variance=sum((r-mean)**2 for r in returns)/(len(returns)-1); stdev=sqrt(variance); sharpe=(mean/stdev)*sqrt(252) if stdev else 0.0
+        mean=sum(returns)/len(returns); variance=sum((r-mean)**2 for r in returns)/(len(returns)-1); deviation=sqrt(variance); sharpe=(mean/deviation)*sqrt(252) if deviation else 0.0
     else: sharpe=0.0
     return BacktestMetrics((ending_equity-starting_equity)/starting_equity,ending_equity-starting_equity,win_rate,profit_factor,expectancy,max_dd,sharpe,average_win,average_loss,count,total_commission,total_slippage)
+
+
+def metrics_from_result(result: Any) -> BacktestMetrics:
+    """Adapt the canonical CandleBacktester result to the existing metrics contract."""
+    journal=[{'pnl': float(trade.pnl)} for trade in result.trades]
+    commission=sum(float(trade.fees) for trade in result.trades)
+    return calculate_metrics(result.initial_equity,result.final_equity,journal,list(result.equity_curve),commission,0.0)
 
 
 def compare_backtests(results:list[dict])->list[dict]:
