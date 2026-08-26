@@ -183,6 +183,16 @@ def test_unresolved_submission_intent_zero_match_remains_unresolved(tmp_path):
     assert intent.client_order_id == 'missing-client'
     assert router.reconcile_unresolved_submission_intents('paper') == []
     assert router.submission_intent_store.unresolved_count() == 1
+    assert store.load().trading_halted is True
+
+
+def test_unresolved_submission_intent_blocks_submission_even_if_safety_state_is_cleared(tmp_path):
+    router, store=_ready_router(tmp_path)
+    _clear_with_current_reconciliation(store, router)
+    router.submission_intent_store.create(client_order_id='pending-client', route='paper', account_id=None, symbol='NIFTY', side='BUY', quantity=1, request_fingerprint='fp')
+    with pytest.raises(RuntimeError, match='unresolved submission intents remain'):
+        router.submit(BrokerOrderRequest('c2','NIFTY','BUY',1))
+    assert store.load().trading_halted is True
 
 
 def test_submit_recovery_rejects_incomplete_broker_payload(tmp_path):
