@@ -17,6 +17,7 @@ class BrokerRoute:
     adapter: BrokerAdapter
     enabled: bool = True
     broker_account_id: int | None = None
+    generation: str | None = None
 
 
 class BrokerRouter:
@@ -54,6 +55,10 @@ class BrokerRouter:
             raise RuntimeError("broker route is not bound to a broker account")
         if int(route.broker_account_id) != int(request.broker_account_id):
             raise RuntimeError("broker account does not match broker route")
+        if request.broker_route_generation is None:
+            raise RuntimeError("broker account route generation is required")
+        if route.generation is None or str(route.generation) != str(request.broker_route_generation):
+            raise RuntimeError("broker account route generation is stale")
 
     def submit(self, request: BrokerOrderRequest, route=None):
         with self._route_lifecycle_lock:
