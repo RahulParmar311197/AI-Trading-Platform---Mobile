@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Callable
 
 from app.broker_connectivity_registry import BrokerConnectivityRegistry
 from app.broker_health_runner import BrokerHealthRunner, HealthCheckResult
@@ -16,14 +17,23 @@ class BrokerHealthWorkerConfig:
 class BrokerHealthWorker:
     """Periodic route-scoped broker health worker; never submits orders."""
 
-    def __init__(self, router: BrokerRouter, registry: BrokerConnectivityRegistry, config: BrokerHealthWorkerConfig | None = None) -> None:
+    def __init__(
+        self,
+        router: BrokerRouter,
+        registry: BrokerConnectivityRegistry,
+        config: BrokerHealthWorkerConfig | None = None,
+        readiness_check: Callable[[], bool] | None = None,
+    ) -> None:
         self.router = router
         self.runner = BrokerHealthRunner(registry)
         self.config = config or BrokerHealthWorkerConfig()
+        self.readiness_check = readiness_check or (lambda: True)
         if self.config.interval_seconds <= 0:
             raise ValueError("broker health interval must be greater than zero")
 
     def run_once(self) -> list[HealthCheckResult]:
+        if not self.readiness_check():
+            return []
         results: list[HealthCheckResult] = []
         for route in list(self.router.routes.values()):
             if route.broker_account_id is None or not route.enabled:
@@ -31,7 +41,13 @@ class BrokerHealthWorker:
             health = getattr(route.adapter, "health", None)
             if health is None:
                 continue
-            results.append(self.runner.check(broker_account_id=int(route.broker_account_id), broker_route=route.name, health_provider=health))
+            results.append(
+                self.runner.check(
+                    broker_account_id=int(route.broker_account_id),
+                    broker_route=route.name,
+                    health_provider=health,
+                )
+            )
         return results
 
     async def run(self, stop_event: asyncio.Event) -> None:
