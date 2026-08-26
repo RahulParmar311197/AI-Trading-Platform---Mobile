@@ -8,8 +8,8 @@ from app.reconciliation_result import ReconciliationResult
 from app.safety_state import SafetyState, SafetyStateStore
 
 
-def context(at: datetime, *, account_id: str = "acct-1", generation: int = 1, fingerprint: str = "fp-1") -> BrokerExecutionContext:
-    return BrokerExecutionContext(account_id=account_id, broker_route="upstox", route_generation="route-1", generation=generation, snapshot_fingerprint=fingerprint, observed_at=at)
+def context(at: datetime, *, account_id: str = "acct-1", broker_route: str = "upstox", route_generation: str = "route-1", generation: int = 1, fingerprint: str = "fp-1") -> BrokerExecutionContext:
+    return BrokerExecutionContext(account_id=account_id, broker_route=broker_route, route_generation=route_generation, generation=generation, snapshot_fingerprint=fingerprint, observed_at=at)
 
 
 def verified_result(at: datetime, *, account_id: str = "acct-1", generation: int = 1, fingerprint: str = "fp-1") -> ReconciliationResult:
@@ -42,7 +42,7 @@ def test_clear_requires_verified_post_halt_reconciliation(tmp_path):
     check = engine.check([], [], [], [])
     observed = datetime.fromisoformat(check.checked_at)
     stale = engine.build_verified_result(check, context=context(observed), reconciled_at=observed, open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True)
-    halted = store.halt("DRIFT")
+    store.halt("DRIFT")
     with pytest.raises(ValueError, match="verified reconciliation result"):
         store.clear(None, active_context=stale.context)
     with pytest.raises(RuntimeError, match="after the safety halt"):
@@ -67,12 +67,12 @@ def test_drift_check_result_cannot_clear_safety_halt(tmp_path):
         store.clear(check, active_context=context(datetime.now(timezone.utc)))
 
 
-@pytest.mark.parametrize("field,value", [("account_id", "other"), ("generation", 2), ("fingerprint", "old-fp")])
+@pytest.mark.parametrize("field,value", [("account_id", "other"), ("broker_route", "dhan"), ("route_generation", "route-2"), ("generation", 2), ("fingerprint", "old-fp")])
 def test_clear_rejects_mismatched_execution_context(tmp_path, field, value):
     store = SafetyStateStore(str(tmp_path / "safety.json"))
     store.halt("DRIFT")
     result = verified_result(datetime.now(timezone.utc))
-    kwargs = {"account_id": "acct-1", "generation": 1, "fingerprint": "fp-1", field: value}
+    kwargs = {"account_id": "acct-1", "broker_route": "upstox", "route_generation": "route-1", "generation": 1, "fingerprint": "fp-1", field: value}
     with pytest.raises(RuntimeError, match="context"):
         store.clear(result, active_context=context(result.context.observed_at, **kwargs))
 
