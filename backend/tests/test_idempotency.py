@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 from app.idempotency import (
     InMemoryIdempotencyStore,
     claim_order,
@@ -70,3 +72,23 @@ def test_canonical_fingerprint_is_order_independent():
 
 def test_key_requires_all_identity_parts():
     assert order_idempotency_key(account_id="a", broker="Dhan", request_id="r") == "trade:idempotency:a:dhan:r"
+
+
+def test_concurrent_claim_has_exactly_one_winner():
+    store = InMemoryIdempotencyStore()
+
+    def claim():
+        return claim_order(
+            store,
+            account_id="acct-1",
+            broker="dhan",
+            request_id="req-concurrent",
+            order=_order(),
+        )
+
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        results = list(executor.map(lambda _: claim(), range(64)))
+
+    assert sum(result.claimed for result in results) == 1
+    assert sum(not result.claimed for result in results) == 63
+    assert all(not result.conflict for result in results)
