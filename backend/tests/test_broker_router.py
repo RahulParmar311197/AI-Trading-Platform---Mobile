@@ -3,11 +3,11 @@ import pytest
 from app.broker_adapter import PaperBrokerAdapter, BrokerOrderRequest
 from app.broker_router import BrokerRoute, BrokerRouter
 from app.safety_state import SafetyStateStore
+from app.reconciliation_result import ReconciliationResult
 
 
 def test_default_route_submits():
     router=BrokerRouter([BrokerRoute('paper',PaperBrokerAdapter())],'paper', safety_store=None)
-    # No safety store means the router must fail closed for live execution.
     with pytest.raises(Exception):
         router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1))
 
@@ -71,3 +71,23 @@ def test_duplicate_client_order_identity_fails_closed(tmp_path):
     broker._orders['b2']={'order_id':'b2','broker_order_id':'b2','client_order_id':'c1','symbol':'NIFTY','side':'BUY','quantity':1,'filled_quantity':1,'status':'FILLED'}
     with pytest.raises(RuntimeError, match='ambiguous broker order identity'):
         router.find_order_by_client_id('c1')
+
+
+def test_route_generation_must_have_matching_reconciliation(tmp_path):
+    store=SafetyStateStore(str(tmp_path/'safety.json'))
+    router=BrokerRouter([BrokerRoute('live',PaperBrokerAdapter(),broker_account_id=7,generation='g2')],'live', safety_store=store)
+    with pytest.raises(RuntimeError, match='not reconciled'):
+        router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1,broker_route='live'))
+
+
+def test_stale_reconciliation_generation_blocks_submission(tmp_path):
+    store=SafetyStateStore(str(tmp_path/'safety.json'))
+    router=BrokerRouter([BrokerRoute('live',PaperBrokerAdapter(),broker_account_id=7,generation='g2')],'live', safety_store=store)
+    halted = store.halt('reconcile')
+    result = ReconciliationResult.from_verified_state(
+        account_id='7', generation=1, reconciled_at=halted.halted_at + __import__('datetime').timedelta(seconds=1),
+        open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True,
+    )
+    store.clear(result)
+    with pytest.raises(RuntimeError, match='generation is not reconciled'):
+        router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1,broker_route='live'))
