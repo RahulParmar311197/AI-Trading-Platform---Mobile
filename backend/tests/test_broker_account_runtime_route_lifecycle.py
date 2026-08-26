@@ -28,7 +28,7 @@ def _account(monkeypatch, account_id=42, token="old-token", status="active"):
 
 
 def _user():
-    return User(id=7, email="owner@example.com", password_hash="hash")
+    return User(id=7, username="owner", password_hash="hash")
 
 
 def test_credential_update_replaces_live_account_route(monkeypatch, test_session_factory):
