@@ -84,8 +84,8 @@ class BrokerRouter:
                     self._submission_claims.discard(key)
 
     def cancel(self, order_id, route=None):
+        """Cancel an existing order even while new trading is halted."""
         with self._route_lifecycle_lock:
-            self._require_execution_ready()
             if not str(order_id).strip():
                 raise ValueError("order_id is required")
             return self.get(route).adapter.cancel_order(order_id)
