@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Protocol
 
 
 @dataclass(frozen=True, init=False)
 class Candle:
     """OHLCV candle supporting all constructor orders used by the merged codebase."""
-
     timestamp: datetime
     symbol: str
     timeframe: str
@@ -25,37 +24,26 @@ class Candle:
             if len(args) > len(fields):
                 raise TypeError(f"Candle expected at most {len(fields)} positional arguments")
             if isinstance(args[0], str) and len(args) >= 3 and isinstance(args[2], datetime):
-                # Legacy: (symbol, timeframe, timestamp, open, high, low, close, volume)
                 positional_fields = ("symbol", "timeframe", "timestamp", "open", "high", "low", "close", "volume")
             elif isinstance(args[0], str) and len(args) >= 2 and isinstance(args[1], datetime):
                 if len(args) >= 3 and not isinstance(args[2], str):
-                    # Legacy: (symbol, timestamp, open, high, low, close, volume)
                     positional_fields = ("symbol", "timestamp", "open", "high", "low", "close", "volume")
                 else:
-                    # Legacy: (symbol, timestamp, timeframe, open, high, low, close, volume)
                     positional_fields = ("symbol", "timestamp", "timeframe", "open", "high", "low", "close", "volume")
             else:
-                # Production: (timestamp, symbol, timeframe, open, high, low, close, volume)
                 positional_fields = fields
             for name, value in zip(positional_fields, args):
                 if name in values:
                     raise TypeError(f"Candle got multiple values for argument '{name}'")
                 values[name] = value
-
         values.setdefault("timeframe", "5m")
         required = ("timestamp", "symbol", "open", "high", "low", "close")
         missing = [name for name in required if name not in values]
         if missing:
             raise TypeError(f"Candle missing required arguments: {', '.join(missing)}")
         values.setdefault("volume", 0.0)
-        object.__setattr__(self, "timestamp", values["timestamp"])
-        object.__setattr__(self, "symbol", values["symbol"])
-        object.__setattr__(self, "timeframe", values["timeframe"])
-        object.__setattr__(self, "open", values["open"])
-        object.__setattr__(self, "high", values["high"])
-        object.__setattr__(self, "low", values["low"])
-        object.__setattr__(self, "close", values["close"])
-        object.__setattr__(self, "volume", values["volume"])
+        for name in fields:
+            object.__setattr__(self, name, values[name])
 
 
 @dataclass(frozen=True)
@@ -66,13 +54,34 @@ class MarketTick:
     volume: float = 0.0
 
 
+@dataclass(frozen=True)
+class MarketDataFreshness:
+    fresh: bool
+    age_seconds: float
+    max_age_seconds: float
+    message: str = ""
+
+
+def validate_freshness(timestamp: datetime, *, max_age_seconds: float, now: datetime | None = None) -> MarketDataFreshness:
+    if max_age_seconds < 0:
+        raise ValueError("max_age_seconds must be non-negative")
+    now = now or datetime.now(timezone.utc)
+    ts = timestamp if timestamp.tzinfo is not None else timestamp.replace(tzinfo=timezone.utc)
+    current = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    age = (current - ts).total_seconds()
+    if age < 0:
+        return MarketDataFreshness(False, age, max_age_seconds, "market-data timestamp is in the future")
+    if age > max_age_seconds:
+        return MarketDataFreshness(False, age, max_age_seconds, "market data is stale")
+    return MarketDataFreshness(True, age, max_age_seconds, "ok")
+
+
 class MarketDataProvider(Protocol):
     def candles(self, symbol: str, timeframe: str, limit: int = 200) -> list[Candle]: ...
 
 
 class InMemoryMarketData:
     """Validated deterministic provider for development, tests and paper trading."""
-
     def __init__(self):
         self._candles: dict[tuple[str, str], list[Candle]] = {}
         self._last_tick: dict[str, datetime] = {}
