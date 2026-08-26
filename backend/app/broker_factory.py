@@ -47,12 +47,7 @@ def _credential_payload(account: BrokerAccount) -> dict:
 
 
 def build_account_route(account: BrokerAccount) -> BrokerRoute:
-    """Build an account-bound adapter from its encrypted credentials.
-
-    Account credentials are intentionally not allowed to fall back to global
-    environment credentials. Live routes are enabled only after their stored
-    credential payload has been validated.
-    """
+    """Build an account-bound adapter from its encrypted credentials."""
     route_name = account_route_name(account)
     broker = str(account.broker).strip().lower()
     credentials = _credential_payload(account)
@@ -64,31 +59,14 @@ def build_account_route(account: BrokerAccount) -> BrokerRoute:
         if not access_token:
             raise ValueError(f"account:{account.id}:upstox_access_token_missing")
         base_url = str(credentials.get("base_url", "https://api-hft.upstox.com")).rstrip("/")
-        adapter = UpstoxAdapter(
-            UpstoxConfig(
-                access_token=access_token,
-                base_url=base_url,
-                live_enabled=True,
-                timeout_seconds=float(credentials.get("timeout_seconds", 10.0)),
-                slice_orders=bool(credentials.get("slice_orders", False)),
-                market_protection=int(credentials.get("market_protection", -1)),
-            )
-        )
+        adapter = UpstoxAdapter(UpstoxConfig(access_token=access_token, base_url=base_url, live_enabled=True, timeout_seconds=float(credentials.get("timeout_seconds", 10.0)), slice_orders=bool(credentials.get("slice_orders", False)), market_protection=int(credentials.get("market_protection", -1))))
     elif broker == "dhan":
         client_id = str(credentials.get("client_id", "")).strip()
         access_token = str(credentials.get("access_token", "")).strip()
         if not client_id or not access_token:
             raise ValueError(f"account:{account.id}:dhan_credentials_missing")
         base_url = str(credentials.get("base_url", "https://api.dhan.co/v2")).rstrip("/")
-        adapter = DhanAdapter(
-            DhanConfig(
-                client_id=client_id,
-                access_token=access_token,
-                base_url=base_url,
-                live_enabled=True,
-                timeout_seconds=float(credentials.get("timeout_seconds", 10.0)),
-            )
-        )
+        adapter = DhanAdapter(DhanConfig(client_id=client_id, access_token=access_token, base_url=base_url, live_enabled=True, timeout_seconds=float(credentials.get("timeout_seconds", 10.0))))
     else:
         raise ValueError(f"account:{account.id}:unsupported_broker:{broker}")
 
@@ -96,56 +74,37 @@ def build_account_route(account: BrokerAccount) -> BrokerRoute:
 
 
 def provision_active_account_routes(db: Session, router: BrokerRouter) -> list[str]:
-    """Synchronize account-bound routes to exactly the active persisted accounts.
-
-    Account-bound routes are authoritative: disabled/deleted accounts are
-    removed before new routes are provisioned, and a failed replacement never
-    leaves an old credential-bearing adapter usable under the same route name.
-    Global unbound routes (paper/dhan/upstox) are preserved.
-    """
+    """Synchronize account-bound routes to exactly the active persisted accounts."""
     errors: list[str] = []
-    accounts = (
-        db.query(BrokerAccount)
-        .filter(BrokerAccount.status == "active")
-        .order_by(BrokerAccount.id.asc())
-        .all()
-    )
-    desired_route_names: set[str] = set()
-    for account in accounts:
-        try:
-            desired_route_names.add(account_route_name(account))
-        except ValueError as exc:
-            errors.append(f"account:{account.id}:invalid_identity:{exc}")
+    with router.route_lifecycle_lock():
+        accounts = db.query(BrokerAccount).filter(BrokerAccount.status == "active").order_by(BrokerAccount.id.asc()).all()
+        desired_route_names: set[str] = set()
+        for account in accounts:
+            try:
+                desired_route_names.add(account_route_name(account))
+            except ValueError as exc:
+                errors.append(f"account:{account.id}:invalid_identity:{exc}")
 
-    stale_route_names = [
-        name
-        for name, route in list(router.routes.items())
-        if route.broker_account_id is not None and name not in desired_route_names
-    ]
-    for name in stale_route_names:
-        router.routes.pop(name, None)
+        stale_route_names = [name for name, route in list(router.routes.items()) if route.broker_account_id is not None and name not in desired_route_names]
+        for name in stale_route_names:
+            router.routes.pop(name, None)
 
-    for account in accounts:
-        try:
-            route_name = account_route_name(account)
-            router.routes.pop(route_name, None)
-            route = build_account_route(account)
-        except (TypeError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
-            errors.append(f"account:{account.id}:provision_failed:{exc}")
-            continue
-        router.routes[route.name] = route
+        for account in accounts:
+            try:
+                route_name = account_route_name(account)
+                router.routes.pop(route_name, None)
+                route = build_account_route(account)
+            except (TypeError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                errors.append(f"account:{account.id}:provision_failed:{exc}")
+                continue
+            router.routes[route.name] = route
     return errors
 
 
 def validate_active_account_routes(db: Session, router: BrokerRouter) -> list[str]:
     """Return fail-closed route-binding errors for every active broker account."""
     errors: list[str] = []
-    accounts = (
-        db.query(BrokerAccount)
-        .filter(BrokerAccount.status == "active")
-        .order_by(BrokerAccount.id.asc())
-        .all()
-    )
+    accounts = db.query(BrokerAccount).filter(BrokerAccount.status == "active").order_by(BrokerAccount.id.asc()).all()
     for account in accounts:
         try:
             route_name = account_route_name(account)
