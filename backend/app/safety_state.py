@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+from app.broker_execution_context import BrokerExecutionContext
 from app.reconciliation_result import ReconciliationResult
 
 
@@ -89,28 +90,13 @@ class SafetyStateStore:
         self.save(state)
         return state
 
-    def clear(
-        self,
-        reconciliation: ReconciliationResult,
-        *,
-        active_account_id: str,
-        active_generation: int,
-        active_broker_snapshot_fingerprint: str,
-    ) -> SafetyState:
+    def clear(self, reconciliation: ReconciliationResult, *, active_context: BrokerExecutionContext) -> SafetyState:
         if not isinstance(reconciliation, ReconciliationResult) or not reconciliation.verified:
             raise ValueError("verified reconciliation result is required before clearing safety halt")
-        if not active_account_id.strip():
-            raise ValueError("active_account_id is required")
-        if active_generation < 0:
-            raise ValueError("active_generation must be non-negative")
-        if not active_broker_snapshot_fingerprint.strip():
-            raise ValueError("active_broker_snapshot_fingerprint is required")
-        if reconciliation.account_id != active_account_id:
-            raise RuntimeError("reconciliation account does not match active broker account")
-        if reconciliation.generation != active_generation:
-            raise RuntimeError("reconciliation generation does not match active generation")
-        if reconciliation.broker_snapshot_fingerprint != active_broker_snapshot_fingerprint:
-            raise RuntimeError("reconciliation broker snapshot does not match active broker snapshot")
+        if not isinstance(active_context, BrokerExecutionContext):
+            raise ValueError("active broker execution context is required")
+        if reconciliation.context.canonical_key != active_context.canonical_key:
+            raise RuntimeError("reconciliation does not match active broker execution context")
 
         state = self.load()
         at = reconciliation.reconciled_at.astimezone(timezone.utc)
@@ -121,9 +107,9 @@ class SafetyStateStore:
             None,
             at,
             None,
-            reconciliation.generation,
-            reconciliation.account_id,
-            reconciliation.broker_snapshot_fingerprint,
+            active_context.generation,
+            active_context.account_id,
+            active_context.snapshot_fingerprint,
         )
         self.save(cleared)
         return cleared
