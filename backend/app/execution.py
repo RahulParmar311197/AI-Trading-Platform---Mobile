@@ -75,6 +75,14 @@ def execute_paper(
             request_id=request_id,
             order=_order_payload(order),
         )
+        if claim.conflict:
+            return ExecutionResult(
+                f'IDEMPOTENCY-CONFLICT-{claim.fingerprint[:16]}',
+                OrderStatus.REJECTED,
+                0.0,
+                0.0,
+                'idempotency key was already used for a different order',
+            )
         if not claim.claimed:
             return ExecutionResult(
                 f'IDEMPOTENT-{claim.fingerprint[:16]}',
