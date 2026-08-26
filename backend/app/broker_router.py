@@ -6,7 +6,7 @@ from threading import Lock, RLock
 from typing import Iterator
 import hashlib
 import json
-from app.broker_adapter import BrokerAdapter, BrokerOrderRequest, BrokerOrderUpdate
+from app.broker_adapter import BrokerAdapter, BrokerOrderRequest, BrokerOrderUpdate, normalize_broker_update
 from app.broker_snapshot import BrokerSnapshot
 from app.safety_state import SafetyStateStore
 from app.submission_intent_store import SubmissionIntentStore
@@ -35,39 +35,40 @@ class BrokerRouter:
     @staticmethod
     def _request_fingerprint(request:BrokerOrderRequest)->str:
         data=asdict(request); return hashlib.sha256(json.dumps(data,sort_keys=True,separators=(",",":"),default=str).encode("utf-8")).hexdigest()
-    def unresolved_submission_intents(self):
-        return self.submission_intent_store.unresolved()
-    def unresolved_submission_intent_count(self)->int:
-        return self.submission_intent_store.unresolved_count()
+    def unresolved_submission_intents(self): return self.submission_intent_store.unresolved()
+    def unresolved_submission_intent_count(self)->int: return self.submission_intent_store.unresolved_count()
     def reconcile_unresolved_submission_intents(self,route=None)->list[str]:
-        """Resolve persisted intents only from an authoritative broker order snapshot; never resubmit."""
+        """Resolve persisted intents only from an authoritative broker order snapshot; never resubmit.
+
+        A zero-match authoritative snapshot is intentionally left unresolved because it cannot
+        distinguish a genuine no-order result from a broker-side propagation/API race.
+        """
         resolved=[]
         with self._route_lifecycle_lock:
-            intents=self.submission_intent_store.unresolved()
-            grouped={}
+            intents=self.submission_intent_store.unresolved(); grouped={}
             for intent in intents: grouped.setdefault(intent.route,[]).append(intent)
             for route_name, route_intents in grouped.items():
                 selected=self.get(route_name if route is None else route)
                 snapshot_fn=getattr(selected.adapter,"get_order_snapshot",None)
                 if snapshot_fn is None: raise RuntimeError("authoritative broker order snapshot is required to recover submission intents")
                 try:
-                    snapshot=snapshot_fn()
-                    orders=snapshot.require_authoritative()
+                    snapshot=snapshot_fn(); orders=snapshot.require_authoritative()
                 except Exception as snapshot_error:
                     if self.safety_store is not None: self.safety_store.halt(f"unresolved submission intent snapshot unavailable: {snapshot_error}")
                     raise RuntimeError("broker order snapshot is not authoritative; trading halted") from snapshot_error
                 for intent in route_intents:
-                    matches=[dict(o) for o in orders if str(o.get("client_order_id",""))==intent.client_order_id]
+                    matches=[dict(o) for o in orders if str(o.get("client_order_id",o.get("tag","")))==intent.client_order_id]
                     if len(matches)>1:
                         if self.safety_store is not None: self.safety_store.halt(f"ambiguous unresolved submission intent: {intent.client_order_id}")
                         raise RuntimeError(f"ambiguous unresolved submission intent: {intent.client_order_id}")
                     if len(matches)==1:
                         match=matches[0]
-                        if intent.account_id is not None and selected.broker_account_id is not None and str(intent.account_id)!=str(selected.broker_account_id):
+                        if intent.account_id is not None and (selected.broker_account_id is None or str(intent.account_id)!=str(selected.broker_account_id)):
                             if self.safety_store is not None: self.safety_store.halt(f"submission intent account mismatch: {intent.client_order_id}")
                             raise RuntimeError(f"submission intent account mismatch: {intent.client_order_id}")
                         self.submission_intent_store.resolve(intent.client_order_id); resolved.append(intent.client_order_id); continue
-                    self.submission_intent_store.resolve(intent.client_order_id); resolved.append(intent.client_order_id)
+                    # Do not resolve a zero-match intent. The broker snapshot being authoritative
+                    # proves the snapshot was complete, not that the submission never happened.
         return resolved
     def _current_snapshot_fingerprint(self,route:BrokerRoute)->str:
         get_snapshot=getattr(route.adapter,"get_snapshot",None)
@@ -110,18 +111,23 @@ class BrokerRouter:
             if self.safety_store is not None: self.safety_store.halt(f"ambiguous broker submission for {request.client_order_id}: {lookup_error}")
             raise RuntimeError("broker submission outcome is unknown; trading halted") from lookup_error
         if existing is None: raise original
+        if isinstance(existing,dict) and existing.get("multi_order"):
+            if self.safety_store is not None: self.safety_store.halt(f"multiple broker orders found for {request.client_order_id}")
+            raise RuntimeError("multiple broker orders found; child-order aggregation is required")
+        raw={"order_id":str(existing.get("order_id",existing.get("broker_order_id",""))),"status":str(existing.get("status","NEW")),"client_order_id":existing.get("client_order_id",existing.get("tag",request.client_order_id)),"symbol":existing.get("symbol",request.symbol),"side":existing.get("side",request.side),"quantity":existing.get("quantity",request.quantity),"filled_quantity":existing.get("filled_quantity",existing.get("filledQty")),"price":existing.get("price"),"average_price":existing.get("average_price",existing.get("averagePrice")),"message":"BROKER_SUBMISSION_RECOVERED"}
+        result=normalize_broker_update(raw,expected=request)
         self.submission_intent_store.resolve(request.client_order_id)
-        return BrokerOrderUpdate(order_id=str(existing.get("order_id",existing.get("broker_order_id"))),status=str(existing.get("status","NEW")),client_order_id=existing.get("client_order_id"),symbol=existing.get("symbol"),side=existing.get("side"),quantity=existing.get("quantity"),filled_quantity=existing.get("filled_quantity",existing.get("filledQty",0)),price=existing.get("price"),average_price=existing.get("average_price",existing.get("averagePrice")),message="BROKER_SUBMISSION_RECOVERED")
+        return result
     def submit(self,request:BrokerOrderRequest,route=None):
         with self._route_lifecycle_lock:
             selected_route=route or request.broker_route or self.default_route; selected=self.get(selected_route); self._require_execution_ready(selected); self._require_account_binding(request,selected); key=(selected_route,str(request.client_order_id))
             with self._submission_lock:
                 if key in self._submission_claims:
                     existing=self.find_order_by_client_id(request.client_order_id,selected_route)
-                    if existing is not None: return BrokerOrderUpdate(order_id=str(existing.get("order_id",existing.get("broker_order_id"))),status=str(existing.get("status","NEW")),client_order_id=existing.get("client_order_id"),symbol=existing.get("symbol"),side=existing.get("side"),quantity=existing.get("quantity"),filled_quantity=existing.get("filled_quantity",existing.get("filledQty",0)),price=existing.get("price"),average_price=existing.get("average_price",existing.get("averagePrice")),message="BROKER_CLIENT_ID_REPLAY")
+                    if existing is not None: raise RuntimeError("submission already in progress for client_order_id")
                     raise RuntimeError("submission already in progress for client_order_id")
                 existing=self.find_order_by_client_id(request.client_order_id,selected_route)
-                if existing is not None: return BrokerOrderUpdate(order_id=str(existing.get("order_id",existing.get("broker_order_id"))),status=str(existing.get("status","NEW")),client_order_id=existing.get("client_order_id"),symbol=existing.get("symbol"),side=existing.get("side"),quantity=existing.get("quantity"),filled_quantity=existing.get("filled_quantity",existing.get("filledQty",0)),price=existing.get("price"),average_price=existing.get("average_price",existing.get("averagePrice")),message="BROKER_CLIENT_ID_REPLAY")
+                if existing is not None: raise RuntimeError("broker order already exists for client_order_id; use reconciliation path")
                 self._submission_claims.add(key)
             try:
                 if self.safety_store is not None:
@@ -152,13 +158,10 @@ class BrokerRouter:
         with self._route_lifecycle_lock:
             selected=self.get(route)
             try:
-                snapshot=selected.adapter.get_order_snapshot()
-                orders=snapshot.require_authoritative()
-                matches=[dict(o) for o in orders if str(o.get("client_order_id",""))==str(client_order_id)]
+                snapshot=selected.adapter.get_order_snapshot(); orders=snapshot.require_authoritative(); matches=[dict(o) for o in orders if str(o.get("client_order_id",o.get("tag","")))==str(client_order_id)]
                 if len(matches)>1: raise RuntimeError(f"ambiguous broker order identity for client_order_id: {client_order_id}")
                 return matches[0] if matches else None
-            except NotImplementedError:
-                return selected.adapter.find_order_by_client_id(client_order_id)
+            except NotImplementedError: return selected.adapter.find_order_by_client_id(client_order_id)
     def get_positions(self,route=None):
         with self._route_lifecycle_lock: return self.get(route).adapter.get_positions()
     def get_account(self,route=None):
