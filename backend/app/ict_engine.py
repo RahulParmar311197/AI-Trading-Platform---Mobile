@@ -80,15 +80,27 @@ def ict_context(candles:list[Candle])->dict:
     target=hi if hi is not None and price<dr.get('equilibrium',price) else lo
     return {**dr,'session':_session(candles[-1].timestamp.hour),'kill_zone':_kill_zone(candles[-1].timestamp.hour),'ote_low':ote_low,'ote_high':ote_high,'ote_mid':((ote_low+ote_high)/2 if ote_low is not None else None),'liquidity_target':target}
 
+def _choch(highs:list[Swing], lows:list[Swing])->str|None:
+    if len(highs)<2 or len(lows)<2:return None
+    hh=highs[-1].price>highs[-2].price
+    hl=lows[-1].price>lows[-2].price
+    lh=highs[-1].price<highs[-2].price
+    ll=lows[-1].price<lows[-2].price
+    if ll and highs[-1].price>highs[-2].price:return 'BULLISH'
+    if hh and lows[-1].price<lows[-2].price:return 'BEARISH'
+    if lh and lows[-1].price>lows[-2].price:return 'BULLISH'
+    if hl and highs[-1].price<highs[-2].price:return 'BEARISH'
+    return None
+
 def structure(candles:list[Candle])->dict:
     sw=swings(candles); highs=[x for x in sw if x.kind=='HIGH']; lows=[x for x in sw if x.kind=='LOW']; labels=[]
     for seq in (highs,lows):
         for n,x in enumerate(seq):
             if n:labels.append({'index':x.index,'type':(('HH' if x.price>seq[n-1].price else 'LH') if x.kind=='HIGH' else ('HL' if x.price>seq[n-1].price else 'LL')),'price':x.price})
-    labels.sort(key=lambda x:x['index']); bos=None;choch=None;bias=None
+    labels.sort(key=lambda x:x['index']); bos=None;bias=None
     if len(highs)>=2 and len(lows)>=2:
         hh=highs[-1].price>highs[-2].price;hl=lows[-1].price>lows[-2].price;lh=highs[-1].price<highs[-2].price;ll=lows[-1].price<lows[-2].price
         if hh and hl:bos=bias='BULLISH'
         elif lh and ll:bos=bias='BEARISH'
     pools=liquidity_pools(candles); sweeps=liquidity_sweeps(candles,pools); fvg=fair_value_gaps(candles); obs=order_blocks(candles)
-    return {'bias':bias,'bos':bos,'choch':choch,'swings':[asdict(x) for x in sw],'structure_labels':labels,'fvg':[asdict(x) for x in fvg],'liquidity_pools':[asdict(x) for x in pools],'liquidity_sweeps':sweeps,'order_blocks':[asdict(x) for x in obs],'dealing_range':dealing_range(candles),'ict':ict_context(candles)}
+    return {'bias':bias,'bos':bos,'choch':_choch(highs,lows),'swings':[asdict(x) for x in sw],'structure_labels':labels,'fvg':[asdict(x) for x in fvg],'liquidity_pools':[asdict(x) for x in pools],'liquidity_sweeps':sweeps,'order_blocks':[asdict(x) for x in obs],'dealing_range':dealing_range(candles),'ict':ict_context(candles)}
