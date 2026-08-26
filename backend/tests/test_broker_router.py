@@ -24,11 +24,12 @@ def _ready_router(tmp_path):
     return router, store
 
 
-def test_cancel_blocked_when_halted(tmp_path):
+def test_cancel_allowed_when_halted(tmp_path):
     router, store = _ready_router(tmp_path)
+    order = router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1))
     store.halt('test halt')
-    with pytest.raises(Exception):
-        router.cancel('missing-order')
+    cancelled = router.cancel(order.order_id)
+    assert cancelled.status == 'CANCELLED'
 
 
 def test_cancel_requires_order_id(tmp_path):
