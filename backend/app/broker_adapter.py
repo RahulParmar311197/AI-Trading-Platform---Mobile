@@ -70,17 +70,45 @@ class BrokerOrder:
     stop: float | None = None
     target: float | None = None
 
-def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any]) -> BrokerOrderUpdate:
+def _finite_optional(value: Any, field: str) -> float | None:
+    if value is None or value == "":
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"invalid broker {field}")
+    return number
+
+
+def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected: BrokerOrderRequest | None = None) -> BrokerOrderUpdate:
     data = raw.as_dict() if isinstance(raw, BrokerOrderUpdate) else dict(raw)
     order_id = str(data.get("order_id") or data.get("broker_order_id") or "").strip()
-    if not order_id: raise ValueError("broker response missing order_id")
-    status = str(data.get("status") or "").strip().upper(); aliases = {"OPEN":"NEW","PENDING":"NEW","COMPLETE":"FILLED","EXECUTED":"FILLED","CANCELED":"CANCELLED","CANCEL":"CANCELLED","FAILED":"REJECTED"}; status = aliases.get(status,status)
-    if status not in {s.value for s in BrokerOrderStatus}: raise ValueError(f"unsupported broker order status: {status}")
-    quantity=data.get("quantity"); filled=data.get("filled_quantity")
-    if quantity is not None and (not math.isfinite(float(quantity)) or float(quantity)<0): raise ValueError("invalid broker quantity")
-    if filled is not None and (not math.isfinite(float(filled)) or float(filled)<0): raise ValueError("invalid broker filled quantity")
-    if quantity is not None and filled is not None and float(filled)>float(quantity)+1e-9: raise ValueError("broker filled quantity exceeds order quantity")
-    return BrokerOrderUpdate(order_id=order_id,status=status,client_order_id=data.get("client_order_id"),symbol=str(data["symbol"]).upper() if data.get("symbol") else None,side=str(data["side"]).upper() if data.get("side") else None,quantity=float(quantity) if quantity is not None else None,filled_quantity=float(filled) if filled is not None else None,price=float(data["price"]) if data.get("price") is not None else None,average_price=float(data["average_price"]) if data.get("average_price") is not None else None,message=data.get("message"))
+    if not order_id:
+        raise ValueError("broker response missing order_id")
+    status = str(data.get("status") or "").strip().upper()
+    aliases = {"OPEN":"NEW","PENDING":"NEW","COMPLETE":"FILLED","EXECUTED":"FILLED","CANCELED":"CANCELLED","CANCEL":"CANCELLED","FAILED":"REJECTED"}
+    status = aliases.get(status, status)
+    if status not in {s.value for s in BrokerOrderStatus}:
+        raise ValueError(f"unsupported broker order status: {status}")
+    quantity = _finite_optional(data.get("quantity"), "quantity")
+    filled = _finite_optional(data.get("filled_quantity"), "filled quantity")
+    price = _finite_optional(data.get("price"), "price")
+    average = _finite_optional(data.get("average_price"), "average price")
+    if quantity is not None and quantity < 0: raise ValueError("invalid broker quantity")
+    if filled is not None and filled < 0: raise ValueError("invalid broker filled quantity")
+    if quantity is not None and filled is not None and filled > quantity + 1e-9: raise ValueError("broker filled quantity exceeds order quantity")
+    client_id = str(data.get("client_order_id")).strip() if data.get("client_order_id") is not None else None
+    symbol = str(data.get("symbol")).strip().upper() if data.get("symbol") else None
+    side = str(data.get("side")).strip().upper() if data.get("side") else None
+    if expected is not None:
+        if client_id is not None and client_id != expected.client_order_id: raise ValueError("broker client_order_id does not match request")
+        if symbol is not None and symbol != expected.symbol.upper(): raise ValueError("broker symbol does not match request")
+        if side is not None and side != expected.side.upper(): raise ValueError("broker side does not match request")
+        if quantity is not None and quantity > expected.quantity + 1e-9: raise ValueError("broker quantity exceeds requested quantity")
+    if status in {BrokerOrderStatus.PARTIALLY_FILLED.value, BrokerOrderStatus.FILLED.value} and (filled is None or filled <= 0):
+        raise ValueError("filled broker status requires positive filled quantity")
+    if filled is not None and filled > 0 and average is None:
+        raise ValueError("non-zero broker fill requires average_price")
+    return BrokerOrderUpdate(order_id=order_id,status=status,client_order_id=client_id,symbol=symbol,side=side,quantity=quantity,filled_quantity=filled,price=price,average_price=average,message=data.get("message"))
 
 class BrokerAdapter(ABC):
     @abstractmethod
@@ -96,14 +124,10 @@ class BrokerAdapter(ABC):
     def health(self) -> BrokerHealth:
         return BrokerHealth(broker=self.__class__.__name__, healthy=False, message="broker health capability not implemented")
     def get_order_snapshot(self) -> BrokerOrderSnapshot:
-        """Return an order snapshot only when the adapter can prove it is complete."""
         get_orders = getattr(self, "get_orders", None)
-        if get_orders is None:
-            raise NotImplementedError("broker does not support authoritative order snapshots")
+        if get_orders is None: raise NotImplementedError("broker does not support authoritative order snapshots")
         orders = get_orders()
-        if not isinstance(orders, list):
-            raise RuntimeError("broker order snapshot is invalid")
-        # Adapters must override this when the broker API provides authoritative completeness.
+        if not isinstance(orders, list): raise RuntimeError("broker order snapshot is invalid")
         return BrokerOrderSnapshot(orders=[dict(o) for o in orders], complete=False, source=self.__class__.__name__)
     def find_order_by_client_id(self, client_order_id: str):
         snapshot = self.get_order_snapshot().require_authoritative()
@@ -113,10 +137,8 @@ class BrokerAdapter(ABC):
 
 class PaperBrokerAdapter(BrokerAdapter):
     """Deterministic in-memory adapter for paper execution and reconciliation tests."""
-    def __init__(self):
-        self._lock=RLock(); self._orders={}; self._positions={}; self._sequence=0
-    def _new_id(self):
-        self._sequence += 1; return f"PAPER-{self._sequence:08d}"
+    def __init__(self): self._lock=RLock(); self._orders={}; self._positions={}; self._sequence=0
+    def _new_id(self): self._sequence += 1; return f"PAPER-{self._sequence:08d}"
     @staticmethod
     def _validate(symbol, side, quantity):
         symbol=str(symbol or "").strip().upper(); side=str(side or "").strip().upper(); quantity=float(quantity)
@@ -147,11 +169,8 @@ class PaperBrokerAdapter(BrokerAdapter):
             return dict(record)
     def get_orders(self):
         with self._lock: return [dict(order) for order in self._orders.values()]
-    def get_order_snapshot(self):
-        return BrokerOrderSnapshot(orders=self.get_orders(), complete=True, source=self.__class__.__name__)
+    def get_order_snapshot(self): return BrokerOrderSnapshot(orders=self.get_orders(), complete=True, source=self.__class__.__name__)
     def get_positions(self):
         with self._lock: return [{"symbol":s,"quantity":q} for s,q in self._positions.items() if q != 0]
-    def get_account(self):
-        return {"mode":"paper","healthy":True,"authenticated":True,"live_trading_enabled":False}
-    def health(self):
-        return BrokerHealth(broker=self.__class__.__name__,healthy=True,authenticated=True,live_trading_enabled=False,message="paper broker")
+    def get_account(self): return {"mode":"paper","healthy":True,"authenticated":True,"live_trading_enabled":False}
+    def health(self): return BrokerHealth(broker=self.__class__.__name__,healthy=True,authenticated=True,live_trading_enabled=False,message="paper broker")
