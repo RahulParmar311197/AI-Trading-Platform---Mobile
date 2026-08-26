@@ -1,12 +1,15 @@
 from __future__ import annotations
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, asdict
 from datetime import datetime, timezone
 from threading import Lock, RLock
 from typing import Iterator
+import hashlib
+import json
 from app.broker_adapter import BrokerAdapter, BrokerOrderRequest, BrokerOrderUpdate
 from app.broker_snapshot import BrokerSnapshot
 from app.safety_state import SafetyStateStore
+from app.submission_intent_store import SubmissionIntentStore
 from app.trading_gate import TradingGate
 
 @dataclass(frozen=True)
@@ -18,9 +21,9 @@ class BrokerRoute:
     generation: str | None = None
 
 class BrokerRouter:
-    def __init__(self,routes:list[BrokerRoute],default_route:str,safety_store:SafetyStateStore|None=None,trading_gate:TradingGate|None=None,max_reconciliation_age_seconds:float=2.0):
+    def __init__(self,routes:list[BrokerRoute],default_route:str,safety_store:SafetyStateStore|None=None,trading_gate:TradingGate|None=None,max_reconciliation_age_seconds:float=2.0,submission_intent_store:SubmissionIntentStore|None=None):
         if max_reconciliation_age_seconds<=0: raise ValueError("max_reconciliation_age_seconds must be positive")
-        self.routes={r.name:r for r in routes}; self.default_route=default_route; self.safety_store=safety_store; self.trading_gate=trading_gate or TradingGate(); self.max_reconciliation_age_seconds=float(max_reconciliation_age_seconds); self._submission_lock=Lock(); self._submission_claims=set(); self._route_lifecycle_lock=RLock()
+        self.routes={r.name:r for r in routes}; self.default_route=default_route; self.safety_store=safety_store; self.trading_gate=trading_gate or TradingGate(); self.max_reconciliation_age_seconds=float(max_reconciliation_age_seconds); self.submission_intent_store=submission_intent_store or SubmissionIntentStore(); self._submission_lock=Lock(); self._submission_claims=set(); self._route_lifecycle_lock=RLock()
         if default_route not in self.routes: raise ValueError("default broker route is not configured")
     @contextmanager
     def route_lifecycle_lock(self)->Iterator[None]:
@@ -29,6 +32,9 @@ class BrokerRouter:
         route=self.routes.get(name or self.default_route)
         if route is None or not route.enabled: raise ValueError("broker route unavailable")
         return route
+    @staticmethod
+    def _request_fingerprint(request:BrokerOrderRequest)->str:
+        data=asdict(request); return hashlib.sha256(json.dumps(data,sort_keys=True,separators=(",",":"),default=str).encode("utf-8")).hexdigest()
     def _current_snapshot_fingerprint(self,route:BrokerRoute)->str:
         get_snapshot=getattr(route.adapter,"get_snapshot",None)
         if get_snapshot is not None:
@@ -73,6 +79,7 @@ class BrokerRouter:
             raise RuntimeError("broker submission outcome is unknown; trading halted") from lookup_error
         if existing is None:
             raise original
+        self.submission_intent_store.resolve(request.client_order_id)
         return BrokerOrderUpdate(order_id=str(existing.get("order_id",existing.get("broker_order_id"))),status=str(existing.get("status","NEW")),client_order_id=existing.get("client_order_id"),symbol=existing.get("symbol"),side=existing.get("side"),quantity=existing.get("quantity"),filled_quantity=existing.get("filled_quantity",existing.get("filledQty",0)),price=existing.get("price"),average_price=existing.get("average_price",existing.get("averagePrice")),message="BROKER_SUBMISSION_RECOVERED")
     def submit(self,request:BrokerOrderRequest,route=None):
         with self._route_lifecycle_lock:
@@ -93,8 +100,11 @@ class BrokerRouter:
                     if expected is None: raise RuntimeError("broker reconciliation fingerprint is unavailable")
                     current=self._current_snapshot_fingerprint(selected)
                     if current!=expected: raise RuntimeError("broker state changed immediately before submission")
+                self.submission_intent_store.create(client_order_id=request.client_order_id,route=selected.name,account_id=str(selected.broker_account_id) if selected.broker_account_id is not None else None,symbol=request.symbol,side=request.side,quantity=request.quantity,request_fingerprint=self._request_fingerprint(request))
                 try:
-                    return selected.adapter.submit_order(request)
+                    result=selected.adapter.submit_order(request)
+                    self.submission_intent_store.resolve(request.client_order_id)
+                    return result
                 except Exception as submit_error:
                     return self._recover_after_submit_failure(request,selected,submit_error)
             finally:
