@@ -44,9 +44,26 @@ class BrokerRouter:
             raise ValueError("broker route unavailable")
         return route
 
-    def _require_execution_ready(self):
-        halted = self.safety_store.load().trading_halted if self.safety_store else True
+    def _require_execution_ready(self, route: BrokerRoute) -> None:
+        if self.safety_store is None:
+            halted = True
+            state = None
+        else:
+            state = self.safety_store.load()
+            halted = state.trading_halted
         self.trading_gate.require_ready(halted)
+        if halted or state is None:
+            return
+        if route.generation is not None:
+            if state.reconciliation_generation is None:
+                raise RuntimeError("broker route has not been reconciled")
+            if str(state.reconciliation_generation) != str(route.generation):
+                raise RuntimeError("broker route generation is not reconciled")
+        if route.broker_account_id is not None:
+            if state.reconciliation_account_id is None:
+                raise RuntimeError("broker account has not been reconciled")
+            if str(state.reconciliation_account_id) != str(route.broker_account_id):
+                raise RuntimeError("broker account is not reconciled")
 
     def _require_account_binding(self, request: BrokerOrderRequest, route: BrokerRoute) -> None:
         if request.broker_account_id is None:
@@ -62,9 +79,9 @@ class BrokerRouter:
 
     def submit(self, request: BrokerOrderRequest, route=None):
         with self._route_lifecycle_lock:
-            self._require_execution_ready()
             selected_route = route or request.broker_route or self.default_route
             selected = self.get(selected_route)
+            self._require_execution_ready(selected)
             self._require_account_binding(request, selected)
             key = (selected_route, str(request.client_order_id))
             with self._submission_lock:
