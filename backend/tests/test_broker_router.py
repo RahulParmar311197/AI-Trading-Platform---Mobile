@@ -156,6 +156,12 @@ class IncompleteOrderSnapshotBroker(PaperBrokerAdapter):
         return BrokerOrderSnapshot(orders=self.get_orders(), complete=False, source='incomplete-test')
 
 
+class RecoveryPayloadBroker(PaperBrokerAdapter):
+    def submit_order(self, order):
+        self._orders['recovered']={'order_id':'recovered','broker_order_id':'recovered','client_order_id':order.client_order_id,'status':'OPEN'}
+        raise RuntimeError('simulated submission transport failure')
+
+
 def test_reconciliation_fingerprint_requires_authoritative_order_snapshot():
     router=BrokerRouter([BrokerRoute('paper',IncompleteOrderSnapshotBroker())],'paper')
     with pytest.raises(RuntimeError, match='not authoritative'):
@@ -177,3 +183,19 @@ def test_unresolved_submission_intent_zero_match_remains_unresolved(tmp_path):
     assert intent.client_order_id == 'missing-client'
     assert router.reconcile_unresolved_submission_intents('paper') == []
     assert router.submission_intent_store.unresolved_count() == 1
+
+
+def test_submit_recovery_rejects_incomplete_broker_payload(tmp_path):
+    router, store = _ready_router(tmp_path)
+    _clear_with_current_reconciliation(store, router)
+    broker = router.get('paper').adapter
+    broker.__class__
+    recovery = RecoveryPayloadBroker()
+    router.routes['paper'] = BrokerRoute('paper', recovery)
+    fingerprint = router._current_snapshot_fingerprint(router.get('paper'))
+    state = store.load()
+    state.broker_snapshot_fingerprint = fingerprint
+    store.save(state)
+    with pytest.raises(RuntimeError, match='recovery payload is incomplete'):
+        router.submit(BrokerOrderRequest('c-recover','NIFTY','BUY',1))
+    assert store.load().trading_halted is True
