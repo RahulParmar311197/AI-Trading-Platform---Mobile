@@ -16,7 +16,7 @@ def _valid(**overrides):
         "broker_ready": True,
     }
     values.update(overrides)
-    return ReconciliationResult(**values)
+    return ReconciliationResult.from_verified_state(**values)
 
 
 def test_verified_reconciliation_requires_all_broker_state_domains():
@@ -43,3 +43,16 @@ def test_naive_reconciliation_is_rejected():
 def test_negative_submission_intents_are_rejected():
     with pytest.raises(ValueError, match="non-negative"):
         _valid(submission_intents_resolved=-1)
+
+
+def test_direct_construction_is_not_allowed():
+    with pytest.raises(TypeError, match="verified factory"):
+        ReconciliationResult(
+            account_id="acct-1",
+            generation=1,
+            reconciled_at=datetime.now(timezone.utc),
+            open_orders_reconciled=True,
+            positions_reconciled=True,
+            submission_intents_resolved=0,
+            broker_ready=True,
+        )
