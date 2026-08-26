@@ -5,6 +5,7 @@ import pytest
 
 from app.broker_adapter import PaperBrokerAdapter, BrokerOrderRequest
 from app.broker_router import BrokerRoute, BrokerRouter
+from app.broker_snapshot import BrokerSnapshot
 from app.safety_state import SafetyStateStore
 from app.reconciliation_result import ReconciliationResult
 
@@ -27,11 +28,15 @@ def _ready_router(tmp_path, max_age=2.0):
     return router, store
 
 
-def _clear_with_current_reconciliation(store):
+def _clear_with_current_reconciliation(store, router=None):
     halted = store.halt('reconcile')
+    fingerprint = None
+    if router is not None:
+        fingerprint = router._current_snapshot_fingerprint(router.get('paper'))
     result = ReconciliationResult.from_verified_state(
         account_id='paper', generation=1, reconciled_at=halted.halted_at + timedelta(seconds=0.001),
         open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True,
+        broker_snapshot_fingerprint=fingerprint or 'test-fingerprint',
     )
     store.clear(result)
 
@@ -67,7 +72,8 @@ def test_account_binding_requires_account_match(tmp_path):
 
 
 def test_client_order_id_is_idempotent_at_router_boundary(tmp_path):
-    router, _ = _ready_router(tmp_path)
+    router, store=_ready_router(tmp_path)
+    _clear_with_current_reconciliation(store, router)
     request=BrokerOrderRequest('c1','NIFTY','BUY',1)
     first=router.submit(request)
     second=router.submit(request)
@@ -96,9 +102,11 @@ def test_stale_reconciliation_generation_blocks_submission(tmp_path):
     store=SafetyStateStore(str(tmp_path/'safety.json'))
     router=BrokerRouter([BrokerRoute('live',PaperBrokerAdapter(),broker_account_id=7,generation='g2')],'live', safety_store=store)
     halted = store.halt('reconcile')
+    fingerprint = router._current_snapshot_fingerprint(router.get('live'))
     result = ReconciliationResult.from_verified_state(
         account_id='7', generation=1, reconciled_at=halted.halted_at + timedelta(seconds=1),
         open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True,
+        broker_snapshot_fingerprint=fingerprint,
     )
     store.clear(result)
     with pytest.raises(RuntimeError, match='generation is not reconciled'):
@@ -107,7 +115,7 @@ def test_stale_reconciliation_generation_blocks_submission(tmp_path):
 
 def test_stale_reconciliation_timestamp_blocks_submission(tmp_path):
     router, store = _ready_router(tmp_path, max_age=0.01)
-    _clear_with_current_reconciliation(store)
+    _clear_with_current_reconciliation(store, router)
     time.sleep(0.03)
     with pytest.raises(RuntimeError, match='reconciliation is stale'):
         router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1))
@@ -115,9 +123,32 @@ def test_stale_reconciliation_timestamp_blocks_submission(tmp_path):
 
 def test_fresh_reconciliation_allows_submission(tmp_path):
     router, store = _ready_router(tmp_path, max_age=2.0)
-    _clear_with_current_reconciliation(store)
+    _clear_with_current_reconciliation(store, router)
     order = router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1))
     assert order.order_id
+
+
+def test_immediate_broker_state_change_blocks_submission(tmp_path):
+    router, store = _ready_router(tmp_path)
+    _clear_with_current_reconciliation(store, router)
+    broker = router.get('paper').adapter
+    original_get_orders = broker.get_orders
+    calls = {'count': 0}
+
+    def get_orders_with_external_change():
+        calls['count'] += 1
+        if calls['count'] == 3:
+            broker._orders['external'] = {
+                'order_id': 'external', 'broker_order_id': 'external',
+                'client_order_id': 'manual-1', 'symbol': 'NIFTY', 'side': 'BUY',
+                'quantity': 1, 'filled_quantity': 0, 'status': 'OPEN',
+            }
+        return original_get_orders()
+
+    broker.get_orders = get_orders_with_external_change
+    with pytest.raises(RuntimeError, match='immediately before submission'):
+        router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1))
+    assert 'c1' not in broker._orders
 
 
 def test_invalid_reconciliation_age_configuration_is_rejected(tmp_path):
