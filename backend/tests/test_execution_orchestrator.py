@@ -1,4 +1,4 @@
-from app.execution_orchestrator import ExecutionOrchestrator
+from app.execution_orchestrator import ExecutionOrchestrator, BrokerAdapter
 from app.order_intent import OrderIntent
 from app.order_lifecycle import OrderLifecycle
 from app.trade_plan import TradeAction, TradePlanValidator
@@ -65,3 +65,14 @@ def test_expired_plan_is_blocked_before_legacy_submission():
     assert not result.accepted
     assert result.reason == "TRADE_PLAN_EXPIRED"
     assert broker.calls == 0
+
+
+class ExplodingLegacyBroker(BrokerAdapter):
+    def submit(self, plan):
+        raise AssertionError("legacy broker must never be called")
+
+
+def test_legacy_facade_never_calls_configured_broker():
+    result = ExecutionOrchestrator(broker=ExplodingLegacyBroker(), live_enabled=True).submit(make_plan(), kill_switch_armed=True)
+    assert result.accepted is False
+    assert result.reason == "LEGACY_DIRECT_BROKER_EXECUTION_DISABLED"
