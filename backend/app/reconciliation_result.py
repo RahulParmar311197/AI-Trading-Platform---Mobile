@@ -31,8 +31,8 @@ class ReconciliationResult:
             raise ValueError("broker must be ready for a verified reconciliation")
         if not open_orders_reconciled or not positions_reconciled:
             raise ValueError("open orders and positions must be reconciled")
-        if reconciled_at > context.observed_at:
-            raise ValueError("reconciled_at cannot be later than execution context observation")
+        if reconciled_at < context.observed_at:
+            raise ValueError("reconciled_at cannot precede execution context observation")
         object.__setattr__(self, "context", context)
         object.__setattr__(self, "reconciled_at", reconciled_at)
         object.__setattr__(self, "open_orders_reconciled", bool(open_orders_reconciled))
