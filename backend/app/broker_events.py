@@ -26,14 +26,39 @@ class BrokerOrderEvent:
     fill_price: float | None = None
 
 
-def ingest_event(lifecycle: OrderLifecycle, local_order_id: str, event: BrokerOrderEvent):
-    """Apply a normalized broker event to the existing lifecycle.
+class BrokerEventDeduplicator:
+    """Process-local event-ID guard; production adapters can back this with Redis."""
+
+    def __init__(self) -> None:
+        self._seen: set[str] = set()
+
+    def claim(self, event_id: str) -> bool:
+        key = event_id.strip()
+        if not key:
+            raise ValueError("event_id is required")
+        if key in self._seen:
+            return False
+        self._seen.add(key)
+        return True
+
+
+def ingest_event(
+    lifecycle: OrderLifecycle,
+    local_order_id: str,
+    event: BrokerOrderEvent,
+    *,
+    deduplicator: BrokerEventDeduplicator | None = None,
+):
+    """Apply one normalized broker event to the existing lifecycle.
 
     Broker-specific payload parsing belongs in adapters. Unknown states fail closed
     by moving the existing order into reconciliation rather than guessing.
     """
     if not event.event_id.strip() or not event.broker_order_id.strip():
         raise ValueError("broker event identifiers are required")
+
+    if deduplicator is not None and not deduplicator.claim(event.event_id):
+        return lifecycle.orders[local_order_id]
 
     order = lifecycle.orders[local_order_id]
     status_map = {
