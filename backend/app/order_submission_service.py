@@ -9,6 +9,10 @@ from app.execution_safety_gate import ExecutionSafetyContext, ExecutionSafetyGat
 from app.transactional_execution_repository import TransactionalExecutionRepository
 
 
+class AmbiguousBrokerSubmission(RuntimeError):
+    """Broker outcome is unknown; reconcile the durable pending submission before retry."""
+
+
 @dataclass(frozen=True)
 class OrderIntent:
     client_order_id: str
@@ -60,17 +64,21 @@ class OrderSubmissionService:
         started = monotonic()
         try:
             result = self.adapter.submit(intent)
-        except Exception:
+        except Exception as exc:
             self.observability.observe_latency("broker_latency", (monotonic() - started) * 1000)
             self.observability.increment("broker_failures")
-            raise
+            self.observability.increment("ambiguous_submissions")
+            raise AmbiguousBrokerSubmission("broker submission outcome is unknown; reconcile the pending submission before retry") from exc
         self.observability.observe_latency("broker_latency", (monotonic() - started) * 1000)
+        if not result.broker_order_id or result.client_order_id != intent.client_order_id:
+            self.observability.increment("ambiguous_submissions")
+            raise AmbiguousBrokerSubmission("broker submission response is invalid or cannot be safely identified; reconcile before retry")
         self.repository.mark_submission_submitted(intent.idempotency_key, result.broker_order_id)
         self.observability.increment("submitted")
         return result
 
     def recover_pending(self, *, limit: int = 100) -> list[BrokerSubmissionResult]:
-        results: list[BrokerSubmissionResult] = []
-        for record in self.repository.pending_submissions(limit):
-            raise RuntimeError(f"manual broker reconciliation required for pending submission {record.idempotency_key}")
-        return results
+        pending = self.repository.pending_submissions(limit)
+        if pending:
+            raise AmbiguousBrokerSubmission(f"manual broker reconciliation required for pending submission {pending[0].idempotency_key}")
+        return []
