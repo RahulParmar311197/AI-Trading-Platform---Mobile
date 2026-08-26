@@ -11,7 +11,8 @@ class RiskGatewayResult:
 
 
 def authorize(*, order: OrderIntent, equity: float, daily_pnl: float, open_positions: int, recent_losses: int = 0, limits: RiskLimits | None = None) -> RiskGatewayResult:
-    """Final pre-submit authorization. The order must already contain validated sizing/risk."""
+    """Final pre-submit authorization after broker-safe instrument normalization."""
+    order = order.normalized()
     order.validate()
     decision = evaluate(
         equity=equity,
