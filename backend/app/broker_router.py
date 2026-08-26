@@ -38,11 +38,6 @@ class BrokerRouter:
     def unresolved_submission_intents(self): return self.submission_intent_store.unresolved()
     def unresolved_submission_intent_count(self)->int: return self.submission_intent_store.unresolved_count()
     def reconcile_unresolved_submission_intents(self,route=None)->list[str]:
-        """Resolve persisted intents only from an authoritative broker order snapshot; never resubmit.
-
-        A zero-match authoritative snapshot is intentionally left unresolved because it cannot
-        distinguish a genuine no-order result from a broker-side propagation/API race.
-        """
         resolved=[]
         with self._route_lifecycle_lock:
             intents=self.submission_intent_store.unresolved(); grouped={}
@@ -67,20 +62,25 @@ class BrokerRouter:
                             if self.safety_store is not None: self.safety_store.halt(f"submission intent account mismatch: {intent.client_order_id}")
                             raise RuntimeError(f"submission intent account mismatch: {intent.client_order_id}")
                         self.submission_intent_store.resolve(intent.client_order_id); resolved.append(intent.client_order_id); continue
-                    # Do not resolve a zero-match intent. The broker snapshot being authoritative
-                    # proves the snapshot was complete, not that the submission never happened.
         return resolved
+    def _authoritative_reconciliation_snapshot(self,route:BrokerRoute)->BrokerSnapshot:
+        """Build the single broker state used for readiness fingerprints.
+
+        Order data must come from the explicit authoritative snapshot contract.  The older
+        get_orders()/get_snapshot() fallbacks are deliberately not accepted here because a
+        partial order response must never authorize live execution.
+        """
+        snapshot_fn=getattr(route.adapter,"get_order_snapshot",None)
+        if snapshot_fn is None:
+            raise RuntimeError("authoritative broker order snapshot is required for reconciliation")
+        snapshot=snapshot_fn()
+        orders=snapshot.require_authoritative()
+        positions=route.adapter.get_positions()
+        if not isinstance(positions,list):
+            raise RuntimeError("broker positions snapshot is unavailable")
+        return BrokerSnapshot(orders=[dict(x) for x in orders],positions=[dict(x) for x in positions],broker_route=route.name,broker_account_id=route.broker_account_id)
     def _current_snapshot_fingerprint(self,route:BrokerRoute)->str:
-        get_snapshot=getattr(route.adapter,"get_snapshot",None)
-        if get_snapshot is not None:
-            snapshot=get_snapshot()
-            if not isinstance(snapshot,BrokerSnapshot): raise RuntimeError("broker snapshot is invalid")
-            return replace(snapshot,broker_route=route.name,broker_account_id=route.broker_account_id).fingerprint()
-        get_orders=getattr(route.adapter,"get_orders",None)
-        if get_orders is None: raise RuntimeError("broker order snapshot is unavailable")
-        orders=get_orders(); positions=route.adapter.get_positions()
-        if not isinstance(orders,list) or not isinstance(positions,list): raise RuntimeError("broker snapshot is unavailable")
-        return BrokerSnapshot(orders=[dict(x) for x in orders],positions=[dict(x) for x in positions],broker_route=route.name,broker_account_id=route.broker_account_id).fingerprint()
+        return self._authoritative_reconciliation_snapshot(route).fingerprint()
     def _require_execution_ready(self,route:BrokerRoute)->None:
         if self.safety_store is None: halted=True; state=None
         else: state=self.safety_store.load(); halted=state.trading_halted
@@ -168,6 +168,5 @@ class BrokerRouter:
         with self._route_lifecycle_lock: return self.get(route).adapter.get_account()
     def get_snapshot(self,route=None):
         with self._route_lifecycle_lock:
-            selected=self.get(route); fn=getattr(selected.adapter,"get_snapshot",None); snapshot=fn() if fn is not None else BrokerSnapshot(orders=self.get_orders(selected.name),positions=self.get_positions(selected.name))
-            if not isinstance(snapshot,BrokerSnapshot): snapshot=BrokerSnapshot(orders=list(snapshot.orders),positions=list(snapshot.positions),fetched_at=float(snapshot.fetched_at))
-            return replace(snapshot,broker_route=selected.name,broker_account_id=selected.broker_account_id)
+            selected=self.get(route); snapshot=self._authoritative_reconciliation_snapshot(selected)
+            return snapshot
