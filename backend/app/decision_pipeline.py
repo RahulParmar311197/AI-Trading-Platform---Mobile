@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from app.market_data import Candle
 from app.strategy import TradeSignal, generate_signal
 from app.ml_decision import MLDecisionConfig, apply_ml_decision
@@ -18,9 +19,17 @@ def generate_ml_signal(
 ) -> TradeSignal | None:
     """Apply validated ML evidence to the deterministic strategy signal.
 
-    This function only produces a signal. Risk authorization and execution
-    remain downstream and are never bypassed by ML.
+    ML may refine a deterministic signal, but it must never use a prediction
+    generated for a different symbol or candle timestamp. Risk authorization
+    and execution remain downstream and are never bypassed by ML.
     """
+    if not candles:
+        return None
+    latest = candles[-1]
+    if prediction.symbol != latest.symbol:
+        return None
+    if prediction.timestamp != latest.timestamp:
+        return None
     signal = generate_signal(
         candles,
         min_score=min_score,
