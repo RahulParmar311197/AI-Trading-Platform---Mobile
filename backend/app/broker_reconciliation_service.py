@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from app.broker_router import BrokerRouter
+from app.reconciliation_compare import compare_broker_state
 from app.reconciliation_result import ReconciliationResult
+from app.order_lifecycle import OrderLifecycle
 
 
 @dataclass(frozen=True)
@@ -22,10 +24,12 @@ class BrokerReconciliationService:
         self,
         router: BrokerRouter,
         config: ReconciliationConfig,
+        lifecycle: OrderLifecycle | None = None,
         unresolved_submission_intents: Callable[[], int] | None = None,
     ) -> None:
         self.router = router
         self.config = config
+        self.lifecycle = lifecycle
         self._unresolved_submission_intents = unresolved_submission_intents or (lambda: 0)
 
     def reconcile(self) -> ReconciliationResult:
@@ -50,6 +54,18 @@ class BrokerReconciliationService:
             positions = route.adapter.get_positions()
             if not isinstance(positions, list):
                 raise RuntimeError("broker position snapshot is unavailable")
+
+            if self.lifecycle is not None:
+                mismatches = compare_broker_state(
+                    self.lifecycle,
+                    broker_orders=orders,
+                    broker_positions=positions,
+                )
+                if mismatches:
+                    details = "; ".join(
+                        f"{item.domain}:{item.identity}:{item.reason}" for item in mismatches[:20]
+                    )
+                    raise RuntimeError(f"RECONCILIATION_MISMATCH: {details}")
 
             unresolved = int(self._unresolved_submission_intents())
             if unresolved < 0:
