@@ -34,6 +34,7 @@ class PaperBroker(ExecutionAdapter):
         self.costs=costs or ExecutionCostModel()
 
     def submit(self, order: OrderIntent) -> ExecutionResult:
+        order = order.normalized()
         order.validate()
         self._counter += 1
         fill=self.costs.fill_price(order.side,order.entry)
@@ -66,13 +67,9 @@ def execute_paper(
 ) -> ExecutionResult:
     if not risk.approved:
         return ExecutionResult('',OrderStatus.REJECTED,0.0,0.0,'risk gateway rejected order')
-
-    # Connectivity is an opt-in gate for executions that represent a real broker
-    # session. Pure paper/backtest execution remains independent of broker health.
     if connectivity is not None and not connectivity.snapshot().can_trade:
         return ExecutionResult('',OrderStatus.REJECTED,0.0,0.0,'broker connectivity gate rejected order')
-
-    order = risk.order
+    order = risk.order.normalized()
     if request_id:
         store = idempotency_store or InMemoryIdempotencyStore()
         claim = claim_order(store,account_id=account_id,broker=broker_name,request_id=request_id,order=_order_payload(order))
@@ -80,5 +77,4 @@ def execute_paper(
             return ExecutionResult(f'IDEMPOTENCY-CONFLICT-{claim.fingerprint[:16]}',OrderStatus.REJECTED,0.0,0.0,'idempotency key was already used for a different order')
         if not claim.claimed:
             return ExecutionResult(f'IDEMPOTENT-{claim.fingerprint[:16]}',OrderStatus.DUPLICATE,0.0,0.0,'duplicate execution request rejected')
-
     return (broker or PaperBroker()).submit(order)
