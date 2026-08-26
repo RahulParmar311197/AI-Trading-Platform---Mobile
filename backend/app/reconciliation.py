@@ -2,6 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from app.reconciliation_validation import validate_reconciliation_inputs
+
 
 @dataclass(frozen=True)
 class ReconciliationResult:
@@ -65,10 +67,13 @@ class ReconciliationEngine:
         self.trading_halted = False
 
     def check(self, internal_orders, broker_orders, internal_positions, broker_positions):
-        io = {_order_key(x): x for x in internal_orders}
-        bo = {_order_key(x): x for x in broker_orders}
-        po = {str(x.get("symbol")).upper(): _signed_position(x) for x in internal_positions}
-        pb = {str(x.get("symbol")).upper(): _signed_position(x) for x in broker_positions}
+        io_list, bo_list, ip_list, bp_list = validate_reconciliation_inputs(
+            internal_orders, broker_orders, internal_positions, broker_positions
+        )
+        io = {_order_key(x): x for x in io_list}
+        bo = {_order_key(x): x for x in bo_list}
+        po = {str(x.get("symbol")).upper(): _signed_position(x) for x in ip_list}
+        pb = {str(x.get("symbol")).upper(): _signed_position(x) for x in bp_list}
 
         order_drift = []
         for key in set(io) | set(bo):
