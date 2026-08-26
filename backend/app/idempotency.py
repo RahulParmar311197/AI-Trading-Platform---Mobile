@@ -8,6 +8,7 @@ from typing import Any, Protocol
 
 class IdempotencyStore(Protocol):
     def claim(self, key: str, value: str, ttl_seconds: int) -> bool: ...
+    def get(self, key: str) -> str | None: ...
 
 
 class InMemoryIdempotencyStore:
@@ -24,6 +25,9 @@ class InMemoryIdempotencyStore:
         self._values[key] = value
         return True
 
+    def get(self, key: str) -> str | None:
+        return self._values.get(key)
+
 
 class RedisIdempotencyStore:
     """Atomic distributed claim backed by Redis SET NX EX."""
@@ -35,6 +39,14 @@ class RedisIdempotencyStore:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
         return bool(self.redis.set(key, value, nx=True, ex=ttl_seconds))
+
+    def get(self, key: str) -> str | None:
+        value = self.redis.get(key)
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        return str(value)
 
 
 def order_idempotency_key(*, account_id: str, broker: str, request_id: str) -> str:
@@ -58,6 +70,7 @@ class IdempotencyClaim:
     key: str
     fingerprint: str
     claimed: bool
+    conflict: bool = False
 
 
 def claim_order(
@@ -73,8 +86,16 @@ def claim_order(
         account_id=account_id, broker=broker, request_id=request_id
     )
     fingerprint = order_fingerprint(order)
-    return IdempotencyClaim(
-        key=key,
-        fingerprint=fingerprint,
-        claimed=store.claim(key, fingerprint, ttl_seconds),
-    )
+    if store.claim(key, fingerprint, ttl_seconds):
+        return IdempotencyClaim(key=key, fingerprint=fingerprint, claimed=True)
+
+    existing = store.get(key)
+    if existing is not None and existing != fingerprint:
+        return IdempotencyClaim(
+            key=key,
+            fingerprint=fingerprint,
+            claimed=False,
+            conflict=True,
+        )
+
+    return IdempotencyClaim(key=key, fingerprint=fingerprint, claimed=False)
