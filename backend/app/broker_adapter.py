@@ -8,6 +8,7 @@ import math
 from threading import RLock
 
 from app.broker_order_snapshot import BrokerOrderSnapshot
+from app.broker_position_snapshot import BrokerPositionSnapshot
 
 class BrokerOrderStatus(str, Enum):
     NEW = "NEW"
@@ -71,43 +72,33 @@ class BrokerOrder:
     target: float | None = None
 
 def _finite_optional(value: Any, field: str) -> float | None:
-    if value is None or value == "":
-        return None
+    if value is None or value == "": return None
     number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"invalid broker {field}")
+    if not math.isfinite(number): raise ValueError(f"invalid broker {field}")
     return number
 
 
 def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected: BrokerOrderRequest | None = None) -> BrokerOrderUpdate:
     data = raw.as_dict() if isinstance(raw, BrokerOrderUpdate) else dict(raw)
     order_id = str(data.get("order_id") or data.get("broker_order_id") or "").strip()
-    if not order_id:
-        raise ValueError("broker response missing order_id")
+    if not order_id: raise ValueError("broker response missing order_id")
     status = str(data.get("status") or "").strip().upper()
     aliases = {"OPEN":"NEW","PENDING":"NEW","COMPLETE":"FILLED","EXECUTED":"FILLED","CANCELED":"CANCELLED","CANCEL":"CANCELLED","FAILED":"REJECTED"}
     status = aliases.get(status, status)
-    if status not in {s.value for s in BrokerOrderStatus}:
-        raise ValueError(f"unsupported broker order status: {status}")
-    quantity = _finite_optional(data.get("quantity"), "quantity")
-    filled = _finite_optional(data.get("filled_quantity"), "filled quantity")
-    price = _finite_optional(data.get("price"), "price")
-    average = _finite_optional(data.get("average_price"), "average price")
+    if status not in {s.value for s in BrokerOrderStatus}: raise ValueError(f"unsupported broker order status: {status}")
+    quantity = _finite_optional(data.get("quantity"), "quantity"); filled = _finite_optional(data.get("filled_quantity"), "filled quantity"); price = _finite_optional(data.get("price"), "price"); average = _finite_optional(data.get("average_price"), "average price")
     if quantity is not None and quantity < 0: raise ValueError("invalid broker quantity")
     if filled is not None and filled < 0: raise ValueError("invalid broker filled quantity")
     if quantity is not None and filled is not None and filled > quantity + 1e-9: raise ValueError("broker filled quantity exceeds order quantity")
     client_id = str(data.get("client_order_id")).strip() if data.get("client_order_id") is not None else None
-    symbol = str(data.get("symbol")).strip().upper() if data.get("symbol") else None
-    side = str(data.get("side")).strip().upper() if data.get("side") else None
+    symbol = str(data.get("symbol")).strip().upper() if data.get("symbol") else None; side = str(data.get("side")).strip().upper() if data.get("side") else None
     if expected is not None:
         if client_id is not None and client_id != expected.client_order_id: raise ValueError("broker client_order_id does not match request")
         if symbol is not None and symbol != expected.symbol.upper(): raise ValueError("broker symbol does not match request")
         if side is not None and side != expected.side.upper(): raise ValueError("broker side does not match request")
         if quantity is not None and quantity > expected.quantity + 1e-9: raise ValueError("broker quantity exceeds requested quantity")
-    if status in {BrokerOrderStatus.PARTIALLY_FILLED.value, BrokerOrderStatus.FILLED.value} and (filled is None or filled <= 0):
-        raise ValueError("filled broker status requires positive filled quantity")
-    if filled is not None and filled > 0 and average is None:
-        raise ValueError("non-zero broker fill requires average_price")
+    if status in {BrokerOrderStatus.PARTIALLY_FILLED.value, BrokerOrderStatus.FILLED.value} and (filled is None or filled <= 0): raise ValueError("filled broker status requires positive filled quantity")
+    if filled is not None and filled > 0 and average is None: raise ValueError("non-zero broker fill requires average_price")
     return BrokerOrderUpdate(order_id=order_id,status=status,client_order_id=client_id,symbol=symbol,side=side,quantity=quantity,filled_quantity=filled,price=price,average_price=average,message=data.get("message"))
 
 class BrokerAdapter(ABC):
@@ -121,17 +112,19 @@ class BrokerAdapter(ABC):
     def get_positions(self) -> list[dict[str, Any]]: ...
     @abstractmethod
     def get_account(self) -> dict[str, Any]: ...
-    def health(self) -> BrokerHealth:
-        return BrokerHealth(broker=self.__class__.__name__, healthy=False, message="broker health capability not implemented")
+    def health(self) -> BrokerHealth: return BrokerHealth(broker=self.__class__.__name__, healthy=False, message="broker health capability not implemented")
     def get_order_snapshot(self) -> BrokerOrderSnapshot:
         get_orders = getattr(self, "get_orders", None)
         if get_orders is None: raise NotImplementedError("broker does not support authoritative order snapshots")
         orders = get_orders()
         if not isinstance(orders, list): raise RuntimeError("broker order snapshot is invalid")
         return BrokerOrderSnapshot(orders=[dict(o) for o in orders], complete=False, source=self.__class__.__name__)
+    def get_position_snapshot(self) -> BrokerPositionSnapshot:
+        positions = self.get_positions()
+        if not isinstance(positions, list): raise RuntimeError("broker position snapshot is invalid")
+        return BrokerPositionSnapshot(positions=[dict(p) for p in positions], complete=False, source=self.__class__.__name__)
     def find_order_by_client_id(self, client_order_id: str):
-        snapshot = self.get_order_snapshot().require_authoritative()
-        matches=[dict(o) for o in snapshot if str(o.get("client_order_id",""))==client_order_id]
+        snapshot = self.get_order_snapshot().require_authoritative(); matches=[dict(o) for o in snapshot if str(o.get("client_order_id",o.get("tag","")))==client_order_id]
         if len(matches)>1: raise RuntimeError(f"ambiguous broker order identity for client_order_id: {client_order_id}")
         return matches[0] if matches else None
 
@@ -154,8 +147,7 @@ class PaperBrokerAdapter(BrokerAdapter):
                 if existing is not None: return dict(existing)
             oid=self._new_id(); price=float(order.price) if getattr(order,"price",None) is not None else 0.0
             record={"order_id":oid,"broker_order_id":oid,"client_order_id":client_id,"symbol":symbol,"side":side,"quantity":quantity,"filled_quantity":quantity,"status":"FILLED","price":price,"average_price":price}
-            self._orders[oid]=record; self._positions[symbol]=self._positions.get(symbol,0.0)+(quantity if side=="BUY" else -quantity)
-            return dict(record)
+            self._orders[oid]=record; self._positions[symbol]=self._positions.get(symbol,0.0)+(quantity if side=="BUY" else -quantity); return dict(record)
     def cancel_order(self, broker_order_id):
         with self._lock:
             record=self._orders.get(str(broker_order_id))
@@ -172,5 +164,6 @@ class PaperBrokerAdapter(BrokerAdapter):
     def get_order_snapshot(self): return BrokerOrderSnapshot(orders=self.get_orders(), complete=True, source=self.__class__.__name__)
     def get_positions(self):
         with self._lock: return [{"symbol":s,"quantity":q} for s,q in self._positions.items() if q != 0]
+    def get_position_snapshot(self): return BrokerPositionSnapshot(positions=self.get_positions(), complete=True, source=self.__class__.__name__)
     def get_account(self): return {"mode":"paper","healthy":True,"authenticated":True,"live_trading_enabled":False}
     def health(self): return BrokerHealth(broker=self.__class__.__name__,healthy=True,authenticated=True,live_trading_enabled=False,message="paper broker")
