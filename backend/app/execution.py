@@ -1,14 +1,17 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 from app.order_intent import OrderIntent
 from app.risk_gateway import RiskGatewayResult
 from app.execution_costs import ExecutionCostModel
+from app.idempotency import IdempotencyStore, InMemoryIdempotencyStore, claim_order
 
 class OrderStatus(str, Enum):
     ACCEPTED='ACCEPTED'
     REJECTED='REJECTED'
     FILLED='FILLED'
+    DUPLICATE='DUPLICATE'
 
 @dataclass(frozen=True)
 class ExecutionResult:
@@ -37,7 +40,48 @@ class PaperBroker(ExecutionAdapter):
         commission=self.costs.commission(fill,order.quantity)
         return ExecutionResult(f'PAPER-{self._counter:08d}',OrderStatus.FILLED,order.quantity,fill,'paper fill',commission,slip)
 
-def execute_paper(*, risk: RiskGatewayResult, broker: PaperBroker | None = None) -> ExecutionResult:
+def _order_payload(order: OrderIntent) -> dict[str, Any]:
+    return {
+        'symbol': order.symbol,
+        'side': order.side,
+        'entry': order.entry,
+        'stop_loss': order.stop_loss,
+        'take_profit': order.take_profit,
+        'quantity': order.quantity,
+        'risk_amount': order.risk_amount,
+        'source': order.source,
+        'confidence': order.confidence,
+    }
+
+def execute_paper(
+    *,
+    risk: RiskGatewayResult,
+    broker: PaperBroker | None = None,
+    account_id: str = 'paper',
+    broker_name: str = 'paper',
+    request_id: str | None = None,
+    idempotency_store: IdempotencyStore | None = None,
+) -> ExecutionResult:
     if not risk.approved:
         return ExecutionResult('','REJECTED',0.0,0.0,'risk gateway rejected order')
-    return (broker or PaperBroker()).submit(risk.order)
+
+    order = risk.order
+    if request_id:
+        store = idempotency_store or InMemoryIdempotencyStore()
+        claim = claim_order(
+            store,
+            account_id=account_id,
+            broker=broker_name,
+            request_id=request_id,
+            order=_order_payload(order),
+        )
+        if not claim.claimed:
+            return ExecutionResult(
+                f'IDEMPOTENT-{claim.fingerprint[:16]}',
+                OrderStatus.DUPLICATE,
+                0.0,
+                0.0,
+                'duplicate execution request rejected',
+            )
+
+    return (broker or PaperBroker()).submit(order)
