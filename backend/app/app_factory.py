@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from fastapi import FastAPI
 from app.db import init_db
@@ -26,6 +27,7 @@ from app.startup_execution_state import StartupExecutionStateMachine
 from app.trading_audit import TradingAuditLog
 from app.emergency_halt import EmergencyHaltController
 from app.broker_connectivity_registry import BrokerConnectivityRegistry
+from app.broker_health_worker import BrokerHealthWorker
 
 @dataclass
 class AppResources:
@@ -94,11 +96,31 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     app.state.startup_execution_state = resources.startup_execution_state
     app.state.emergency_halt_controller = resources.emergency_halt_controller
     app.state.trading_audit_log = resources.audit_log
+    app.state.broker_health_worker = None
+    app.state.broker_health_stop_event = None
+    app.state.broker_health_task = None
 
     @app.on_event("startup")
     async def startup() -> None:
         if resources.session_local is None:
             init_db()
+        stop_event = asyncio.Event()
+        health_worker = BrokerHealthWorker(app.state.broker_router, resources.connectivity_registry)
+        app.state.broker_health_worker = health_worker
+        app.state.broker_health_stop_event = stop_event
+        app.state.broker_health_task = asyncio.create_task(health_worker.run(stop_event), name="broker-health-worker")
+
+    @app.on_event("shutdown")
+    async def shutdown() -> None:
+        stop_event = app.state.broker_health_stop_event
+        task = app.state.broker_health_task
+        if stop_event is not None:
+            stop_event.set()
+        if task is not None:
+            await task
+        app.state.broker_health_task = None
+        app.state.broker_health_stop_event = None
+        app.state.broker_health_worker = None
 
     from app.api.orders import router as orders_router
     from app.api.ensemble import router as decision_router
