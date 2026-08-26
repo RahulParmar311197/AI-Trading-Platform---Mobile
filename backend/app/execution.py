@@ -6,6 +6,7 @@ from app.order_intent import OrderIntent
 from app.risk_gateway import RiskGatewayResult
 from app.execution_costs import ExecutionCostModel
 from app.idempotency import IdempotencyStore, InMemoryIdempotencyStore, claim_order
+from app.broker_connectivity import BrokerConnectivitySupervisor
 
 class OrderStatus(str, Enum):
     ACCEPTED='ACCEPTED'
@@ -61,9 +62,13 @@ def execute_paper(
     broker_name: str = 'paper',
     request_id: str | None = None,
     idempotency_store: IdempotencyStore | None = None,
+    connectivity: BrokerConnectivitySupervisor | None = None,
 ) -> ExecutionResult:
     if not risk.approved:
         return ExecutionResult('','REJECTED',0.0,0.0,'risk gateway rejected order')
+
+    if connectivity is not None and not connectivity.snapshot().can_trade:
+        return ExecutionResult('', OrderStatus.REJECTED, 0.0, 0.0, 'broker connectivity gate rejected order')
 
     order = risk.order
     if request_id:
