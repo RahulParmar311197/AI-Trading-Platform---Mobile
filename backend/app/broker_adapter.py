@@ -7,6 +7,8 @@ from typing import Any
 import math
 from threading import RLock
 
+from app.broker_order_snapshot import BrokerOrderSnapshot
+
 class BrokerOrderStatus(str, Enum):
     NEW = "NEW"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
@@ -93,10 +95,19 @@ class BrokerAdapter(ABC):
     def get_account(self) -> dict[str, Any]: ...
     def health(self) -> BrokerHealth:
         return BrokerHealth(broker=self.__class__.__name__, healthy=False, message="broker health capability not implemented")
+    def get_order_snapshot(self) -> BrokerOrderSnapshot:
+        """Return an order snapshot only when the adapter can prove it is complete."""
+        get_orders = getattr(self, "get_orders", None)
+        if get_orders is None:
+            raise NotImplementedError("broker does not support authoritative order snapshots")
+        orders = get_orders()
+        if not isinstance(orders, list):
+            raise RuntimeError("broker order snapshot is invalid")
+        # Adapters must override this when the broker API provides authoritative completeness.
+        return BrokerOrderSnapshot(orders=[dict(o) for o in orders], complete=False, source=self.__class__.__name__)
     def find_order_by_client_id(self, client_order_id: str):
-        get_orders=getattr(self,"get_orders",None)
-        if get_orders is None: raise NotImplementedError("broker does not support client-order reconciliation")
-        matches=[dict(o) for o in get_orders() if str(o.get("client_order_id",""))==client_order_id]
+        snapshot = self.get_order_snapshot().require_authoritative()
+        matches=[dict(o) for o in snapshot if str(o.get("client_order_id",""))==client_order_id]
         if len(matches)>1: raise RuntimeError(f"ambiguous broker order identity for client_order_id: {client_order_id}")
         return matches[0] if matches else None
 
@@ -136,6 +147,8 @@ class PaperBrokerAdapter(BrokerAdapter):
             return dict(record)
     def get_orders(self):
         with self._lock: return [dict(order) for order in self._orders.values()]
+    def get_order_snapshot(self):
+        return BrokerOrderSnapshot(orders=self.get_orders(), complete=True, source=self.__class__.__name__)
     def get_positions(self):
         with self._lock: return [{"symbol":s,"quantity":q} for s,q in self._positions.items() if q != 0]
     def get_account(self):
