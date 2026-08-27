@@ -10,6 +10,7 @@ from typing import Any, Callable, Protocol
 
 from app.broker_adapter import BrokerOrderRequest
 from app.broker_order_lifecycle import OrderLifecycle, OrderLifecycleEvent, OrderStatus
+from app.execution_authorization_store import ExecutionAuthorizationStore
 from app.order_intent import OrderIntent
 from app.pre_trade_reconciliation_gate import PreTradeReconciliationGate, PreTradeReconciliationPolicy
 from app.trading_incidents import IncidentReporter
@@ -59,13 +60,22 @@ class TrackedExecution:
 class LiveExecutionGateway:
     """Single safety boundary between approved trade intents and broker execution."""
 
-    def __init__(self, executor: BrokerExecutor, policy: ExecutionPolicy | None = None, *, position_reader: BrokerPositionReader | None = None, local_positions_reader: Callable[[], list[dict[str, Any]]] | None = None, incident_reporter: IncidentReporter | None = None) -> None:
+    def __init__(
+        self,
+        executor: BrokerExecutor,
+        policy: ExecutionPolicy | None = None,
+        *,
+        position_reader: BrokerPositionReader | None = None,
+        local_positions_reader: Callable[[], list[dict[str, Any]]] | None = None,
+        incident_reporter: IncidentReporter | None = None,
+        authorization_store: ExecutionAuthorizationStore | None = None,
+    ) -> None:
         self.executor = executor
         self.policy = policy or ExecutionPolicy()
         self.position_reader = position_reader
         self.local_positions_reader = local_positions_reader
         self.incident_reporter = incident_reporter or IncidentReporter()
-        self._authorizations: dict[str, ExecutionAuthorization] = {}
+        self.authorization_store = authorization_store or ExecutionAuthorizationStore()
 
     def authorize(self, order: OrderIntent) -> ExecutionAuthorization:
         """Validate a live order against current broker/local positions and issue one-use authorization."""
@@ -86,7 +96,10 @@ class LiveExecutionGateway:
             _order_fingerprint=_fingerprint(safe_order),
             _expires_at=_now() + timedelta(seconds=ttl),
         )
-        self._authorizations[token._nonce] = token
+        try:
+            self.authorization_store.issue(token)
+        except Exception as exc:
+            raise ExecutionSafetyError("execution blocked: authorization could not be persisted") from exc
         return token
 
     def authorize_request(self, request: BrokerOrderRequest) -> ExecutionAuthorization:
@@ -143,13 +156,25 @@ class LiveExecutionGateway:
     def _consume_authorization(self, order: OrderIntent, authorization: ExecutionAuthorization | None) -> None:
         if authorization is None:
             raise ExecutionSafetyError("execution blocked: single-use execution authorization is required")
-        stored = self._authorizations.pop(authorization._nonce, None)
-        if stored is None or stored != authorization:
-            raise ExecutionSafetyError("execution blocked: invalid or already-consumed execution authorization")
-        if stored._expires_at < _now():
-            raise ExecutionSafetyError("execution blocked: execution authorization expired")
-        if stored._order_fingerprint != _fingerprint(order):
+        if not isinstance(authorization, ExecutionAuthorization):
+            raise ExecutionSafetyError("execution blocked: invalid execution authorization")
+        if authorization._expires_at.tzinfo is None:
+            raise ExecutionSafetyError("execution blocked: invalid execution authorization expiry")
+        if authorization._order_fingerprint != _fingerprint(order):
             raise ExecutionSafetyError("execution blocked: authorization is bound to a different order")
+        try:
+            status = self.authorization_store.consume(authorization, _fingerprint(order), _now)
+        except Exception as exc:
+            raise ExecutionSafetyError("execution blocked: authorization state could not be verified") from exc
+        messages = {
+            "missing": "execution blocked: invalid or already-consumed execution authorization",
+            "consumed": "execution blocked: invalid or already-consumed execution authorization",
+            "order_mismatch": "execution blocked: authorization is bound to a different order",
+            "expired": "execution blocked: execution authorization expired",
+            "invalid_expiry": "execution blocked: invalid execution authorization expiry",
+        }
+        if status != "consumed_now":
+            raise ExecutionSafetyError(messages.get(status, "execution blocked: invalid execution authorization"))
 
 
 def _order_intent_from_request(request: BrokerOrderRequest) -> OrderIntent:
