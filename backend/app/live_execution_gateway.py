@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from app.broker_order_lifecycle import OrderLifecycle, OrderLifecycleEvent, OrderStatus
 from app.order_intent import OrderIntent
 from app.pre_trade_reconciliation_gate import PreTradeReconciliationGate, PreTradeReconciliationPolicy
+from app.trading_incidents import IncidentReporter
 
 
 class ExecutionMode(str, Enum):
@@ -43,35 +44,28 @@ class TrackedExecution:
 class LiveExecutionGateway:
     """Single safety boundary between approved trade intents and broker execution."""
 
-    def __init__(
-        self,
-        executor: BrokerExecutor,
-        policy: ExecutionPolicy | None = None,
-        *,
-        position_reader: BrokerPositionReader | None = None,
-        local_positions_reader: callable | None = None,
-    ) -> None:
+    def __init__(self, executor: BrokerExecutor, policy: ExecutionPolicy | None = None, *, position_reader: BrokerPositionReader | None = None, local_positions_reader: Callable[[], list[dict[str, Any]]] | None = None, incident_reporter: IncidentReporter | None = None) -> None:
         self.executor = executor
         self.policy = policy or ExecutionPolicy()
         self.position_reader = position_reader
         self.local_positions_reader = local_positions_reader
+        self.incident_reporter = incident_reporter or IncidentReporter()
 
     def execute(self, order: OrderIntent) -> TrackedExecution:
         if self.policy.kill_switch:
+            self.incident_reporter.report_kill_switch("execution blocked: kill switch is active")
             raise ExecutionSafetyError("execution blocked: kill switch is active")
         if self.policy.mode is ExecutionMode.LIVE and not self.policy.live_trading_enabled:
             raise ExecutionSafetyError("live execution is disabled")
 
         if self.policy.mode is ExecutionMode.LIVE and self.policy.reconciliation_enabled:
             if self.position_reader is None or self.local_positions_reader is None:
+                self.incident_reporter.report_reconciliation_failure("execution blocked: position reconciliation is not configured")
                 raise ExecutionSafetyError("execution blocked: position reconciliation is not configured")
             try:
-                PreTradeReconciliationGate(PreTradeReconciliationPolicy(enabled=True, block_on_mismatch=True)).check(
-                    self.local_positions_reader(), self.position_reader.get_positions()
-                )
+                PreTradeReconciliationGate(PreTradeReconciliationPolicy(enabled=True, block_on_mismatch=True)).check(self.local_positions_reader(), self.position_reader.get_positions())
             except Exception as exc:
-                if isinstance(exc, ExecutionSafetyError):
-                    raise
+                self.incident_reporter.report_reconciliation_failure(str(exc))
                 raise ExecutionSafetyError(f"execution blocked: pre-trade reconciliation failed: {exc}") from exc
 
         try:
@@ -86,6 +80,7 @@ class LiveExecutionGateway:
             result = self.executor.execute(safe_order)
         except Exception as exc:
             lifecycle.apply(OrderLifecycleEvent(status=OrderStatus.REJECTED, timestamp=_now(), reason=str(exc)))
+            self.incident_reporter.report_order_rejection(str(exc))
             raise
         return TrackedExecution(result=result, lifecycle=lifecycle)
 
