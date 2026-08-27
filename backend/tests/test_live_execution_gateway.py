@@ -2,6 +2,7 @@ import math
 
 import pytest
 
+from app.execution_authorization_store import ExecutionAuthorizationStore
 from app.live_execution_gateway import (
     ExecutionMode,
     ExecutionPolicy,
@@ -32,7 +33,7 @@ def make_order():
     return OrderIntent("NIFTY", "BUY", 100.0, 99.0, 102.0, 1, 1.0, "test", 0.8)
 
 
-def live_gateway(executor=None):
+def live_gateway(executor=None, store=None):
     executor = executor or FakeExecutor()
     positions = []
     return LiveExecutionGateway(
@@ -40,31 +41,46 @@ def live_gateway(executor=None):
         ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True),
         position_reader=FakePositionReader(positions),
         local_positions_reader=lambda: positions,
+        authorization_store=store or ExecutionAuthorizationStore(":memory:"),
     )
 
 
 def test_paper_mode_delegates():
     executor = FakeExecutor()
-    result = LiveExecutionGateway(executor).execute(make_order())
+    result = LiveExecutionGateway(
+        executor,
+        authorization_store=ExecutionAuthorizationStore(":memory:"),
+    ).execute(make_order())
     assert result.result["status"] == "accepted"
     assert len(executor.orders) == 1
 
 
 def test_live_mode_requires_explicit_enablement():
     with pytest.raises(ExecutionSafetyError, match="disabled"):
-        LiveExecutionGateway(FakeExecutor(), ExecutionPolicy(mode=ExecutionMode.LIVE)).execute(make_order())
+        LiveExecutionGateway(
+            FakeExecutor(),
+            ExecutionPolicy(mode=ExecutionMode.LIVE),
+            authorization_store=ExecutionAuthorizationStore(":memory:"),
+        ).execute(make_order())
 
 
 def test_kill_switch_blocks_every_mode():
     with pytest.raises(ExecutionSafetyError, match="kill switch"):
-        LiveExecutionGateway(FakeExecutor(), ExecutionPolicy(kill_switch=True)).execute(make_order())
+        LiveExecutionGateway(
+            FakeExecutor(),
+            ExecutionPolicy(kill_switch=True),
+            authorization_store=ExecutionAuthorizationStore(":memory:"),
+        ).execute(make_order())
 
 
 def test_invalid_nan_order_is_blocked_before_executor():
     executor = FakeExecutor()
     order = OrderIntent("NIFTY", "BUY", math.nan, 99.0, 102.0, 1, 1.0, "test", 0.8)
     with pytest.raises(ExecutionSafetyError, match="invalid order intent"):
-        LiveExecutionGateway(executor).execute(order)
+        LiveExecutionGateway(
+            executor,
+            authorization_store=ExecutionAuthorizationStore(":memory:"),
+        ).execute(order)
     assert executor.orders == []
 
 
@@ -72,7 +88,10 @@ def test_invalid_side_is_blocked_before_executor():
     executor = FakeExecutor()
     order = OrderIntent("NIFTY", "HOLD", 100.0, 99.0, 102.0, 1, 1.0, "test", 0.8)
     with pytest.raises(ExecutionSafetyError, match="invalid order intent"):
-        LiveExecutionGateway(executor).execute(order)
+        LiveExecutionGateway(
+            executor,
+            authorization_store=ExecutionAuthorizationStore(":memory:"),
+        ).execute(order)
     assert executor.orders == []
 
 
@@ -80,7 +99,10 @@ def test_invalid_confidence_is_blocked_before_executor():
     executor = FakeExecutor()
     order = OrderIntent("NIFTY", "BUY", 100.0, 99.0, 102.0, 1, 1.0, "test", 1.5)
     with pytest.raises(ExecutionSafetyError, match="invalid order intent"):
-        LiveExecutionGateway(executor).execute(order)
+        LiveExecutionGateway(
+            executor,
+            authorization_store=ExecutionAuthorizationStore(":memory:"),
+        ).execute(order)
     assert executor.orders == []
 
 
@@ -104,6 +126,31 @@ def test_live_authorization_is_consumed_after_one_execution():
     assert len(executor.orders) == 1
 
 
+def test_live_authorization_survives_gateway_restart():
+    store = ExecutionAuthorizationStore(":memory:")
+    first = live_gateway(FakeExecutor(), store)
+    authorization = first.authorize(make_order())
+    second_executor = FakeExecutor()
+    second = live_gateway(second_executor, store)
+    result = second.execute(make_order(), authorization)
+    assert result.result["status"] == "accepted"
+    assert len(second_executor.orders) == 1
+
+
+def test_live_authorization_store_is_atomic_across_gateway_instances():
+    store = ExecutionAuthorizationStore(":memory:")
+    first_executor = FakeExecutor()
+    second_executor = FakeExecutor()
+    first = live_gateway(first_executor, store)
+    second = live_gateway(second_executor, store)
+    authorization = first.authorize(make_order())
+    first.execute(make_order(), authorization)
+    with pytest.raises(ExecutionSafetyError, match="already-consumed"):
+        second.execute(make_order(), authorization)
+    assert len(first_executor.orders) == 1
+    assert second_executor.orders == []
+
+
 def test_live_authorization_is_bound_to_order():
     executor = FakeExecutor()
     gateway = live_gateway(executor)
@@ -121,6 +168,7 @@ def test_live_authorization_requires_current_reconciliation():
         ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True),
         position_reader=FakePositionReader([{"symbol": "NIFTY", "quantity": 1}]),
         local_positions_reader=lambda: [],
+        authorization_store=ExecutionAuthorizationStore(":memory:"),
     )
     with pytest.raises(ExecutionSafetyError, match="reconciliation failed"):
         gateway.authorize(make_order())
@@ -133,6 +181,7 @@ def test_live_authorization_rejects_invalid_ttl():
         ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True, authorization_ttl_seconds=0),
         position_reader=FakePositionReader(),
         local_positions_reader=lambda: [],
+        authorization_store=ExecutionAuthorizationStore(":memory:"),
     )
     with pytest.raises(ExecutionSafetyError, match="TTL"):
         gateway.authorize(make_order())
