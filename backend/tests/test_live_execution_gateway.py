@@ -2,6 +2,7 @@ import math
 
 import pytest
 
+from app.broker_execution_context import BrokerExecutionContext
 from app.execution_authorization_store import ExecutionAuthorizationStore
 from app.live_execution_gateway import (
     ExecutionMode,
@@ -31,6 +32,17 @@ class FakePositionReader:
 
 def make_order():
     return OrderIntent("NIFTY", "BUY", 100.0, 99.0, 102.0, 1, 1.0, "test", 0.8)
+
+
+def make_context(generation=7, fingerprint="snapshot"):
+    return BrokerExecutionContext(
+        account_id="acct-1",
+        broker_route="paper-route",
+        route_generation="route-gen-1",
+        generation=generation,
+        snapshot_fingerprint=fingerprint,
+        observed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+    )
 
 
 def live_gateway(executor=None, store=None):
@@ -110,29 +122,31 @@ def test_live_execution_requires_single_use_authorization():
     executor = FakeExecutor()
     gateway = live_gateway(executor)
     with pytest.raises(ExecutionSafetyError, match="single-use execution authorization"):
-        gateway.execute(make_order())
+        gateway.execute(make_order(), context=make_context())
     assert executor.orders == []
 
 
 def test_live_authorization_is_consumed_after_one_execution():
     executor = FakeExecutor()
     gateway = live_gateway(executor)
-    authorization = gateway.authorize(make_order())
-    result = gateway.execute(make_order(), authorization)
+    context = make_context()
+    authorization = gateway.authorize(make_order(), context)
+    result = gateway.execute(make_order(), authorization, context)
     assert result.result["status"] == "accepted"
     assert len(executor.orders) == 1
     with pytest.raises(ExecutionSafetyError, match="already-consumed"):
-        gateway.execute(make_order(), authorization)
+        gateway.execute(make_order(), authorization, context)
     assert len(executor.orders) == 1
 
 
 def test_live_authorization_survives_gateway_restart():
     store = ExecutionAuthorizationStore(":memory:")
     first = live_gateway(FakeExecutor(), store)
-    authorization = first.authorize(make_order())
+    context = make_context()
+    authorization = first.authorize(make_order(), context)
     second_executor = FakeExecutor()
     second = live_gateway(second_executor, store)
-    result = second.execute(make_order(), authorization)
+    result = second.execute(make_order(), authorization, context)
     assert result.result["status"] == "accepted"
     assert len(second_executor.orders) == 1
 
@@ -143,10 +157,11 @@ def test_live_authorization_store_is_atomic_across_gateway_instances():
     second_executor = FakeExecutor()
     first = live_gateway(first_executor, store)
     second = live_gateway(second_executor, store)
-    authorization = first.authorize(make_order())
-    first.execute(make_order(), authorization)
+    context = make_context()
+    authorization = first.authorize(make_order(), context)
+    first.execute(make_order(), authorization, context)
     with pytest.raises(ExecutionSafetyError, match="already-consumed"):
-        second.execute(make_order(), authorization)
+        second.execute(make_order(), authorization, context)
     assert len(first_executor.orders) == 1
     assert second_executor.orders == []
 
@@ -154,11 +169,28 @@ def test_live_authorization_store_is_atomic_across_gateway_instances():
 def test_live_authorization_is_bound_to_order():
     executor = FakeExecutor()
     gateway = live_gateway(executor)
-    authorization = gateway.authorize(make_order())
+    context = make_context()
+    authorization = gateway.authorize(make_order(), context)
     changed = OrderIntent("NIFTY", "BUY", 101.0, 99.0, 103.0, 1, 1.0, "test", 0.8)
     with pytest.raises(ExecutionSafetyError, match="different order"):
-        gateway.execute(changed, authorization)
+        gateway.execute(changed, authorization, context)
     assert executor.orders == []
+
+
+def test_live_authorization_is_bound_to_broker_context():
+    executor = FakeExecutor()
+    gateway = live_gateway(executor)
+    authorization = gateway.authorize(make_order(), make_context())
+    changed_context = make_context(fingerprint="different-snapshot")
+    with pytest.raises(ExecutionSafetyError, match="different broker context"):
+        gateway.execute(make_order(), authorization, changed_context)
+    assert executor.orders == []
+
+
+def test_live_authorization_requires_context():
+    gateway = live_gateway(FakeExecutor())
+    with pytest.raises(ExecutionSafetyError, match="broker execution context"):
+        gateway.authorize(make_order(), None)
 
 
 def test_live_authorization_requires_current_reconciliation():
@@ -171,7 +203,7 @@ def test_live_authorization_requires_current_reconciliation():
         authorization_store=ExecutionAuthorizationStore(":memory:"),
     )
     with pytest.raises(ExecutionSafetyError, match="reconciliation failed"):
-        gateway.authorize(make_order())
+        gateway.authorize(make_order(), make_context())
     assert executor.orders == []
 
 
@@ -184,4 +216,4 @@ def test_live_authorization_rejects_invalid_ttl():
         authorization_store=ExecutionAuthorizationStore(":memory:"),
     )
     with pytest.raises(ExecutionSafetyError, match="TTL"):
-        gateway.authorize(make_order())
+        gateway.authorize(make_order(), make_context())
