@@ -66,6 +66,17 @@ _STATUS_ALIASES = {
     "REJECTED": "REJECTED",
 }
 
+# The broker is allowed to advance an order through these lifecycle states.
+# Terminal states must never regress. A status mismatch that is not an allowed
+# transition is treated as malformed/unsafe broker state and fails closed.
+_ALLOWED_STATUS_TRANSITIONS = {
+    "OPEN": {"OPEN", "PARTIALLY_FILLED", "FILLED", "CANCELLED", "REJECTED"},
+    "PARTIALLY_FILLED": {"PARTIALLY_FILLED", "FILLED", "CANCELLED", "REJECTED"},
+    "FILLED": {"FILLED"},
+    "CANCELLED": {"CANCELLED"},
+    "REJECTED": {"REJECTED"},
+}
+
 
 def _canonical_order_status(value: Any, *, order_id: str) -> str:
     status = str(value).strip().upper()
@@ -103,6 +114,15 @@ def _validate_order_snapshot(order: LocalOrderSnapshot | BrokerOrderSnapshot, *,
     if filled_quantity > quantity:
         raise ValueError(f"order {order_id} has filled_quantity greater than quantity")
     return order_id, status
+
+
+def _validate_status_transition(*, order_id: str, local_status: str, broker_status: str) -> None:
+    allowed = _ALLOWED_STATUS_TRANSITIONS[local_status]
+    if broker_status not in allowed:
+        raise ValueError(
+            f"order {order_id} has unsafe status regression: "
+            f"{local_status} -> {broker_status}"
+        )
 
 
 class OrderReconciler:
@@ -147,6 +167,8 @@ class OrderReconciler:
                 issues.append(ReconciliationIssue(broker_id, "quantity", local.quantity, broker.quantity, "order quantity mismatch"))
             if abs(float(local.filled_quantity) - float(broker.filled_quantity)) > self.quantity_tolerance:
                 issues.append(ReconciliationIssue(broker_id, "filled_quantity", local.filled_quantity, broker.filled_quantity, "filled quantity mismatch"))
+            assert broker_status is not None
+            _validate_status_transition(order_id=broker_id, local_status=local_status, broker_status=broker_status)
             if local_status != broker_status:
                 issues.append(ReconciliationIssue(broker_id, "status", local.status, broker.status, "order status mismatch"))
 
