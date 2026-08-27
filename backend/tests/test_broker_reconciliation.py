@@ -109,6 +109,27 @@ def test_malformed_local_order_fails_closed(kwargs):
         OrderReconciler().reconcile({"OID-1": _order(**kwargs)}, [])
 
 
+def test_order_reconciliation_accepts_semantically_equivalent_status_aliases():
+    issues = OrderReconciler().reconcile(
+        {"OID-1": _order(status="FILLED", quantity=10, filled_quantity=10)},
+        [_broker(status="COMPLETE", quantity=10, filled_quantity=10)],
+    )
+    assert issues == []
+
+
+def test_order_reconciliation_accepts_cancelled_spelling_alias():
+    issues = OrderReconciler().reconcile(
+        {"OID-1": _order(status="CANCELLED", filled_quantity=0)},
+        [_broker(status="CANCELED", filled_quantity=0)],
+    )
+    assert issues == []
+
+
+def test_order_reconciliation_rejects_unsupported_broker_status():
+    with pytest.raises(ValueError):
+        OrderReconciler().reconcile({"OID-1": _order()}, [_broker(status="UNKNOWN_BROKER_STATE")])
+
+
 def test_order_reconciliation_rejects_non_matching_mapping_key():
     with pytest.raises(ValueError):
         OrderReconciler().reconcile({"WRONG": _order()}, [_broker()])
