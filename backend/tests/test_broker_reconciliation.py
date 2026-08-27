@@ -1,6 +1,11 @@
 import pytest
 
-from app.broker_reconciliation import reconcile_positions
+from app.broker_reconciliation import (
+    BrokerOrderSnapshot,
+    LocalOrderSnapshot,
+    OrderReconciler,
+    reconcile_positions,
+)
 
 
 def test_positions_match_after_aggregation():
@@ -58,3 +63,57 @@ def test_malformed_broker_position_fails_closed(broker_row):
 def test_malformed_local_position_fails_closed():
     with pytest.raises(ValueError):
         reconcile_positions([{"symbol": "NIFTY", "quantity": None}], [])
+
+
+def _order(order_id="OID-1", *, quantity=10, filled_quantity=2, symbol="NIFTY", side="BUY", status="OPEN"):
+    return LocalOrderSnapshot(order_id, symbol, side, quantity, filled_quantity, status)
+
+
+def _broker(order_id="OID-1", *, quantity=10, filled_quantity=2, symbol="NIFTY", side="BUY", status="OPEN"):
+    return BrokerOrderSnapshot(order_id, symbol, side, quantity, filled_quantity, status)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"quantity": float("nan")},
+        {"quantity": float("inf")},
+        {"quantity": -1},
+        {"quantity": "not-a-number"},
+        {"filled_quantity": float("nan")},
+        {"filled_quantity": float("inf")},
+        {"filled_quantity": -1},
+        {"filled_quantity": 11},
+    ],
+)
+def test_malformed_broker_order_fails_closed(kwargs):
+    with pytest.raises(ValueError):
+        OrderReconciler().reconcile({}, [_broker(**kwargs)])
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"quantity": float("nan")},
+        {"filled_quantity": float("inf")},
+        {"filled_quantity": 11},
+        {"side": ""},
+        {"side": "HOLD"},
+        {"symbol": ""},
+        {"status": ""},
+        {"order_id": ""},
+    ],
+)
+def test_malformed_local_order_fails_closed(kwargs):
+    with pytest.raises(ValueError):
+        OrderReconciler().reconcile({"OID-1": _order(**kwargs)}, [])
+
+
+def test_order_reconciliation_rejects_non_matching_mapping_key():
+    with pytest.raises(ValueError):
+        OrderReconciler().reconcile({"WRONG": _order()}, [_broker()])
+
+
+def test_valid_orders_still_reconcile_cleanly():
+    issues = OrderReconciler().reconcile({"OID-1": _order()}, [_broker()])
+    assert issues == []
