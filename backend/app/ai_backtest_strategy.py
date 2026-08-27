@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from app.ai_decision_engine import AIDecisionEngine
+from app.ai_decision_engine import AIDecisionEngine, TradingDecision
 from app.market_context import Candle
 from app.market_context_builder import MarketContextBuilder
 
@@ -23,6 +23,22 @@ class CanonicalAIBacktestStrategy:
         self.symbol = symbol
         self.timeframe = timeframe
 
+    def decision(self, index: int, candles: Sequence[Candle]) -> TradingDecision:
+        """Evaluate exactly once from information available at this bar only."""
+        if index < 0 or index >= len(candles):
+            raise IndexError("backtest index out of range")
+        visible = tuple(candles[: index + 1])
+        if len(visible) < 50:
+            raise ValueError("insufficient candles for canonical AI decision")
+        as_of = visible[-1].timestamp
+        context = self.context_builder.build(
+            self.symbol,
+            self.timeframe,
+            visible,
+            as_of=as_of,
+        )
+        return self.decision_engine.decide(context)
+
     def signal(self, index: int, candles: Sequence[Candle]) -> tuple[str, int] | None:
         """Return a backtest signal from information available at this bar only.
 
@@ -33,16 +49,7 @@ class CanonicalAIBacktestStrategy:
         visible = tuple(candles[: index + 1])
         if len(visible) < 50:
             return None
-        as_of = visible[-1].timestamp
-        context = self.context_builder.build(
-            self.symbol,
-            self.timeframe,
-            visible,
-            as_of=as_of,
-        )
-        decision = self.decision_engine.decide(context)
+        decision = self.decision(index, candles)
         if decision.decision == "HOLD":
             return None
-        # Keep sizing outside the AI strategy. One unit is a neutral signal contract;
-        # the production risk layer can replace this quantity before execution.
         return decision.decision, 1
