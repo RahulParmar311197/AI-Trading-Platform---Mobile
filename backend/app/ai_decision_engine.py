@@ -20,6 +20,7 @@ class DecisionConfig:
 
 @dataclass(frozen=True)
 class TradingDecision:
+    symbol: str
     decision: Decision
     confidence: float
     bullish_score: float
@@ -76,7 +77,7 @@ class AIDecisionEngine:
 
         inputs_ready, input_reasons = self._decision_inputs_ready(context, values)
         if not inputs_ready:
-            return TradingDecision('HOLD', 0.0, 0.0, 0.0, None, None, None, input_reasons)
+            return TradingDecision(context.symbol, 'HOLD', 0.0, 0.0, 0.0, None, None, None, input_reasons)
 
         ema20 = values['ema_20']
         ema50 = values['ema_50']
@@ -121,7 +122,7 @@ class AIDecisionEngine:
             if ml_label != decision:
                 if self.config.ml is not None and self.config.ml.require_agreement:
                     reasons.append('ML disagreement: trade rejected')
-                    return TradingDecision('HOLD', confidence, round(bullish, 4), round(bearish, 4), None, None, None, tuple(reasons))
+                    return TradingDecision(context.symbol, 'HOLD', confidence, round(bullish, 4), round(bearish, 4), None, None, None, tuple(reasons))
                 confidence = max(0.0, confidence * (1.0 - (self.config.ml.weight if self.config.ml else 0.25)))
                 reasons.append(f'ML disagrees: {ml_label}')
             elif ml_confidence >= (self.config.ml.min_confidence if self.config.ml else 0.55):
@@ -130,6 +131,6 @@ class AIDecisionEngine:
                 reasons.append(f'ML agrees: {ml_label} ({ml_confidence:.2f})')
             if confidence < self.config.minimum_confidence:
                 reasons.append('ML-adjusted confidence below threshold')
-                return TradingDecision('HOLD', round(confidence, 4), round(bullish, 4), round(bearish, 4), None, None, None, tuple(reasons))
+                return TradingDecision(context.symbol, 'HOLD', round(confidence, 4), round(bullish, 4), round(bearish, 4), None, None, None, tuple(reasons))
 
-        return TradingDecision(decision, round(confidence, 4), round(bullish, 4), round(bearish, 4), entry, stop, target, tuple(reasons))
+        return TradingDecision(context.symbol, decision, round(confidence, 4), round(bullish, 4), round(bearish, 4), entry, stop, target, tuple(reasons))
