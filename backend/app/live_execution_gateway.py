@@ -32,6 +32,7 @@ class ExecutionPolicy:
     kill_switch: bool = False
     reconciliation_enabled: bool = True
     authorization_ttl_seconds: int = 10
+    context_max_age_seconds: int = 5
 
 
 class BrokerExecutor(Protocol):
@@ -89,6 +90,7 @@ class LiveExecutionGateway:
             raise ExecutionSafetyError("live execution is disabled")
         if not isinstance(context, BrokerExecutionContext):
             raise ExecutionSafetyError("execution blocked: broker execution context is required")
+        self._validate_context_freshness(context)
         safe_order = self._validate_order(order)
         self._check_reconciliation()
         ttl = int(self.policy.authorization_ttl_seconds)
@@ -154,6 +156,19 @@ class LiveExecutionGateway:
             return safe_order
         except (TypeError, ValueError, OverflowError) as exc:
             raise ExecutionSafetyError(f"execution blocked: invalid order intent: {exc}") from exc
+
+    def _validate_context_freshness(self, context: BrokerExecutionContext) -> None:
+        max_age = int(self.policy.context_max_age_seconds)
+        if max_age <= 0:
+            raise ExecutionSafetyError("execution context max age must be positive")
+        observed_at = context.observed_at
+        if observed_at.tzinfo is None:
+            raise ExecutionSafetyError("execution blocked: broker execution context timestamp is not timezone-aware")
+        age = (_now() - observed_at).total_seconds()
+        if age < 0:
+            raise ExecutionSafetyError("execution blocked: broker execution context timestamp is in the future")
+        if age > max_age:
+            raise ExecutionSafetyError("execution blocked: broker execution context is stale")
 
     def _check_reconciliation(self) -> None:
         if not self.policy.reconciliation_enabled:
