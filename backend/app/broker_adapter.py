@@ -167,3 +167,13 @@ class PaperBrokerAdapter(BrokerAdapter):
     def get_position_snapshot(self): return BrokerPositionSnapshot(positions=self.get_positions(), complete=True, source=self.__class__.__name__)
     def get_account(self): return {"mode":"paper","healthy":True,"authenticated":True,"live_trading_enabled":False}
     def health(self): return BrokerHealth(broker=self.__class__.__name__,healthy=True,authenticated=True,live_trading_enabled=False,message="paper broker")
+
+class UpstoxAdapter(BrokerAdapter):
+    """Explicit Upstox boundary. A real client must be injected; no credentials are stored here."""
+    def __init__(self, client: Any): self.client = client
+    def submit_order(self, order): raise NotImplementedError("Upstox client mapping is not configured")
+    def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate: raise NotImplementedError("Upstox client mapping is not configured")
+    def get_order(self, broker_order_id: str) -> dict[str, Any]: raise NotImplementedError("Upstox client mapping is not configured")
+    def get_positions(self) -> list[dict[str, Any]]: raise NotImplementedError("Upstox client mapping is not configured")
+    def get_account(self) -> dict[str, Any]: raise NotImplementedError("Upstox client mapping is not configured")
+    def health(self) -> BrokerHealth: return BrokerHealth(broker="upstox", healthy=False, authenticated=False, live_trading_enabled=False, message="Upstox client mapping is not configured")
