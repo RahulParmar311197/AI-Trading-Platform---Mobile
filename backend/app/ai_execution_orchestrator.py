@@ -7,6 +7,7 @@ from app.ai_decision_engine import AIDecisionEngine, TradingDecision
 from app.ai_trade_intent import AITradeIntentConfig, build_ai_order_request
 from app.broker_adapter import BrokerOrderRequest
 from app.instruments import InstrumentProvider
+from app.signal_confluence import SignalDecision
 
 
 class OrderSubmitter(Protocol):
@@ -44,6 +45,7 @@ class AIExecutionOrchestrator:
         client_order_id: str,
         prediction=None,
         ml_confidence: float = 0.0,
+        confluence: SignalDecision | None = None,
         owner_user_id: int | None = None,
         broker_account_id: int | None = None,
         broker_route: str | None = None,
@@ -53,6 +55,7 @@ class AIExecutionOrchestrator:
             context,
             prediction=prediction,
             ml_confidence=ml_confidence,
+            confluence=confluence,
         )
         request = build_ai_order_request(
             decision,
