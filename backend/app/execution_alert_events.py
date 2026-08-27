@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 import sqlite3
 from typing import Callable
 
@@ -17,7 +18,6 @@ class ExecutionAlertEvent:
 
     @property
     def idempotency_key(self) -> str:
-        """Stable provider-side idempotency key for at-least-once delivery."""
         return f"execution-alert:{self.event_id}"
 
 
@@ -26,6 +26,8 @@ class ExecutionAlertEventStore:
 
     def __init__(self, path: str = "execution_alert_events.db") -> None:
         self.path = path
+        parent = os.path.dirname(os.path.abspath(path))
+        os.makedirs(parent, exist_ok=True)
         with sqlite3.connect(path) as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS execution_alert_events (id INTEGER PRIMARY KEY AUTOINCREMENT, alert_id INTEGER NOT NULL, event_type TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(alert_id, event_type))")
             conn.commit()
