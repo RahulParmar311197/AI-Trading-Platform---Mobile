@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Any
+import math
 
 
 @dataclass(frozen=True)
@@ -70,8 +71,15 @@ class MarketContext:
             raise ValueError("timeframe is required")
         if not self.candles:
             raise ValueError("at least one candle is required")
+        if self.as_of.tzinfo is None or self.as_of.utcoffset() is None:
+            raise ValueError("as_of must be timezone-aware")
         previous = None
         for candle in self.candles:
+            if candle.timestamp.tzinfo is None or candle.timestamp.utcoffset() is None:
+                raise ValueError("candle timestamp must be timezone-aware")
+            values = (candle.open, candle.high, candle.low, candle.close, candle.volume)
+            if not all(math.isfinite(float(value)) for value in values):
+                raise ValueError("candle OHLCV must be finite")
             if candle.high < max(candle.open, candle.close) or candle.low > min(candle.open, candle.close):
                 raise ValueError("invalid candle OHLC")
             if candle.high < candle.low or candle.volume < 0:
