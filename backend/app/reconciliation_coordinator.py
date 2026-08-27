@@ -35,10 +35,12 @@ class ReconciliationCoordinator:
             raise ValueError("broker snapshot account does not match reconciliation account")
         orders = broker_snapshot.orders
         positions = broker_snapshot.positions
-        observed_at = datetime.now(timezone.utc)
         check = self.engine.check(internal_orders, orders, internal_positions, positions)
         if not check.ok or check.trading_halted:
             raise RuntimeError("broker reconciliation failed; trading remains halted")
+        observed_at = datetime.fromisoformat(check.checked_at)
+        if observed_at.tzinfo is None:
+            raise ValueError("reconciliation observation must be timezone-aware")
         context = BrokerExecutionContext(
             account_id=self.account_id,
             broker_route=self.route,
