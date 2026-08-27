@@ -99,11 +99,18 @@ class OrderReconciler:
 
 def _normalise(rows: list[dict[str, Any]], symbol_key: str = "symbol", qty_key: str = "quantity") -> dict[str, float]:
     result: dict[str, float] = {}
-    for row in rows:
+    for index, row in enumerate(rows):
         symbol = str(row.get(symbol_key, "")).strip()
         if not symbol:
-            continue
-        quantity = float(row.get(qty_key, 0) or 0)
+            raise ValueError(f"position row {index} is missing symbol")
+        if qty_key not in row or row[qty_key] is None:
+            raise ValueError(f"position row {index} is missing quantity")
+        try:
+            quantity = float(row[qty_key])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"position row {index} has invalid quantity") from exc
+        if not isfinite(quantity):
+            raise ValueError(f"position row {index} has non-finite quantity")
         result[symbol] = result.get(symbol, 0.0) + quantity
     return result
 
