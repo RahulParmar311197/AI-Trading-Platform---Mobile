@@ -60,25 +60,21 @@ def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_
     while i < len(candles) - 1:
         history = candles[:i + 1]
         if strategy_mode == 'ai':
-            context_history = tuple(_canonical_candle(c) for c in history)
-            ai_signal = ai_strategy.signal(i, context_history)
-            if ai_signal is None:
+            if i < 49:
                 i += 1
                 continue
-            from app.order_intent import OrderIntent as _OrderIntent
+            context_history = tuple(_canonical_candle(c) for c in history)
+            ai_decision = ai_strategy.decision(i, context_history)
+            if ai_decision.decision == 'HOLD':
+                i += 1
+                continue
             class _Signal:
-                action = ai_signal[0]
-                quantity = ai_signal[1]
-                confidence = 0.0
-                stop_loss = None
-                target = None
-            ai_decision = ai_strategy.decision_engine.decide(
-                ai_strategy.context_builder.build(ai_strategy.symbol, ai_strategy.timeframe, context_history, as_of=context_history[-1].timestamp)
-            )
+                action = ai_decision.decision
+                quantity = 1
+                confidence = ai_decision.confidence
+                stop_loss = ai_decision.stop_loss
+                target = ai_decision.target
             signal = _Signal()
-            signal.confidence = ai_decision.confidence
-            signal.stop_loss = ai_decision.stop_loss
-            signal.target = ai_decision.target
         else:
             signal = generate_signal(history)
         if signal is None:
