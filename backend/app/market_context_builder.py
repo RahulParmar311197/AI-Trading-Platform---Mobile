@@ -6,6 +6,7 @@ from typing import Sequence
 from app.ai_features import build_features
 from app.ict_engine import ict_context
 from app.market_context import Candle, ICTSnapshot, IndicatorSnapshot, MarketContext
+from app.market_data_quality import assess_data_quality
 from app.market_structure import MarketStructureEngine
 from app.smc_engine import SMCEngine
 from app.technical_indicators import calculate_indicators
@@ -26,6 +27,9 @@ class MarketContextBuilder:
         if not candles:
             raise ValueError("at least one candle is required")
         candle_list = list(candles)
+        quality = assess_data_quality(candle_list, as_of=as_of)
+        if quality.status in {"INVALID", "STALE"}:
+            raise ValueError(f"market data quality {quality.status}: {'; '.join(quality.reasons)}")
         features = build_features(candle_list)
         indicators = calculate_indicators(candle_list)
         structure = self.structure.analyze(candle_list)
