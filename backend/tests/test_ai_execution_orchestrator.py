@@ -1,7 +1,7 @@
 import pytest
 
 from app.ai_decision_engine import TradingDecision
-from app.ai_execution_orchestrator import AIExecutionOrchestrator
+from app.ai_execution_orchestrator import AIRiskSnapshot, AIExecutionOrchestrator
 from app.instruments import InstrumentProvider, InstrumentSpec
 
 
@@ -9,7 +9,7 @@ class FakeDecisionEngine:
     def __init__(self, decision):
         self.decision = decision
 
-    def decide(self, context, *, prediction=None, ml_confidence=0.0):
+    def decide(self, context, *, prediction=None, ml_confidence=0.0, confluence=None):
         return self.decision
 
 
@@ -40,24 +40,62 @@ def make_decision(side="BUY"):
     )
 
 
+def risk_snapshot(**overrides):
+    values = dict(daily_pnl=0.0, open_positions=0, recent_losses=0)
+    values.update(overrides)
+    return AIRiskSnapshot(**values)
+
+
 @pytest.mark.asyncio
-async def test_buy_reaches_submitter_exactly_once():
+async def test_buy_reaches_submitter_exactly_once_after_risk_approval():
     submitter = FakeSubmitter()
     orchestrator = AIExecutionOrchestrator(
         decision_engine=FakeDecisionEngine(make_decision()),
         instrument_provider=FakeProvider(), order_submitter=submitter,
     )
     result = await orchestrator.evaluate_and_execute(
-        object(), equity=100_000, client_order_id="ai-test-1"
+        object(), equity=100_000, client_order_id="ai-test-1",
+        risk_snapshot=risk_snapshot(),
     )
     assert result.order_request is not None
     assert result.execution == {"status": "accepted"}
+    assert result.risk_decision is not None and result.risk_decision.allowed
     assert len(submitter.requests) == 1
     assert submitter.requests[0].quantity == 100
 
 
 @pytest.mark.asyncio
-async def test_hold_never_reaches_submitter():
+async def test_risk_rejection_never_reaches_submitter():
+    submitter = FakeSubmitter()
+    orchestrator = AIExecutionOrchestrator(
+        decision_engine=FakeDecisionEngine(make_decision()),
+        instrument_provider=FakeProvider(), order_submitter=submitter,
+    )
+    result = await orchestrator.evaluate_and_execute(
+        object(), equity=100_000, client_order_id="ai-test-risk-veto",
+        risk_snapshot=risk_snapshot(daily_pnl=-3_000),
+    )
+    assert result.execution is None
+    assert result.risk_decision is not None and not result.risk_decision.allowed
+    assert submitter.requests == []
+
+
+@pytest.mark.asyncio
+async def test_trade_requires_authoritative_risk_snapshot():
+    submitter = FakeSubmitter()
+    orchestrator = AIExecutionOrchestrator(
+        decision_engine=FakeDecisionEngine(make_decision()),
+        instrument_provider=FakeProvider(), order_submitter=submitter,
+    )
+    with pytest.raises(RuntimeError, match="risk snapshot"):
+        await orchestrator.evaluate_and_execute(
+            object(), equity=100_000, client_order_id="ai-test-missing-risk"
+        )
+    assert submitter.requests == []
+
+
+@pytest.mark.asyncio
+async def test_hold_never_reaches_submitter_or_requires_risk_snapshot():
     submitter = FakeSubmitter()
     orchestrator = AIExecutionOrchestrator(
         decision_engine=FakeDecisionEngine(
@@ -71,4 +109,5 @@ async def test_hold_never_reaches_submitter():
     )
     assert result.order_request is None
     assert result.execution is None
+    assert result.risk_decision is None
     assert submitter.requests == []
