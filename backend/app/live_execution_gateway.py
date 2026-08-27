@@ -8,6 +8,7 @@ import secrets
 from typing import Any, Callable, Protocol
 
 from app.broker_adapter import BrokerOrderRequest
+from app.broker_context_attestation import BrokerContextAttestor
 from app.broker_execution_context import BrokerExecutionContext
 from app.broker_order_lifecycle import OrderLifecycle, OrderLifecycleEvent, OrderStatus
 from app.execution_authorization_store import ExecutionAuthorizationStore
@@ -71,6 +72,7 @@ class LiveExecutionGateway:
         local_positions_reader: Callable[[], list[dict[str, Any]]] | None = None,
         incident_reporter: IncidentReporter | None = None,
         authorization_store: ExecutionAuthorizationStore | None = None,
+        context_attestor: BrokerContextAttestor | None = None,
     ) -> None:
         self.executor = executor
         self.policy = policy or ExecutionPolicy()
@@ -78,9 +80,10 @@ class LiveExecutionGateway:
         self.local_positions_reader = local_positions_reader
         self.incident_reporter = incident_reporter or IncidentReporter()
         self.authorization_store = authorization_store or ExecutionAuthorizationStore()
+        self.context_attestor = context_attestor
 
     def authorize(self, order: OrderIntent, context: BrokerExecutionContext) -> ExecutionAuthorization:
-        """Validate a live order against current state and bind authorization to one broker context."""
+        """Validate a live order against current state and a coordinator-attested broker context."""
         if self.policy.kill_switch:
             self.incident_reporter.report_kill_switch("execution blocked: kill switch is active")
             raise ExecutionSafetyError("execution blocked: kill switch is active")
@@ -90,6 +93,8 @@ class LiveExecutionGateway:
             raise ExecutionSafetyError("live execution is disabled")
         if not isinstance(context, BrokerExecutionContext):
             raise ExecutionSafetyError("execution blocked: broker execution context is required")
+        if self.context_attestor is None or not self.context_attestor.verify(context):
+            raise ExecutionSafetyError("execution blocked: broker execution context is not coordinator-attested")
         self._validate_context_freshness(context)
         safe_order = self._validate_order(order)
         self._check_reconciliation()
@@ -108,11 +113,7 @@ class LiveExecutionGateway:
             raise ExecutionSafetyError("execution blocked: authorization could not be persisted") from exc
         return token
 
-    def authorize_request(
-        self,
-        request: BrokerOrderRequest,
-        context: BrokerExecutionContext,
-    ) -> ExecutionAuthorization:
+    def authorize_request(self, request: BrokerOrderRequest, context: BrokerExecutionContext) -> ExecutionAuthorization:
         return self.authorize(_order_intent_from_request(request), context)
 
     def execute(
@@ -196,6 +197,8 @@ class LiveExecutionGateway:
             raise ExecutionSafetyError("execution blocked: invalid execution authorization")
         if not isinstance(context, BrokerExecutionContext):
             raise ExecutionSafetyError("execution blocked: broker execution context is required")
+        if self.context_attestor is None or not self.context_attestor.verify(context):
+            raise ExecutionSafetyError("execution blocked: broker execution context is not coordinator-attested")
         if authorization._expires_at.tzinfo is None:
             raise ExecutionSafetyError("execution blocked: invalid execution authorization expiry")
         if authorization._order_fingerprint != _fingerprint(order):
