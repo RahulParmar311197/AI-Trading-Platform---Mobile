@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from app.live_execution_gateway import ExecutionMode, ExecutionPolicy, ExecutionSafetyError, LiveExecutionGateway
@@ -32,3 +34,27 @@ def test_live_mode_requires_explicit_enablement():
 def test_kill_switch_blocks_every_mode():
     with pytest.raises(ExecutionSafetyError, match="kill switch"):
         LiveExecutionGateway(FakeExecutor(), ExecutionPolicy(kill_switch=True)).execute(make_order())
+
+
+def test_invalid_nan_order_is_blocked_before_executor():
+    executor = FakeExecutor()
+    order = OrderIntent("NIFTY", "BUY", math.nan, 99.0, 102.0, 1, 1.0, "test", 0.8)
+    with pytest.raises(ExecutionSafetyError, match="invalid order intent"):
+        LiveExecutionGateway(executor).execute(order)
+    assert executor.orders == []
+
+
+def test_invalid_side_is_blocked_before_executor():
+    executor = FakeExecutor()
+    order = OrderIntent("NIFTY", "HOLD", 100.0, 99.0, 102.0, 1, 1.0, "test", 0.8)
+    with pytest.raises(ExecutionSafetyError, match="invalid order intent"):
+        LiveExecutionGateway(executor).execute(order)
+    assert executor.orders == []
+
+
+def test_invalid_confidence_is_blocked_before_executor():
+    executor = FakeExecutor()
+    order = OrderIntent("NIFTY", "BUY", 100.0, 99.0, 102.0, 1, 1.0, "test", 1.5)
+    with pytest.raises(ExecutionSafetyError, match="invalid order intent"):
+        LiveExecutionGateway(executor).execute(order)
+    assert executor.orders == []
