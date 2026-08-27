@@ -125,6 +125,53 @@ def test_order_reconciliation_accepts_cancelled_spelling_alias():
     assert issues == []
 
 
+@pytest.mark.parametrize(
+    "local_status,broker_status",
+    [
+        ("OPEN", "FILLED"),
+        ("OPEN", "PARTIALLY_FILLED"),
+        ("OPEN", "CANCELLED"),
+        ("OPEN", "REJECTED"),
+        ("PARTIALLY_FILLED", "FILLED"),
+        ("PARTIALLY_FILLED", "CANCELLED"),
+        ("PARTIALLY_FILLED", "REJECTED"),
+    ],
+)
+def test_order_reconciliation_allows_forward_lifecycle_transitions(local_status, broker_status):
+    quantity = 10
+    filled = 10 if broker_status == "FILLED" else (2 if broker_status == "PARTIALLY_FILLED" else 0)
+    issues = OrderReconciler().reconcile(
+        {"OID-1": _order(status=local_status, quantity=quantity, filled_quantity=filled)},
+        [_broker(status=broker_status, quantity=quantity, filled_quantity=filled)],
+    )
+    assert len(issues) == (0 if local_status == broker_status else 1)
+    if issues:
+        assert issues[0].field == "status"
+
+
+@pytest.mark.parametrize(
+    "local_status,broker_status",
+    [
+        ("FILLED", "OPEN"),
+        ("FILLED", "PARTIALLY_FILLED"),
+        ("FILLED", "CANCELLED"),
+        ("CANCELLED", "OPEN"),
+        ("CANCELLED", "FILLED"),
+        ("REJECTED", "OPEN"),
+        ("REJECTED", "FILLED"),
+        ("PARTIALLY_FILLED", "OPEN"),
+    ],
+)
+def test_order_reconciliation_rejects_unsafe_status_regression(local_status, broker_status):
+    filled = 10 if local_status == "FILLED" else (2 if local_status == "PARTIALLY_FILLED" else 0)
+    broker_filled = 10 if broker_status == "FILLED" else (2 if broker_status == "PARTIALLY_FILLED" else 0)
+    with pytest.raises(ValueError, match="unsafe status regression"):
+        OrderReconciler().reconcile(
+            {"OID-1": _order(status=local_status, quantity=10, filled_quantity=filled)},
+            [_broker(status=broker_status, quantity=10, filled_quantity=broker_filled)],
+        )
+
+
 def test_order_reconciliation_rejects_unsupported_broker_status():
     with pytest.raises(ValueError):
         OrderReconciler().reconcile({"OID-1": _order()}, [_broker(status="UNKNOWN_BROKER_STATE")])
