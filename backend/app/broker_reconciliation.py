@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from math import isfinite
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,82 @@ class ReconciliationReport:
     deltas: tuple[PositionDelta, ...]
     broker_only: tuple[str, ...]
     local_only: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LocalOrderSnapshot:
+    broker_order_id: str
+    symbol: str
+    side: str
+    quantity: float
+    filled_quantity: float
+    status: str
+
+
+@dataclass(frozen=True)
+class BrokerOrderSnapshot:
+    broker_order_id: str
+    symbol: str
+    side: str
+    quantity: float
+    filled_quantity: float
+    status: str
+
+
+@dataclass(frozen=True)
+class ReconciliationIssue:
+    broker_order_id: str
+    field: str
+    local_value: Any
+    broker_value: Any
+    message: str
+
+
+class OrderReconciler:
+    """Compare persisted local order truth with broker order truth."""
+
+    def __init__(self, *, quantity_tolerance: float = 0.0) -> None:
+        if not isfinite(quantity_tolerance) or quantity_tolerance < 0:
+            raise ValueError("quantity_tolerance must be finite and non-negative")
+        self.quantity_tolerance = float(quantity_tolerance)
+
+    def reconcile(
+        self,
+        local_orders: Mapping[str, LocalOrderSnapshot],
+        broker_orders: list[BrokerOrderSnapshot],
+    ) -> list[ReconciliationIssue]:
+        issues: list[ReconciliationIssue] = []
+        broker_by_id: dict[str, BrokerOrderSnapshot] = {}
+        for broker in broker_orders:
+            broker_id = str(broker.broker_order_id).strip()
+            if not broker_id:
+                issues.append(ReconciliationIssue("", "broker_order_id", None, broker.broker_order_id, "broker order identity is required"))
+                continue
+            if broker_id in broker_by_id:
+                issues.append(ReconciliationIssue(broker_id, "broker_order_id", broker_id, broker_id, "duplicate broker order identity"))
+                continue
+            broker_by_id[broker_id] = broker
+
+        for key, local in local_orders.items():
+            broker_id = str(local.broker_order_id or key).strip()
+            broker = broker_by_id.pop(broker_id, None)
+            if broker is None:
+                issues.append(ReconciliationIssue(broker_id, "order", local.status, None, "local order is missing at broker"))
+                continue
+            if str(local.symbol).strip() != str(broker.symbol).strip():
+                issues.append(ReconciliationIssue(broker_id, "symbol", local.symbol, broker.symbol, "order symbol mismatch"))
+            if str(local.side).upper() != str(broker.side).upper():
+                issues.append(ReconciliationIssue(broker_id, "side", local.side, broker.side, "order side mismatch"))
+            if abs(float(local.quantity) - float(broker.quantity)) > self.quantity_tolerance:
+                issues.append(ReconciliationIssue(broker_id, "quantity", local.quantity, broker.quantity, "order quantity mismatch"))
+            if abs(float(local.filled_quantity) - float(broker.filled_quantity)) > self.quantity_tolerance:
+                issues.append(ReconciliationIssue(broker_id, "filled_quantity", local.filled_quantity, broker.filled_quantity, "filled quantity mismatch"))
+            if str(local.status).upper() != str(broker.status).upper():
+                issues.append(ReconciliationIssue(broker_id, "status", local.status, broker.status, "order status mismatch"))
+
+        for broker_id in sorted(broker_by_id):
+            issues.append(ReconciliationIssue(broker_id, "order", None, broker_by_id[broker_id].status, "broker order is missing locally"))
+        return issues
 
 
 def _normalise(rows: list[dict[str, Any]], symbol_key: str = "symbol", qty_key: str = "quantity") -> dict[str, float]:
@@ -38,8 +115,8 @@ def reconcile_positions(
     quantity_tolerance: float = 0.0,
 ) -> ReconciliationReport:
     """Compare local and broker positions without mutating either source."""
-    if quantity_tolerance < 0:
-        raise ValueError("quantity_tolerance cannot be negative")
+    if not isfinite(quantity_tolerance) or quantity_tolerance < 0:
+        raise ValueError("quantity_tolerance must be finite and non-negative")
 
     local = _normalise(local_positions)
     broker = _normalise(broker_positions)
@@ -50,7 +127,9 @@ def reconcile_positions(
         lq = local.get(symbol, 0.0)
         bq = broker.get(symbol, 0.0)
         delta = bq - lq
-        if abs(delta) > quantity_tolerance:
+        if not isfinite(lq) or not isfinite(bq):
+            deltas.append(PositionDelta(symbol, lq, bq, delta))
+        elif abs(delta) > quantity_tolerance:
             deltas.append(PositionDelta(symbol, lq, bq, delta))
 
     return ReconciliationReport(
