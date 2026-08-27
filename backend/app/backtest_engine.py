@@ -22,11 +22,29 @@ class BacktestTrade:
     reason: str
 
 
-def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_percent: float = 1.0, fee_bps: float = 3.0, slippage_bps: float = 1.0, limits: RiskLimits | None = None, *, enable_ml: bool = False, ml_predictor=None, ml_artifact=None, ml_confidence: float = 0.0, ml_config: MLDecisionConfig | None = None, ml_expected_features: tuple[str, ...] = (), ml_horizon: int = 5, ml_threshold: float = 0.002) -> dict:
+def _canonical_candle(candle: Candle):
+    from app.market_context import Candle as ContextCandle
+    return ContextCandle(
+        timestamp=candle.timestamp,
+        open=float(candle.open), high=float(candle.high), low=float(candle.low),
+        close=float(candle.close), volume=float(candle.volume),
+    )
+
+
+def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_percent: float = 1.0, fee_bps: float = 3.0, slippage_bps: float = 1.0, limits: RiskLimits | None = None, *, enable_ml: bool = False, ml_predictor=None, ml_artifact=None, ml_confidence: float = 0.0, ml_config: MLDecisionConfig | None = None, ml_expected_features: tuple[str, ...] = (), ml_horizon: int = 5, ml_threshold: float = 0.002, strategy_mode: str = 'legacy', ai_symbol: str | None = None, ai_timeframe: str | None = None) -> dict:
+    """Run the existing simulator with either the legacy or canonical AI signal path."""
     if starting_equity <= 0 or risk_percent <= 0 or risk_percent > 5 or len(candles) < 25:
         raise ValueError('invalid capital/risk or insufficient candles')
     if fee_bps < 0 or slippage_bps < 0:
         raise ValueError('cost parameters cannot be negative')
+    if strategy_mode not in {'legacy', 'ai'}:
+        raise ValueError('strategy_mode must be legacy or ai')
+    ai_strategy = None
+    if strategy_mode == 'ai':
+        if not ai_symbol or not ai_timeframe:
+            raise ValueError('ai_symbol and ai_timeframe are required for strategy_mode=ai')
+        from app.ai_backtest_strategy import CanonicalAIBacktestStrategy
+        ai_strategy = CanonicalAIBacktestStrategy(symbol=ai_symbol, timeframe=ai_timeframe)
     if enable_ml and (ml_predictor is None or ml_artifact is None):
         raise ValueError('ML predictor and artifact are required when enable_ml=True')
     portfolio = PaperPortfolio(starting_equity)
@@ -41,7 +59,28 @@ def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_
     ml_rejected = 0
     while i < len(candles) - 1:
         history = candles[:i + 1]
-        signal = generate_signal(history)
+        if strategy_mode == 'ai':
+            context_history = tuple(_canonical_candle(c) for c in history)
+            ai_signal = ai_strategy.signal(i, context_history)
+            if ai_signal is None:
+                i += 1
+                continue
+            from app.order_intent import OrderIntent as _OrderIntent
+            class _Signal:
+                action = ai_signal[0]
+                quantity = ai_signal[1]
+                confidence = 0.0
+                stop_loss = None
+                target = None
+            ai_decision = ai_strategy.decision_engine.decide(
+                ai_strategy.context_builder.build(ai_strategy.symbol, ai_strategy.timeframe, context_history, as_of=context_history[-1].timestamp)
+            )
+            signal = _Signal()
+            signal.confidence = ai_decision.confidence
+            signal.stop_loss = ai_decision.stop_loss
+            signal.target = ai_decision.target
+        else:
+            signal = generate_signal(history)
         if signal is None:
             i += 1
             continue
@@ -62,6 +101,9 @@ def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_
         direction = 1 if signal.action == 'BUY' else -1
         raw_entry = candles[entry_bar].open
         entry = raw_entry * (1 + direction * slippage_bps / 10000)
+        if signal.stop_loss is None or signal.target is None:
+            i += 1
+            continue
         if (direction == 1 and not signal.stop_loss < entry < signal.target) or (direction == -1 and not signal.target < entry < signal.stop_loss):
             i += 1
             continue
@@ -111,4 +153,4 @@ def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_
     avg = mean(returns) if returns else 0.0
     sd = pstdev(returns) if len(returns) > 1 else 0.0
     ending = portfolio.equity
-    return {'starting_equity': starting_equity, 'ending_equity': ending, 'net_pnl': ending - starting_equity, 'return_percent': (ending / starting_equity - 1) * 100, 'trades': len(trades), 'wins': len(wins), 'losses': len(losses), 'win_rate': len(wins) / len(trades) if trades else 0, 'profit_factor': gross_profit / gross_loss if gross_loss else None, 'max_drawdown_percent': max_dd * 100, 'sharpe': (avg / sd) * (len(returns) ** 0.5) if sd else 0, 'risk_rejected': skipped_risk, 'ml_rejected': ml_rejected, 'equity_curve': equity_curve, 'trade_journal': [t.__dict__ for t in trades]}
+    return {'starting_equity': starting_equity, 'ending_equity': ending, 'net_pnl': ending - starting_equity, 'return_percent': (ending / starting_equity - 1) * 100, 'trades': len(trades), 'wins': len(wins), 'losses': len(losses), 'win_rate': len(wins) / len(trades) if trades else 0, 'profit_factor': gross_profit / gross_loss if gross_loss else None, 'max_drawdown_percent': max_dd * 100, 'sharpe': (avg / sd) * (len(returns) ** 0.5) if sd else 0, 'risk_rejected': skipped_risk, 'ml_rejected': ml_rejected, 'equity_curve': equity_curve, 'trade_journal': [t.__dict__ for t in trades], 'strategy_mode': strategy_mode}
