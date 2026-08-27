@@ -50,6 +50,38 @@ class ReconciliationIssue:
     message: str
 
 
+def _finite_non_negative(value: Any, *, field: str, order_id: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"order {order_id} has invalid {field}") from exc
+    if not isfinite(number):
+        raise ValueError(f"order {order_id} has non-finite {field}")
+    if number < 0:
+        raise ValueError(f"order {order_id} has negative {field}")
+    return number
+
+
+def _validate_order_snapshot(order: LocalOrderSnapshot | BrokerOrderSnapshot, *, source: str) -> str:
+    order_id = str(order.broker_order_id).strip()
+    if not order_id:
+        raise ValueError(f"{source} order is missing broker_order_id")
+    symbol = str(order.symbol).strip()
+    if not symbol:
+        raise ValueError(f"order {order_id} is missing symbol")
+    side = str(order.side).strip().upper()
+    if side not in {"BUY", "SELL"}:
+        raise ValueError(f"order {order_id} has invalid side")
+    status = str(order.status).strip().upper()
+    if not status:
+        raise ValueError(f"order {order_id} is missing status")
+    quantity = _finite_non_negative(order.quantity, field="quantity", order_id=order_id)
+    filled_quantity = _finite_non_negative(order.filled_quantity, field="filled_quantity", order_id=order_id)
+    if filled_quantity > quantity:
+        raise ValueError(f"order {order_id} has filled_quantity greater than quantity")
+    return order_id
+
+
 class OrderReconciler:
     """Compare persisted local order truth with broker order truth."""
 
@@ -66,17 +98,17 @@ class OrderReconciler:
         issues: list[ReconciliationIssue] = []
         broker_by_id: dict[str, BrokerOrderSnapshot] = {}
         for broker in broker_orders:
-            broker_id = str(broker.broker_order_id).strip()
-            if not broker_id:
-                issues.append(ReconciliationIssue("", "broker_order_id", None, broker.broker_order_id, "broker order identity is required"))
-                continue
+            broker_id = _validate_order_snapshot(broker, source="broker")
             if broker_id in broker_by_id:
                 issues.append(ReconciliationIssue(broker_id, "broker_order_id", broker_id, broker_id, "duplicate broker order identity"))
                 continue
             broker_by_id[broker_id] = broker
 
         for key, local in local_orders.items():
-            broker_id = str(local.broker_order_id or key).strip()
+            broker_id = _validate_order_snapshot(local, source="local")
+            fallback_id = str(key).strip()
+            if fallback_id and broker_id != fallback_id:
+                issues.append(ReconciliationIssue(broker_id, "broker_order_id", fallback_id, broker_id, "local order key does not match broker order identity"))
             broker = broker_by_id.pop(broker_id, None)
             if broker is None:
                 issues.append(ReconciliationIssue(broker_id, "order", local.status, None, "local order is missing at broker"))
