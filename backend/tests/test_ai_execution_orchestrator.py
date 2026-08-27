@@ -1,7 +1,10 @@
+from datetime import datetime, timezone
+
 import pytest
 
 from app.ai_decision_engine import TradingDecision
 from app.ai_execution_orchestrator import AIRiskSnapshot, AIExecutionOrchestrator
+from app.broker_execution_context import BrokerExecutionContext
 from app.instruments import InstrumentProvider, InstrumentSpec
 
 
@@ -29,12 +32,12 @@ class FakeSubmitter:
         self.authorized_requests = []
         self.executions = []
 
-    def authorize_request(self, request):
-        self.authorized_requests.append(request)
+    def authorize_request(self, request, context):
+        self.authorized_requests.append((request, context))
         return "authorization-token"
 
-    def execute_request(self, request, authorization):
-        self.executions.append((request, authorization))
+    def execute_request(self, request, authorization, context):
+        self.executions.append((request, authorization, context))
         self.requests.append(request)
         return {"status": "accepted"}
 
@@ -58,6 +61,19 @@ def risk_snapshot(**overrides):
     return AIRiskSnapshot(**values)
 
 
+def broker_context(**overrides):
+    values = dict(
+        account_id="acct-1",
+        broker_route="route-1",
+        route_generation="route-gen-1",
+        generation=7,
+        snapshot_fingerprint="snapshot-1",
+        observed_at=datetime.now(timezone.utc),
+    )
+    values.update(overrides)
+    return BrokerExecutionContext(**values)
+
+
 def make_orchestrator(submitter):
     return AIExecutionOrchestrator(
         decision_engine=FakeDecisionEngine(make_decision()),
@@ -68,9 +84,10 @@ def make_orchestrator(submitter):
 @pytest.mark.asyncio
 async def test_buy_reaches_authorized_gateway_exactly_once_after_risk_approval():
     submitter = FakeSubmitter()
+    context = broker_context()
     result = await make_orchestrator(submitter).evaluate_and_execute(
         object(), equity=100_000, client_order_id="ai-test-1",
-        risk_snapshot=risk_snapshot(),
+        risk_snapshot=risk_snapshot(), broker_execution_context=context,
     )
     assert result.order_request is not None
     assert result.execution == {"status": "accepted"}
@@ -78,6 +95,7 @@ async def test_buy_reaches_authorized_gateway_exactly_once_after_risk_approval()
     assert len(submitter.authorized_requests) == 1
     assert len(submitter.executions) == 1
     assert submitter.executions[0][1] == "authorization-token"
+    assert submitter.executions[0][2] is context
     assert submitter.requests[0].quantity == 100
 
 
@@ -86,7 +104,7 @@ async def test_risk_rejection_never_reaches_authorized_gateway():
     submitter = FakeSubmitter()
     result = await make_orchestrator(submitter).evaluate_and_execute(
         object(), equity=100_000, client_order_id="ai-test-risk-veto",
-        risk_snapshot=risk_snapshot(daily_pnl=-3_000),
+        risk_snapshot=risk_snapshot(daily_pnl=-3_000), broker_execution_context=broker_context(),
     )
     assert result.execution is None
     assert result.risk_decision is not None and not result.risk_decision.allowed
@@ -100,6 +118,17 @@ async def test_trade_requires_authoritative_risk_snapshot():
     with pytest.raises(RuntimeError, match="risk snapshot"):
         await make_orchestrator(submitter).evaluate_and_execute(
             object(), equity=100_000, client_order_id="ai-test-missing-risk"
+        )
+    assert submitter.authorized_requests == []
+
+
+@pytest.mark.asyncio
+async def test_trade_requires_broker_execution_context():
+    submitter = FakeSubmitter()
+    with pytest.raises(RuntimeError, match="broker execution context"):
+        await make_orchestrator(submitter).evaluate_and_execute(
+            object(), equity=100_000, client_order_id="ai-test-missing-context",
+            risk_snapshot=risk_snapshot(),
         )
     assert submitter.authorized_requests == []
 
@@ -129,5 +158,5 @@ async def test_risk_approved_trade_rejects_legacy_submitter_without_safety_bound
     with pytest.raises(RuntimeError, match="authorized execution gateway"):
         await make_orchestrator(LegacySubmitter()).evaluate_and_execute(
             object(), equity=100_000, client_order_id="ai-test-legacy",
-            risk_snapshot=risk_snapshot(),
+            risk_snapshot=risk_snapshot(), broker_execution_context=broker_context(),
         )
