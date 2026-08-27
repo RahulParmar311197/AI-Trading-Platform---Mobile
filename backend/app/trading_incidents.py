@@ -29,11 +29,16 @@ class TradingIncident:
 
 
 class IncidentReporter:
-    """Broker-neutral incident sink for logs, audit persistence, metrics, and alerts."""
+    """Broker-neutral incident sink for audit persistence, metrics, and alerts."""
 
     def __init__(self, sink: Callable[[TradingIncident], None] | None = None) -> None:
         self.sink = sink
         self.events: list[TradingIncident] = []
+
+    @classmethod
+    def with_audit_log(cls, audit_log: object) -> "IncidentReporter":
+        append_incident = getattr(audit_log, "append_incident")
+        return cls(sink=append_incident)
 
     def report(self, incident_type: IncidentType, severity: IncidentSeverity, message: str, broker_order_id: str | None = None) -> TradingIncident:
         incident = TradingIncident(incident_type, severity, message, datetime.now(timezone.utc), broker_order_id)
