@@ -113,6 +113,16 @@ def _validate_order_snapshot(order: LocalOrderSnapshot | BrokerOrderSnapshot, *,
     filled_quantity = _finite_non_negative(order.filled_quantity, field="filled_quantity", order_id=order_id)
     if filled_quantity > quantity:
         raise ValueError(f"order {order_id} has filled_quantity greater than quantity")
+
+    if status == "OPEN" and filled_quantity != 0:
+        raise ValueError(f"order {order_id} has OPEN status with non-zero filled_quantity")
+    if status == "PARTIALLY_FILLED" and not (0 < filled_quantity < quantity):
+        raise ValueError(f"order {order_id} has PARTIALLY_FILLED status with invalid filled_quantity")
+    if status == "FILLED" and filled_quantity != quantity:
+        raise ValueError(f"order {order_id} has FILLED status with incomplete filled_quantity")
+    if status == "REJECTED" and filled_quantity != 0:
+        raise ValueError(f"order {order_id} has REJECTED status with non-zero filled_quantity")
+    # A cancelled order may have filled partially before cancellation.
     return order_id, status
 
 
