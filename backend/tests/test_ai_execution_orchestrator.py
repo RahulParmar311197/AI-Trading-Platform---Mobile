@@ -26,9 +26,21 @@ class FakeProvider(InstrumentProvider):
 class FakeSubmitter:
     def __init__(self):
         self.requests = []
+        self.authorized_requests = []
+        self.executions = []
 
-    async def submit(self, request):
+    def authorize_request(self, request):
+        self.authorized_requests.append(request)
+        return "authorization-token"
+
+    def execute_request(self, request, authorization):
+        self.executions.append((request, authorization))
         self.requests.append(request)
+        return {"status": "accepted"}
+
+
+class LegacySubmitter:
+    async def submit(self, request):
         return {"status": "accepted"}
 
 
@@ -46,56 +58,54 @@ def risk_snapshot(**overrides):
     return AIRiskSnapshot(**values)
 
 
-@pytest.mark.asyncio
-async def test_buy_reaches_submitter_exactly_once_after_risk_approval():
-    submitter = FakeSubmitter()
-    orchestrator = AIExecutionOrchestrator(
+def make_orchestrator(submitter):
+    return AIExecutionOrchestrator(
         decision_engine=FakeDecisionEngine(make_decision()),
         instrument_provider=FakeProvider(), order_submitter=submitter,
     )
-    result = await orchestrator.evaluate_and_execute(
+
+
+@pytest.mark.asyncio
+async def test_buy_reaches_authorized_gateway_exactly_once_after_risk_approval():
+    submitter = FakeSubmitter()
+    result = await make_orchestrator(submitter).evaluate_and_execute(
         object(), equity=100_000, client_order_id="ai-test-1",
         risk_snapshot=risk_snapshot(),
     )
     assert result.order_request is not None
     assert result.execution == {"status": "accepted"}
     assert result.risk_decision is not None and result.risk_decision.allowed
-    assert len(submitter.requests) == 1
+    assert len(submitter.authorized_requests) == 1
+    assert len(submitter.executions) == 1
+    assert submitter.executions[0][1] == "authorization-token"
     assert submitter.requests[0].quantity == 100
 
 
 @pytest.mark.asyncio
-async def test_risk_rejection_never_reaches_submitter():
+async def test_risk_rejection_never_reaches_authorized_gateway():
     submitter = FakeSubmitter()
-    orchestrator = AIExecutionOrchestrator(
-        decision_engine=FakeDecisionEngine(make_decision()),
-        instrument_provider=FakeProvider(), order_submitter=submitter,
-    )
-    result = await orchestrator.evaluate_and_execute(
+    result = await make_orchestrator(submitter).evaluate_and_execute(
         object(), equity=100_000, client_order_id="ai-test-risk-veto",
         risk_snapshot=risk_snapshot(daily_pnl=-3_000),
     )
     assert result.execution is None
     assert result.risk_decision is not None and not result.risk_decision.allowed
-    assert submitter.requests == []
+    assert submitter.authorized_requests == []
+    assert submitter.executions == []
 
 
 @pytest.mark.asyncio
 async def test_trade_requires_authoritative_risk_snapshot():
     submitter = FakeSubmitter()
-    orchestrator = AIExecutionOrchestrator(
-        decision_engine=FakeDecisionEngine(make_decision()),
-        instrument_provider=FakeProvider(), order_submitter=submitter,
-    )
     with pytest.raises(RuntimeError, match="risk snapshot"):
-        await orchestrator.evaluate_and_execute(
+        await make_orchestrator(submitter).evaluate_and_execute(
             object(), equity=100_000, client_order_id="ai-test-missing-risk"
         )
-    assert submitter.requests == []
+    assert submitter.authorized_requests == []
 
 
 @pytest.mark.asyncio
-async def test_hold_never_reaches_submitter_or_requires_risk_snapshot():
+async def test_hold_never_reaches_gateway_or_requires_risk_snapshot():
     submitter = FakeSubmitter()
     orchestrator = AIExecutionOrchestrator(
         decision_engine=FakeDecisionEngine(
@@ -110,4 +120,14 @@ async def test_hold_never_reaches_submitter_or_requires_risk_snapshot():
     assert result.order_request is None
     assert result.execution is None
     assert result.risk_decision is None
-    assert submitter.requests == []
+    assert submitter.authorized_requests == []
+    assert submitter.executions == []
+
+
+@pytest.mark.asyncio
+async def test_risk_approved_trade_rejects_legacy_submitter_without_safety_boundary():
+    with pytest.raises(RuntimeError, match="authorized execution gateway"):
+        await make_orchestrator(LegacySubmitter()).evaluate_and_execute(
+            object(), equity=100_000, client_order_id="ai-test-legacy",
+            risk_snapshot=risk_snapshot(),
+        )
