@@ -9,6 +9,7 @@ import json
 from app.broker_adapter import BrokerAdapter, BrokerOrderRequest, BrokerOrderUpdate, normalize_broker_update
 from app.broker_snapshot import BrokerSnapshot
 from app.reconciliation import ReconciliationEngine
+from app.reconciliation_coordinator import ReconciliationCoordinator
 from app.safety_state import SafetyStateStore
 from app.submission_intent_store import SubmissionIntentStore
 from app.trading_gate import TradingGate
@@ -80,6 +81,14 @@ class BrokerRouter:
         orders=order_snapshot_fn().require_authoritative(); positions=position_snapshot_fn().require_authoritative()
         return BrokerSnapshot(orders=[dict(x) for x in orders],positions=[dict(x) for x in positions],broker_route=route.name,broker_account_id=route.broker_account_id)
     def _current_snapshot_fingerprint(self,route:BrokerRoute)->str: return self._authoritative_reconciliation_snapshot(route).fingerprint()
+    def reconcile_authoritative(self,internal_orders:list[dict],internal_positions:list[dict],route=None,broker_ready:bool=True):
+        """Run the production reconciliation path from one authoritative broker snapshot."""
+        selected=self.get(route)
+        if selected.broker_account_id is None: raise RuntimeError("broker route must be bound to a broker account for verified reconciliation")
+        if selected.generation is None: raise RuntimeError("broker route generation is required for verified reconciliation")
+        snapshot=self._authoritative_reconciliation_snapshot(selected)
+        coordinator=ReconciliationCoordinator(engine=self.reconciliation_engine,route=selected.name,account_id=str(selected.broker_account_id),route_generation=str(selected.generation),generation=0)
+        return coordinator.reconcile(internal_orders=internal_orders,internal_positions=internal_positions,broker_snapshot=snapshot,broker_ready=broker_ready)
     def _require_execution_ready(self,route:BrokerRoute)->None:
         self._halt_if_unresolved_submission_intents()
         if self.safety_store is None: halted=True; state=None
@@ -167,7 +176,7 @@ class BrokerRouter:
                 return matches[0] if matches else None
             except NotImplementedError: return selected.adapter.find_order_by_client_id(client_order_id)
     def get_positions(self,route=None):
-        with self._route_lifecycle_lock: return self.get(route).adapter.get_positions() if False else self.get(route).adapter.get_positions()
+        with self._route_lifecycle_lock: return self.get(route).adapter.get_positions()
     def get_account(self,route=None):
         with self._route_lifecycle_lock: return self.get(route).adapter.get_account()
     def get_snapshot(self,route=None):
