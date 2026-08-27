@@ -29,7 +29,7 @@ class TradingIncident:
 
 
 class IncidentReporter:
-    """Broker-neutral incident sink for logs, metrics, and alert integrations."""
+    """Broker-neutral incident sink for logs, audit persistence, metrics, and alerts."""
 
     def __init__(self, sink: Callable[[TradingIncident], None] | None = None) -> None:
         self.sink = sink
@@ -47,3 +47,6 @@ class IncidentReporter:
 
     def report_order_rejection(self, message: str, broker_order_id: str | None = None) -> TradingIncident:
         return self.report(IncidentType.ORDER_REJECTED, IncidentSeverity.CRITICAL, message, broker_order_id)
+
+    def report_kill_switch(self, message: str, broker_order_id: str | None = None) -> TradingIncident:
+        return self.report(IncidentType.KILL_SWITCH, IncidentSeverity.CRITICAL, message, broker_order_id)
