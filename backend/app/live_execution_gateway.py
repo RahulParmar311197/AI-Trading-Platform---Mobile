@@ -4,9 +4,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 import hashlib
+import math
 import secrets
 from typing import Any, Callable, Protocol
 
+from app.broker_adapter import BrokerOrderRequest
 from app.broker_order_lifecycle import OrderLifecycle, OrderLifecycleEvent, OrderStatus
 from app.order_intent import OrderIntent
 from app.pre_trade_reconciliation_gate import PreTradeReconciliationGate, PreTradeReconciliationPolicy
@@ -87,6 +89,10 @@ class LiveExecutionGateway:
         self._authorizations[token._nonce] = token
         return token
 
+    def authorize_request(self, request: BrokerOrderRequest) -> ExecutionAuthorization:
+        """Authorize an AI/broker request through the same live safety boundary."""
+        return self.authorize(_order_intent_from_request(request))
+
     def execute(self, order: OrderIntent, authorization: ExecutionAuthorization | None = None) -> TrackedExecution:
         if self.policy.kill_switch:
             self.incident_reporter.report_kill_switch("execution blocked: kill switch is active")
@@ -107,6 +113,10 @@ class LiveExecutionGateway:
             self.incident_reporter.report_order_rejection(str(exc))
             raise
         return TrackedExecution(result=result, lifecycle=lifecycle)
+
+    def execute_request(self, request: BrokerOrderRequest, authorization: ExecutionAuthorization | None = None) -> TrackedExecution:
+        """Execute a broker request only through the gateway's authorization boundary."""
+        return self.execute(_order_intent_from_request(request), authorization)
 
     def _validate_order(self, order: OrderIntent) -> OrderIntent:
         try:
@@ -142,18 +152,36 @@ class LiveExecutionGateway:
             raise ExecutionSafetyError("execution blocked: authorization is bound to a different order")
 
 
+def _order_intent_from_request(request: BrokerOrderRequest) -> OrderIntent:
+    """Convert the canonical broker request into the gateway's validated intent contract."""
+    if request.price is None or request.stop is None or request.target is None:
+        raise ExecutionSafetyError("execution blocked: AI broker request requires entry, stop, and target")
+    risk_amount = abs(float(request.price) - float(request.stop)) * float(request.quantity)
+    return OrderIntent(
+        symbol=request.symbol,
+        side=request.side,
+        entry=float(request.price),
+        stop_loss=float(request.stop),
+        take_profit=float(request.target),
+        quantity=float(request.quantity),
+        risk_amount=risk_amount,
+        source="ai-execution",
+        confidence=1.0,
+    )
+
+
 def _fingerprint(order: OrderIntent) -> str:
     payload = "|".join(
         str(value)
         for value in (
             order.symbol,
             order.side,
-            order.price,
-            order.stop,
-            order.target,
+            order.entry,
+            order.stop_loss,
+            order.take_profit,
             order.quantity,
             order.risk_amount,
-            order.strategy,
+            order.source,
             order.confidence,
         )
     )
