@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     live_trading_enabled: bool = Field(default=False, validation_alias="LIVE_TRADING_ENABLED")
     broker_credentials_key: str = Field(default="", validation_alias="BROKER_CREDENTIALS_KEY")
     execution_health_token: str = Field(default="", validation_alias="EXECUTION_HEALTH_TOKEN")
+    broker_context_attestation_secret: str = Field(default="", validation_alias="BROKER_CONTEXT_ATTESTATION_SECRET")
     upstox_client_id: str = Field(default="", validation_alias="UPSTOX_CLIENT_ID")
     upstox_client_secret: str = Field(default="", validation_alias="UPSTOX_CLIENT_SECRET")
     upstox_redirect_uri: str = Field(default="", validation_alias="UPSTOX_REDIRECT_URI")
@@ -35,6 +36,8 @@ class Settings(BaseSettings):
                 raise ValueError("EXECUTION_HEALTH_TOKEN must be set to at least 32 characters in production")
             if self.jwt_secret == "change-me-in-production":
                 raise ValueError("JWT_SECRET must be changed in production")
+            if len(self.broker_context_attestation_secret.encode("utf-8")) < 32:
+                raise ValueError("BROKER_CONTEXT_ATTESTATION_SECRET must be set to at least 32 characters in production")
         return self
 
     @property
