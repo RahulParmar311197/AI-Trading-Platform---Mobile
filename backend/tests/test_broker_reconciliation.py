@@ -65,11 +65,11 @@ def test_malformed_local_position_fails_closed():
         reconcile_positions([{"symbol": "NIFTY", "quantity": None}], [])
 
 
-def _order(order_id="OID-1", *, quantity=10, filled_quantity=2, symbol="NIFTY", side="BUY", status="OPEN"):
+def _order(order_id="OID-1", *, quantity=10, filled_quantity=0, symbol="NIFTY", side="BUY", status="OPEN"):
     return LocalOrderSnapshot(order_id, symbol, side, quantity, filled_quantity, status)
 
 
-def _broker(order_id="OID-1", *, quantity=10, filled_quantity=2, symbol="NIFTY", side="BUY", status="OPEN"):
+def _broker(order_id="OID-1", *, quantity=10, filled_quantity=0, symbol="NIFTY", side="BUY", status="OPEN"):
     return BrokerOrderSnapshot(order_id, symbol, side, quantity, filled_quantity, status)
 
 
@@ -109,6 +109,32 @@ def test_malformed_local_order_fails_closed(kwargs):
         OrderReconciler().reconcile({"OID-1": _order(**kwargs)}, [])
 
 
+@pytest.mark.parametrize(
+    "status,filled,expected_message",
+    [
+        ("OPEN", 1, "OPEN status with non-zero filled_quantity"),
+        ("PARTIALLY_FILLED", 0, "PARTIALLY_FILLED status with invalid filled_quantity"),
+        ("PARTIALLY_FILLED", 10, "PARTIALLY_FILLED status with invalid filled_quantity"),
+        ("FILLED", 9, "FILLED status with incomplete filled_quantity"),
+        ("REJECTED", 1, "REJECTED status with non-zero filled_quantity"),
+    ],
+)
+def test_order_status_and_fill_quantity_invariant_fails_closed(status, filled, expected_message):
+    with pytest.raises(ValueError, match=expected_message):
+        OrderReconciler().reconcile(
+            {},
+            [_broker(status=status, quantity=10, filled_quantity=filled)],
+        )
+
+
+def test_cancelled_order_may_retain_partial_fill():
+    issues = OrderReconciler().reconcile(
+        {"OID-1": _order(status="CANCELLED", quantity=10, filled_quantity=2)},
+        [_broker(status="CANCELED", quantity=10, filled_quantity=2)],
+    )
+    assert issues == []
+
+
 def test_order_reconciliation_accepts_semantically_equivalent_status_aliases():
     issues = OrderReconciler().reconcile(
         {"OID-1": _order(status="FILLED", quantity=10, filled_quantity=10)},
@@ -126,27 +152,25 @@ def test_order_reconciliation_accepts_cancelled_spelling_alias():
 
 
 @pytest.mark.parametrize(
-    "local_status,broker_status",
+    "local_status,local_filled,broker_status,broker_filled",
     [
-        ("OPEN", "FILLED"),
-        ("OPEN", "PARTIALLY_FILLED"),
-        ("OPEN", "CANCELLED"),
-        ("OPEN", "REJECTED"),
-        ("PARTIALLY_FILLED", "FILLED"),
-        ("PARTIALLY_FILLED", "CANCELLED"),
-        ("PARTIALLY_FILLED", "REJECTED"),
+        ("OPEN", 0, "FILLED", 10),
+        ("OPEN", 0, "PARTIALLY_FILLED", 2),
+        ("OPEN", 0, "CANCELLED", 0),
+        ("OPEN", 0, "REJECTED", 0),
+        ("PARTIALLY_FILLED", 2, "FILLED", 10),
+        ("PARTIALLY_FILLED", 2, "CANCELLED", 2),
+        ("PARTIALLY_FILLED", 2, "REJECTED", 0),
     ],
 )
-def test_order_reconciliation_allows_forward_lifecycle_transitions(local_status, broker_status):
-    quantity = 10
-    filled = 10 if broker_status == "FILLED" else (2 if broker_status == "PARTIALLY_FILLED" else 0)
+def test_order_reconciliation_allows_forward_lifecycle_transitions(
+    local_status, local_filled, broker_status, broker_filled
+):
     issues = OrderReconciler().reconcile(
-        {"OID-1": _order(status=local_status, quantity=quantity, filled_quantity=filled)},
-        [_broker(status=broker_status, quantity=quantity, filled_quantity=filled)],
+        {"OID-1": _order(status=local_status, quantity=10, filled_quantity=local_filled)},
+        [_broker(status=broker_status, quantity=10, filled_quantity=broker_filled)],
     )
-    assert len(issues) == (0 if local_status == broker_status else 1)
-    if issues:
-        assert issues[0].field == "status"
+    assert any(issue.field == "status" for issue in issues)
 
 
 @pytest.mark.parametrize(
