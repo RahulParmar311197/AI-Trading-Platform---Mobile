@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from app.broker_context_attestation import BrokerContextAttestor
 from app.broker_execution_context import BrokerExecutionContext
 from app.execution_authorization_store import ExecutionAuthorizationStore
 from app.live_execution_gateway import (
@@ -12,6 +13,9 @@ from app.live_execution_gateway import (
     LiveExecutionGateway,
 )
 from app.order_intent import OrderIntent
+
+
+SECRET = b"t" * 32
 
 
 class FakeExecutor:
@@ -35,14 +39,32 @@ def make_order():
     return OrderIntent("NIFTY", "BUY", 100.0, 99.0, 102.0, 1, 1.0, "test", 0.8)
 
 
-def make_context(generation=7, fingerprint="snapshot", observed_at=None):
-    return BrokerExecutionContext(
+def make_context(generation=7, fingerprint="snapshot", observed_at=None, attested=True):
+    observed_at = observed_at or datetime.now(timezone.utc)
+    base = BrokerExecutionContext(
         account_id="acct-1",
         broker_route="paper-route",
         route_generation="route-gen-1",
         generation=generation,
         snapshot_fingerprint=fingerprint,
-        observed_at=observed_at or datetime.now(timezone.utc),
+        observed_at=observed_at,
+    )
+    attestation = BrokerContextAttestor(SECRET).sign(
+        account_id=base.account_id,
+        broker_route=base.broker_route,
+        route_generation=base.route_generation,
+        generation=base.generation,
+        snapshot_fingerprint=base.snapshot_fingerprint,
+        observed_at=base.observed_at,
+    ) if attested else ""
+    return BrokerExecutionContext(
+        account_id=base.account_id,
+        broker_route=base.broker_route,
+        route_generation=base.route_generation,
+        generation=base.generation,
+        snapshot_fingerprint=base.snapshot_fingerprint,
+        observed_at=base.observed_at,
+        attestation=attestation,
     )
 
 
@@ -55,6 +77,7 @@ def live_gateway(executor=None, store=None, policy=None):
         position_reader=FakePositionReader(positions),
         local_positions_reader=lambda: positions,
         authorization_store=store or ExecutionAuthorizationStore(":memory:"),
+        context_attestor=BrokerContextAttestor(SECRET),
     )
 
 
@@ -125,6 +148,12 @@ def test_live_execution_requires_single_use_authorization():
     with pytest.raises(ExecutionSafetyError, match="single-use execution authorization"):
         gateway.execute(make_order(), context=make_context())
     assert executor.orders == []
+
+
+def test_live_authorization_rejects_unattested_context():
+    gateway = live_gateway(FakeExecutor())
+    with pytest.raises(ExecutionSafetyError, match="not coordinator-attested"):
+        gateway.authorize(make_order(), make_context(attested=False))
 
 
 def test_live_authorization_is_consumed_after_one_execution():
@@ -202,6 +231,7 @@ def test_live_authorization_requires_current_reconciliation():
         position_reader=FakePositionReader([{"symbol": "NIFTY", "quantity": 1}]),
         local_positions_reader=lambda: [],
         authorization_store=ExecutionAuthorizationStore(":memory:"),
+        context_attestor=BrokerContextAttestor(SECRET),
     )
     with pytest.raises(ExecutionSafetyError, match="reconciliation failed"):
         gateway.authorize(make_order(), make_context())
@@ -242,6 +272,7 @@ def test_live_authorization_rejects_invalid_ttl():
         position_reader=FakePositionReader(),
         local_positions_reader=lambda: [],
         authorization_store=ExecutionAuthorizationStore(":memory:"),
+        context_attestor=BrokerContextAttestor(SECRET),
     )
     with pytest.raises(ExecutionSafetyError, match="TTL"):
         gateway.authorize(make_order(), make_context())
