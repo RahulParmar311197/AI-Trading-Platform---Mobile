@@ -1,4 +1,5 @@
 import math
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -34,23 +35,23 @@ def make_order():
     return OrderIntent("NIFTY", "BUY", 100.0, 99.0, 102.0, 1, 1.0, "test", 0.8)
 
 
-def make_context(generation=7, fingerprint="snapshot"):
+def make_context(generation=7, fingerprint="snapshot", observed_at=None):
     return BrokerExecutionContext(
         account_id="acct-1",
         broker_route="paper-route",
         route_generation="route-gen-1",
         generation=generation,
         snapshot_fingerprint=fingerprint,
-        observed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        observed_at=observed_at or datetime.now(timezone.utc),
     )
 
 
-def live_gateway(executor=None, store=None):
+def live_gateway(executor=None, store=None, policy=None):
     executor = executor or FakeExecutor()
     positions = []
     return LiveExecutionGateway(
         executor,
-        ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True),
+        policy or ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True),
         position_reader=FakePositionReader(positions),
         local_positions_reader=lambda: positions,
         authorization_store=store or ExecutionAuthorizationStore(":memory:"),
@@ -205,6 +206,33 @@ def test_live_authorization_requires_current_reconciliation():
     with pytest.raises(ExecutionSafetyError, match="reconciliation failed"):
         gateway.authorize(make_order(), make_context())
     assert executor.orders == []
+
+
+def test_live_authorization_rejects_stale_broker_context():
+    gateway = live_gateway(
+        FakeExecutor(),
+        policy=ExecutionPolicy(
+            mode=ExecutionMode.LIVE,
+            live_trading_enabled=True,
+            context_max_age_seconds=5,
+        ),
+    )
+    stale = make_context(observed_at=datetime.now(timezone.utc) - timedelta(seconds=6))
+    with pytest.raises(ExecutionSafetyError, match="context is stale"):
+        gateway.authorize(make_order(), stale)
+
+
+def test_live_authorization_rejects_non_positive_context_max_age():
+    gateway = live_gateway(
+        FakeExecutor(),
+        policy=ExecutionPolicy(
+            mode=ExecutionMode.LIVE,
+            live_trading_enabled=True,
+            context_max_age_seconds=0,
+        ),
+    )
+    with pytest.raises(ExecutionSafetyError, match="context max age"):
+        gateway.authorize(make_order(), make_context())
 
 
 def test_live_authorization_rejects_invalid_ttl():
