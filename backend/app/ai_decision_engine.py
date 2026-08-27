@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
+import math
 
 from app.market_context import MarketContext
 from app.ml_decision import MLDecisionConfig
@@ -32,6 +33,8 @@ class TradingDecision:
 class AIDecisionEngine:
     """Explainable decision layer; ML is optional evidence and risk/execution authorize."""
 
+    _REQUIRED_TRADE_INDICATORS = ('ema_20', 'ema_50', 'rsi_14', 'macd_histogram', 'atr_14')
+
     def __init__(self, config: DecisionConfig | None = None):
         self.config = config or DecisionConfig()
         if not 0 <= self.config.minimum_confidence <= 1:
@@ -39,28 +42,54 @@ class AIDecisionEngine:
         if not 0 <= self.config.minimum_edge <= 1:
             raise ValueError('minimum_edge must be between 0 and 1')
 
+    def _decision_inputs_ready(self, context: MarketContext, values: dict[str, float | None]) -> tuple[bool, tuple[str, ...]]:
+        reasons: list[str] = []
+        if context.data_quality != 'GOOD':
+            reasons.append(f'data quality not trade-ready: {context.data_quality}')
+        missing = [name for name in self._REQUIRED_TRADE_INDICATORS if values.get(name) is None]
+        if missing:
+            reasons.append(f'missing required indicators: {", ".join(missing)}')
+        for name in self._REQUIRED_TRADE_INDICATORS:
+            value = values.get(name)
+            if value is not None and not math.isfinite(float(value)):
+                reasons.append(f'non-finite indicator: {name}')
+        rsi = values.get('rsi_14')
+        if rsi is not None and math.isfinite(float(rsi)) and not 0 <= rsi <= 100:
+            reasons.append('RSI outside 0..100')
+        atr = values.get('atr_14')
+        if atr is not None and math.isfinite(float(atr)) and atr <= 0:
+            reasons.append('ATR must be positive for a trade')
+        return not reasons, tuple(reasons)
+
     def decide(self, context: MarketContext, prediction: Prediction | None = None, ml_confidence: float = 0.0) -> TradingDecision:
         context.validate()
+        if not math.isfinite(float(ml_confidence)) or not 0 <= ml_confidence <= 1:
+            raise ValueError('ml_confidence must be finite and between 0 and 1')
+        if prediction is not None and prediction.label not in {'BUY', 'SELL', 'HOLD'}:
+            raise ValueError('prediction label must be BUY, SELL, or HOLD')
+
         bullish = 0.0
         bearish = 0.0
         reasons: list[str] = []
         values = context.indicators.values
         close = context.candles[-1].close
-        ema20 = values.get('ema_20')
-        ema50 = values.get('ema_50')
-        rsi = values.get('rsi_14')
-        macd_hist = values.get('macd_histogram')
+
+        inputs_ready, input_reasons = self._decision_inputs_ready(context, values)
+        if not inputs_ready:
+            return TradingDecision('HOLD', 0.0, 0.0, 0.0, None, None, None, input_reasons)
+
+        ema20 = values['ema_20']
+        ema50 = values['ema_50']
+        rsi = values['rsi_14']
+        macd_hist = values['macd_histogram']
         adx = values.get('adx_14')
 
-        if ema20 is not None and ema50 is not None:
-            if ema20 > ema50: bullish += 1; reasons.append('EMA20 above EMA50')
-            elif ema20 < ema50: bearish += 1; reasons.append('EMA20 below EMA50')
-        if rsi is not None:
-            if 50 < rsi < 70: bullish += 0.75; reasons.append('RSI bullish momentum')
-            elif 30 < rsi < 50: bearish += 0.75; reasons.append('RSI bearish momentum')
-        if macd_hist is not None:
-            if macd_hist > 0: bullish += 0.75; reasons.append('MACD histogram positive')
-            elif macd_hist < 0: bearish += 0.75; reasons.append('MACD histogram negative')
+        if ema20 > ema50: bullish += 1; reasons.append('EMA20 above EMA50')
+        elif ema20 < ema50: bearish += 1; reasons.append('EMA20 below EMA50')
+        if 50 < rsi < 70: bullish += 0.75; reasons.append('RSI bullish momentum')
+        elif 30 < rsi < 50: bearish += 0.75; reasons.append('RSI bearish momentum')
+        if macd_hist > 0: bullish += 0.75; reasons.append('MACD histogram positive')
+        elif macd_hist < 0: bearish += 0.75; reasons.append('MACD histogram negative')
         if context.structure.trend == 'BULLISH': bullish += 1; reasons.append('bullish market structure')
         elif context.structure.trend == 'BEARISH': bearish += 1; reasons.append('bearish market structure')
         if context.structure.bos == 'BULLISH': bullish += 1; reasons.append('bullish BOS')
@@ -71,18 +100,19 @@ class AIDecisionEngine:
         elif context.smc.premium_discount == 'PREMIUM': bearish += 0.5; reasons.append('price in premium')
         if context.smc.fair_value_gaps: reasons.append(f'{len(context.smc.fair_value_gaps)} recent FVG(s)')
         if context.ict.kill_zone: reasons.append(f'ICT {context.ict.kill_zone}')
-        if adx is not None and adx >= 25: reasons.append('ADX confirms directional regime')
+        if adx is not None and math.isfinite(float(adx)) and adx >= 25: reasons.append('ADX confirms directional regime')
 
         total = bullish + bearish
         edge = abs(bullish - bearish) / total if total else 0.0
         confidence = max(bullish, bearish) / total if total else 0.0
         decision: Decision = 'HOLD'
         entry = stop = target = None
-        if context.data_quality in {'GOOD', 'UNKNOWN'} and confidence >= self.config.minimum_confidence and edge >= self.config.minimum_edge:
+        atr = values['atr_14']
+        if confidence >= self.config.minimum_confidence and edge >= self.config.minimum_edge:
             if bullish > bearish:
-                decision = 'BUY'; entry = close; atr = values.get('atr_14') or 0.0; stop = close - 1.5 * atr if atr else None; target = close + 3.0 * atr if atr else None
+                decision = 'BUY'; entry = close; stop = close - 1.5 * atr; target = close + 3.0 * atr
             elif bearish > bullish:
-                decision = 'SELL'; entry = close; atr = values.get('atr_14') or 0.0; stop = close + 1.5 * atr if atr else None; target = close - 3.0 * atr if atr else None
+                decision = 'SELL'; entry = close; stop = close + 1.5 * atr; target = close - 3.0 * atr
         else:
             reasons.append('confidence/edge threshold not met')
 
