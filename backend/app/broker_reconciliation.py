@@ -50,6 +50,31 @@ class ReconciliationIssue:
     message: str
 
 
+_STATUS_ALIASES = {
+    "NEW": "OPEN",
+    "PENDING": "OPEN",
+    "SUBMITTED": "OPEN",
+    "OPEN": "OPEN",
+    "PARTIAL": "PARTIALLY_FILLED",
+    "PARTIALLY_FILLED": "PARTIALLY_FILLED",
+    "PARTIALLY FILLED": "PARTIALLY_FILLED",
+    "FILLED": "FILLED",
+    "COMPLETE": "FILLED",
+    "COMPLETED": "FILLED",
+    "CANCELLED": "CANCELLED",
+    "CANCELED": "CANCELLED",
+    "REJECTED": "REJECTED",
+}
+
+
+def _canonical_order_status(value: Any, *, order_id: str) -> str:
+    status = str(value).strip().upper()
+    canonical = _STATUS_ALIASES.get(status)
+    if canonical is None:
+        raise ValueError(f"order {order_id} has unsupported status")
+    return canonical
+
+
 def _finite_non_negative(value: Any, *, field: str, order_id: str) -> float:
     try:
         number = float(value)
@@ -62,7 +87,7 @@ def _finite_non_negative(value: Any, *, field: str, order_id: str) -> float:
     return number
 
 
-def _validate_order_snapshot(order: LocalOrderSnapshot | BrokerOrderSnapshot, *, source: str) -> str:
+def _validate_order_snapshot(order: LocalOrderSnapshot | BrokerOrderSnapshot, *, source: str) -> tuple[str, str]:
     order_id = str(order.broker_order_id).strip()
     if not order_id:
         raise ValueError(f"{source} order is missing broker_order_id")
@@ -72,14 +97,12 @@ def _validate_order_snapshot(order: LocalOrderSnapshot | BrokerOrderSnapshot, *,
     side = str(order.side).strip().upper()
     if side not in {"BUY", "SELL"}:
         raise ValueError(f"order {order_id} has invalid side")
-    status = str(order.status).strip().upper()
-    if not status:
-        raise ValueError(f"order {order_id} is missing status")
+    status = _canonical_order_status(order.status, order_id=order_id)
     quantity = _finite_non_negative(order.quantity, field="quantity", order_id=order_id)
     filled_quantity = _finite_non_negative(order.filled_quantity, field="filled_quantity", order_id=order_id)
     if filled_quantity > quantity:
         raise ValueError(f"order {order_id} has filled_quantity greater than quantity")
-    return order_id
+    return order_id, status
 
 
 class OrderReconciler:
@@ -97,21 +120,24 @@ class OrderReconciler:
     ) -> list[ReconciliationIssue]:
         issues: list[ReconciliationIssue] = []
         broker_by_id: dict[str, BrokerOrderSnapshot] = {}
+        broker_status_by_id: dict[str, str] = {}
         for broker in broker_orders:
-            broker_id = _validate_order_snapshot(broker, source="broker")
+            broker_id, broker_status = _validate_order_snapshot(broker, source="broker")
             if broker_id in broker_by_id:
                 issues.append(ReconciliationIssue(broker_id, "broker_order_id", broker_id, broker_id, "duplicate broker order identity"))
                 continue
             broker_by_id[broker_id] = broker
+            broker_status_by_id[broker_id] = broker_status
 
         for key, local in local_orders.items():
-            broker_id = _validate_order_snapshot(local, source="local")
+            broker_id, local_status = _validate_order_snapshot(local, source="local")
             fallback_id = str(key).strip()
             if fallback_id and broker_id != fallback_id:
                 issues.append(ReconciliationIssue(broker_id, "broker_order_id", fallback_id, broker_id, "local order key does not match broker order identity"))
             broker = broker_by_id.pop(broker_id, None)
+            broker_status = broker_status_by_id.pop(broker_id, None)
             if broker is None:
-                issues.append(ReconciliationIssue(broker_id, "order", local.status, None, "local order is missing at broker"))
+                issues.append(ReconciliationIssue(broker_id, "order", local_status, None, "local order is missing at broker"))
                 continue
             if str(local.symbol).strip() != str(broker.symbol).strip():
                 issues.append(ReconciliationIssue(broker_id, "symbol", local.symbol, broker.symbol, "order symbol mismatch"))
@@ -121,7 +147,7 @@ class OrderReconciler:
                 issues.append(ReconciliationIssue(broker_id, "quantity", local.quantity, broker.quantity, "order quantity mismatch"))
             if abs(float(local.filled_quantity) - float(broker.filled_quantity)) > self.quantity_tolerance:
                 issues.append(ReconciliationIssue(broker_id, "filled_quantity", local.filled_quantity, broker.filled_quantity, "filled quantity mismatch"))
-            if str(local.status).upper() != str(broker.status).upper():
+            if local_status != broker_status:
                 issues.append(ReconciliationIssue(broker_id, "status", local.status, broker.status, "order status mismatch"))
 
         for broker_id in sorted(broker_by_id):
