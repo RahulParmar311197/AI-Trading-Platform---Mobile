@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 import hashlib
-import math
 import secrets
 from typing import Any, Callable, Protocol
 
 from app.broker_adapter import BrokerOrderRequest
+from app.broker_execution_context import BrokerExecutionContext
 from app.broker_order_lifecycle import OrderLifecycle, OrderLifecycleEvent, OrderStatus
 from app.execution_authorization_store import ExecutionAuthorizationStore
 from app.order_intent import OrderIntent
@@ -44,10 +44,11 @@ class BrokerPositionReader(Protocol):
 
 @dataclass(frozen=True)
 class ExecutionAuthorization:
-    """Single-use, gateway-issued authorization bound to one normalized order."""
+    """Single-use authorization bound to one normalized order and broker context."""
 
     _nonce: str
     _order_fingerprint: str
+    _context_key: str
     _expires_at: datetime
 
 
@@ -77,8 +78,8 @@ class LiveExecutionGateway:
         self.incident_reporter = incident_reporter or IncidentReporter()
         self.authorization_store = authorization_store or ExecutionAuthorizationStore()
 
-    def authorize(self, order: OrderIntent) -> ExecutionAuthorization:
-        """Validate a live order against current broker/local positions and issue one-use authorization."""
+    def authorize(self, order: OrderIntent, context: BrokerExecutionContext) -> ExecutionAuthorization:
+        """Validate a live order against current state and bind authorization to one broker context."""
         if self.policy.kill_switch:
             self.incident_reporter.report_kill_switch("execution blocked: kill switch is active")
             raise ExecutionSafetyError("execution blocked: kill switch is active")
@@ -86,6 +87,8 @@ class LiveExecutionGateway:
             raise ExecutionSafetyError("execution authorization is only required for live mode")
         if not self.policy.live_trading_enabled:
             raise ExecutionSafetyError("live execution is disabled")
+        if not isinstance(context, BrokerExecutionContext):
+            raise ExecutionSafetyError("execution blocked: broker execution context is required")
         safe_order = self._validate_order(order)
         self._check_reconciliation()
         ttl = int(self.policy.authorization_ttl_seconds)
@@ -94,6 +97,7 @@ class LiveExecutionGateway:
         token = ExecutionAuthorization(
             _nonce=secrets.token_urlsafe(32),
             _order_fingerprint=_fingerprint(safe_order),
+            _context_key=_context_key(context),
             _expires_at=_now() + timedelta(seconds=ttl),
         )
         try:
@@ -102,11 +106,19 @@ class LiveExecutionGateway:
             raise ExecutionSafetyError("execution blocked: authorization could not be persisted") from exc
         return token
 
-    def authorize_request(self, request: BrokerOrderRequest) -> ExecutionAuthorization:
-        """Authorize an AI/broker request through the same live safety boundary."""
-        return self.authorize(_order_intent_from_request(request))
+    def authorize_request(
+        self,
+        request: BrokerOrderRequest,
+        context: BrokerExecutionContext,
+    ) -> ExecutionAuthorization:
+        return self.authorize(_order_intent_from_request(request), context)
 
-    def execute(self, order: OrderIntent, authorization: ExecutionAuthorization | None = None) -> TrackedExecution:
+    def execute(
+        self,
+        order: OrderIntent,
+        authorization: ExecutionAuthorization | None = None,
+        context: BrokerExecutionContext | None = None,
+    ) -> TrackedExecution:
         if self.policy.kill_switch:
             self.incident_reporter.report_kill_switch("execution blocked: kill switch is active")
             raise ExecutionSafetyError("execution blocked: kill switch is active")
@@ -115,7 +127,7 @@ class LiveExecutionGateway:
 
         safe_order = self._validate_order(order)
         if self.policy.mode is ExecutionMode.LIVE:
-            self._consume_authorization(safe_order, authorization)
+            self._consume_authorization(safe_order, authorization, context)
 
         lifecycle = OrderLifecycle()
         lifecycle.apply(OrderLifecycleEvent(status=OrderStatus.ACCEPTED, timestamp=_now()))
@@ -127,9 +139,13 @@ class LiveExecutionGateway:
             raise
         return TrackedExecution(result=result, lifecycle=lifecycle)
 
-    def execute_request(self, request: BrokerOrderRequest, authorization: ExecutionAuthorization | None = None) -> TrackedExecution:
-        """Execute a broker request only through the gateway's authorization boundary."""
-        return self.execute(_order_intent_from_request(request), authorization)
+    def execute_request(
+        self,
+        request: BrokerOrderRequest,
+        authorization: ExecutionAuthorization | None = None,
+        context: BrokerExecutionContext | None = None,
+    ) -> TrackedExecution:
+        return self.execute(_order_intent_from_request(request), authorization, context)
 
     def _validate_order(self, order: OrderIntent) -> OrderIntent:
         try:
@@ -153,23 +169,38 @@ class LiveExecutionGateway:
             self.incident_reporter.report_reconciliation_failure(str(exc))
             raise ExecutionSafetyError(f"execution blocked: pre-trade reconciliation failed: {exc}") from exc
 
-    def _consume_authorization(self, order: OrderIntent, authorization: ExecutionAuthorization | None) -> None:
+    def _consume_authorization(
+        self,
+        order: OrderIntent,
+        authorization: ExecutionAuthorization | None,
+        context: BrokerExecutionContext | None,
+    ) -> None:
         if authorization is None:
             raise ExecutionSafetyError("execution blocked: single-use execution authorization is required")
         if not isinstance(authorization, ExecutionAuthorization):
             raise ExecutionSafetyError("execution blocked: invalid execution authorization")
+        if not isinstance(context, BrokerExecutionContext):
+            raise ExecutionSafetyError("execution blocked: broker execution context is required")
         if authorization._expires_at.tzinfo is None:
             raise ExecutionSafetyError("execution blocked: invalid execution authorization expiry")
         if authorization._order_fingerprint != _fingerprint(order):
             raise ExecutionSafetyError("execution blocked: authorization is bound to a different order")
+        if authorization._context_key != _context_key(context):
+            raise ExecutionSafetyError("execution blocked: authorization is bound to a different broker context")
         try:
-            status = self.authorization_store.consume(authorization, _fingerprint(order), _now)
+            status = self.authorization_store.consume(
+                authorization,
+                _fingerprint(order),
+                _context_key(context),
+                _now,
+            )
         except Exception as exc:
             raise ExecutionSafetyError("execution blocked: authorization state could not be verified") from exc
         messages = {
             "missing": "execution blocked: invalid or already-consumed execution authorization",
             "consumed": "execution blocked: invalid or already-consumed execution authorization",
             "order_mismatch": "execution blocked: authorization is bound to a different order",
+            "context_mismatch": "execution blocked: authorization is bound to a different broker context",
             "expired": "execution blocked: execution authorization expired",
             "invalid_expiry": "execution blocked: invalid execution authorization expiry",
         }
@@ -178,7 +209,6 @@ class LiveExecutionGateway:
 
 
 def _order_intent_from_request(request: BrokerOrderRequest) -> OrderIntent:
-    """Convert the canonical broker request into the gateway's validated intent contract."""
     if request.price is None or request.stop is None or request.target is None:
         raise ExecutionSafetyError("execution blocked: AI broker request requires entry, stop, and target")
     risk_amount = abs(float(request.price) - float(request.stop)) * float(request.quantity)
@@ -211,6 +241,10 @@ def _fingerprint(order: OrderIntent) -> str:
         )
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _context_key(context: BrokerExecutionContext) -> str:
+    return "|".join(str(value) for value in context.canonical_key)
 
 
 def _now():
