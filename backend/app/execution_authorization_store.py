@@ -10,6 +10,7 @@ from typing import Callable, Protocol
 class AuthorizationRecord(Protocol):
     _nonce: str
     _order_fingerprint: str
+    _context_key: str
     _expires_at: datetime
 
 
@@ -27,48 +28,67 @@ class ExecutionAuthorizationStore:
             CREATE TABLE IF NOT EXISTS execution_authorizations (
                 nonce_hash TEXT PRIMARY KEY,
                 order_fingerprint TEXT NOT NULL,
+                context_key TEXT NOT NULL DEFAULT '',
                 expires_at TEXT NOT NULL,
                 consumed_at TEXT
             )
             """
         )
+        columns = {row[1] for row in self._connection.execute("PRAGMA table_info(execution_authorizations)")}
+        if "context_key" not in columns:
+            self._connection.execute(
+                "ALTER TABLE execution_authorizations ADD COLUMN context_key TEXT NOT NULL DEFAULT ''"
+            )
 
     def issue(self, authorization: AuthorizationRecord) -> None:
+        if not authorization._context_key.strip():
+            raise ValueError("authorization context key is required")
         with self._lock:
             self._connection.execute(
                 "INSERT INTO execution_authorizations "
-                "(nonce_hash, order_fingerprint, expires_at, consumed_at) VALUES (?, ?, ?, NULL)",
-                (_hash_nonce(authorization._nonce), authorization._order_fingerprint, authorization._expires_at.isoformat()),
+                "(nonce_hash, order_fingerprint, context_key, expires_at, consumed_at) VALUES (?, ?, ?, ?, NULL)",
+                (
+                    _hash_nonce(authorization._nonce),
+                    authorization._order_fingerprint,
+                    authorization._context_key,
+                    authorization._expires_at.isoformat(),
+                ),
             )
 
     def consume(
         self,
         authorization: AuthorizationRecord,
         order_fingerprint: str,
+        context_key: str,
         now: Callable[[], datetime],
     ) -> str:
-        """Atomically consume an unexpired authorization bound to one order."""
+        """Atomically consume an unexpired authorization bound to one order and broker context."""
         current = now()
         if current.tzinfo is None:
             raise ValueError("authorization clock must be timezone-aware")
+        if not context_key.strip():
+            raise ValueError("execution context key is required")
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
                 row = self._connection.execute(
-                    "SELECT order_fingerprint, expires_at, consumed_at "
+                    "SELECT order_fingerprint, context_key, expires_at, consumed_at "
                     "FROM execution_authorizations WHERE nonce_hash = ?",
                     (_hash_nonce(authorization._nonce),),
                 ).fetchone()
                 if row is None:
                     self._connection.execute("ROLLBACK")
                     return "missing"
-                stored_fingerprint, expires_at, consumed_at = row
+                stored_fingerprint, stored_context_key, expires_at, consumed_at = row
                 if consumed_at is not None:
                     self._connection.execute("ROLLBACK")
                     return "consumed"
                 if stored_fingerprint != order_fingerprint:
                     self._connection.execute("ROLLBACK")
                     return "order_mismatch"
+                if stored_context_key != context_key:
+                    self._connection.execute("ROLLBACK")
+                    return "context_mismatch"
                 expiry = datetime.fromisoformat(expires_at)
                 if expiry.tzinfo is None:
                     self._connection.execute("ROLLBACK")
