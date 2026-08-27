@@ -7,12 +7,19 @@ from app.ai_decision_engine import AIDecisionEngine, TradingDecision
 from app.ai_trade_intent import AITradeIntentConfig, build_ai_order_request
 from app.broker_adapter import BrokerOrderRequest
 from app.instruments import InstrumentProvider
+from app.live_execution_gateway import ExecutionAuthorization, TrackedExecution
 from app.risk_engine import RiskDecision, RiskLimits, evaluate as evaluate_risk
 from app.signal_confluence import SignalDecision
 
 
-class OrderSubmitter(Protocol):
-    async def submit(self, request: BrokerOrderRequest): ...
+class AuthorizedOrderSubmitter(Protocol):
+    def authorize_request(self, request: BrokerOrderRequest) -> ExecutionAuthorization: ...
+
+    def execute_request(
+        self,
+        request: BrokerOrderRequest,
+        authorization: ExecutionAuthorization,
+    ) -> TrackedExecution: ...
 
 
 @dataclass(frozen=True)
@@ -36,14 +43,14 @@ class AIExecutionResult:
 
 
 class AIExecutionOrchestrator:
-    """Canonical boundary from an AI decision through mandatory risk veto to execution."""
+    """Canonical boundary from an AI decision through risk and live execution authorization."""
 
     def __init__(
         self,
         *,
         decision_engine: AIDecisionEngine,
         instrument_provider: InstrumentProvider,
-        order_submitter: OrderSubmitter,
+        order_submitter: AuthorizedOrderSubmitter,
         intent_config: AITradeIntentConfig | None = None,
     ) -> None:
         self.decision_engine = decision_engine
@@ -113,7 +120,12 @@ class AIExecutionOrchestrator:
                 risk_decision=risk_decision,
             )
 
-        execution = await self.order_submitter.submit(request)
+        authorize = getattr(self.order_submitter, "authorize_request", None)
+        execute = getattr(self.order_submitter, "execute_request", None)
+        if not callable(authorize) or not callable(execute):
+            raise RuntimeError("authorized execution gateway is required after AI risk approval")
+        authorization = authorize(request)
+        execution = execute(request, authorization)
         return AIExecutionResult(
             decision=decision,
             order_request=request,
