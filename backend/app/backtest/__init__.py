@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
+from app.backtest_engine import run_backtest
 from app.market_data import Candle
 
 
@@ -28,11 +29,13 @@ class BacktestTrade:
 class BacktestResult:
     initial_equity: float
     final_equity: float
-    trades: tuple[BacktestTrade, ...]
+    trades: tuple
     equity_curve: tuple[float, ...]
 
 
 class CandleBacktester:
+    """Compatibility facade over the canonical backtest engine."""
+
     def __init__(self, config: BacktestConfig | None = None):
         self.config = config or BacktestConfig()
         if self.config.initial_equity <= 0:
@@ -41,18 +44,24 @@ class CandleBacktester:
             raise ValueError("fee_bps and slippage_bps must be non-negative")
 
     def run(self, candles: Sequence[Candle]) -> BacktestResult:
-        equity = float(self.config.initial_equity)
-        curve = [equity]
-        trades: list[BacktestTrade] = []
-        for candle in candles:
-            # A deliberately conservative default: no position is opened unless
-            # a future strategy supplies an explicit signal above the threshold.
-            # This makes an empty/no-signal backtest deterministic and prevents
-            # accidental live-like trading from the backtest adapter.
-            curve.append(equity)
+        result = run_backtest(
+            list(candles),
+            starting_equity=self.config.initial_equity,
+            fee_bps=self.config.fee_bps,
+            slippage_bps=self.config.slippage_bps,
+        ) if candles else {
+            "starting_equity": self.config.initial_equity,
+            "ending_equity": self.config.initial_equity,
+            "trade_journal": [],
+            "equity_curve": [self.config.initial_equity],
+        }
+        trades = tuple(result.get("trade_journal", ()))
         return BacktestResult(
-            initial_equity=float(self.config.initial_equity),
-            final_equity=equity,
-            trades=tuple(trades),
-            equity_curve=tuple(curve),
+            initial_equity=float(result["starting_equity"]),
+            final_equity=float(result["ending_equity"]),
+            trades=trades,
+            equity_curve=tuple(result["equity_curve"]),
         )
+
+
+__all__ = ["BacktestConfig", "BacktestResult", "BacktestTrade", "CandleBacktester"]
