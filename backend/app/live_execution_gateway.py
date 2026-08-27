@@ -39,4 +39,9 @@ class LiveExecutionGateway:
             raise ExecutionSafetyError("execution blocked: kill switch is active")
         if self.policy.mode is ExecutionMode.LIVE and not self.policy.live_trading_enabled:
             raise ExecutionSafetyError("live execution is disabled")
-        return self.executor.execute(order)
+        try:
+            safe_order = order.normalized()
+            safe_order.validate()
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ExecutionSafetyError(f"execution blocked: invalid order intent: {exc}") from exc
+        return self.executor.execute(safe_order)
