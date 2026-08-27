@@ -24,9 +24,12 @@ class Settings(BaseSettings):
     risk_max_trade_loss: float = Field(default=200.0, validation_alias="RISK_MAX_TRADE_LOSS")
     risk_trading_day_timezone: str = Field(default="Asia/Kolkata", validation_alias="RISK_TRADING_DAY_TIMEZONE")
     risk_max_snapshot_age_seconds: float = Field(default=2.0, validation_alias="RISK_MAX_SNAPSHOT_AGE_SECONDS")
+    ai_confluence_weight: float = Field(default=0.0, validation_alias="AI_CONFLUENCE_WEIGHT")
 
     @model_validator(mode="after")
-    def validate_production_security(self):
+    def validate_settings(self):
+        if not 0 <= self.ai_confluence_weight <= 1:
+            raise ValueError("AI_CONFLUENCE_WEIGHT must be between 0 and 1")
         if self.environment.lower() == "production":
             if not self.execution_health_token or len(self.execution_health_token) < 32:
                 raise ValueError("EXECUTION_HEALTH_TOKEN must be set to at least 32 characters in production")
