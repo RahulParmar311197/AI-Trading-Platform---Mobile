@@ -82,9 +82,9 @@ class ReconciliationEngine:
         if not check.ok or check.trading_halted or check.order_drift or check.position_drift: raise ValueError("cannot build verified result from failed reconciliation")
         if check.checked_at != context.observed_at.isoformat(): raise ValueError("execution context must match the reconciliation observation")
         if submission_intents_resolved < 0: raise ValueError("submission_intents_resolved cannot be negative")
-        if self.submission_intent_store is not None:
-            unresolved=self.submission_intent_store.unresolved_count()
-            if unresolved: raise ValueError(f"cannot build verified result with {unresolved} unresolved submission intent(s)")
+        if self.submission_intent_store is None: raise ValueError("durable submission intent store is required for verified reconciliation")
+        unresolved=self.submission_intent_store.unresolved_count()
+        if unresolved: raise ValueError(f"cannot build verified result with {unresolved} unresolved submission intent(s)")
         return ReconciliationResult.from_verified_check(context=context,reconciled_at=reconciled_at,open_orders_reconciled=open_orders_reconciled,positions_reconciled=positions_reconciled,submission_intents_resolved=submission_intents_resolved,broker_ready=broker_ready,_check_token=_CHECK_TOKEN)
 
     def reset_halt(self): self.trading_halted=False; return {"trading_halted":False}
