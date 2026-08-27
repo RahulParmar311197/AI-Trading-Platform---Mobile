@@ -6,6 +6,7 @@ from typing import Protocol
 from app.ai_decision_engine import AIDecisionEngine, TradingDecision
 from app.ai_trade_intent import AITradeIntentConfig, build_ai_order_request
 from app.broker_adapter import BrokerOrderRequest
+from app.broker_execution_context import BrokerExecutionContext
 from app.instruments import InstrumentProvider
 from app.live_execution_gateway import ExecutionAuthorization, TrackedExecution
 from app.risk_engine import RiskDecision, RiskLimits, evaluate as evaluate_risk
@@ -13,12 +14,17 @@ from app.signal_confluence import SignalDecision
 
 
 class AuthorizedOrderSubmitter(Protocol):
-    def authorize_request(self, request: BrokerOrderRequest) -> ExecutionAuthorization: ...
+    def authorize_request(
+        self,
+        request: BrokerOrderRequest,
+        context: BrokerExecutionContext,
+    ) -> ExecutionAuthorization: ...
 
     def execute_request(
         self,
         request: BrokerOrderRequest,
         authorization: ExecutionAuthorization,
+        context: BrokerExecutionContext,
     ) -> TrackedExecution: ...
 
 
@@ -72,6 +78,7 @@ class AIExecutionOrchestrator:
         broker_route: str | None = None,
         broker_route_generation: str | None = None,
         risk_snapshot: AIRiskSnapshot | None = None,
+        broker_execution_context: BrokerExecutionContext | None = None,
     ) -> AIExecutionResult:
         decision = self.decision_engine.decide(
             context,
@@ -94,6 +101,8 @@ class AIExecutionOrchestrator:
             return AIExecutionResult(decision=decision, order_request=None, execution=None)
         if risk_snapshot is None:
             raise RuntimeError("authoritative risk snapshot is required before AI execution")
+        if broker_execution_context is None:
+            raise RuntimeError("broker execution context is required before AI execution")
 
         instrument = self.instrument_provider.resolve(request.symbol)
         if instrument is None:
@@ -124,8 +133,8 @@ class AIExecutionOrchestrator:
         execute = getattr(self.order_submitter, "execute_request", None)
         if not callable(authorize) or not callable(execute):
             raise RuntimeError("authorized execution gateway is required after AI risk approval")
-        authorization = authorize(request)
-        execution = execute(request, authorization)
+        authorization = authorize(request, broker_execution_context)
+        execution = execute(request, authorization, broker_execution_context)
         return AIExecutionResult(
             decision=decision,
             order_request=request,
