@@ -8,6 +8,7 @@ import hashlib
 import json
 from app.broker_adapter import BrokerAdapter, BrokerOrderRequest, BrokerOrderUpdate, normalize_broker_update
 from app.broker_snapshot import BrokerSnapshot
+from app.reconciliation import ReconciliationEngine
 from app.safety_state import SafetyStateStore
 from app.submission_intent_store import SubmissionIntentStore
 from app.trading_gate import TradingGate
@@ -21,10 +22,13 @@ class BrokerRoute:
     generation: str | None = None
 
 class BrokerRouter:
-    def __init__(self,routes:list[BrokerRoute],default_route:str,safety_store:SafetyStateStore|None=None,trading_gate:TradingGate|None=None,max_reconciliation_age_seconds:float=2.0,submission_intent_store:SubmissionIntentStore|None=None):
+    def __init__(self,routes:list[BrokerRoute],default_route:str,safety_store:SafetyStateStore|None=None,trading_gate:TradingGate|None=None,max_reconciliation_age_seconds:float=2.0,submission_intent_store:SubmissionIntentStore|None=None,reconciliation_engine:ReconciliationEngine|None=None):
         if max_reconciliation_age_seconds<=0: raise ValueError("max_reconciliation_age_seconds must be positive")
         self.routes={r.name:r for r in routes}; self.default_route=default_route; self.safety_store=safety_store; self.trading_gate=trading_gate or TradingGate(); self.max_reconciliation_age_seconds=float(max_reconciliation_age_seconds); self.submission_intent_store=submission_intent_store or SubmissionIntentStore(); self._submission_lock=Lock(); self._submission_claims=set(); self._route_lifecycle_lock=RLock()
         if default_route not in self.routes: raise ValueError("default broker route is not configured")
+        self.reconciliation_engine=reconciliation_engine or ReconciliationEngine(self.submission_intent_store)
+        if self.reconciliation_engine.submission_intent_store is not self.submission_intent_store:
+            raise ValueError("reconciliation engine must use the router submission intent store")
     @contextmanager
     def route_lifecycle_lock(self)->Iterator[None]:
         with self._route_lifecycle_lock: yield
@@ -70,11 +74,6 @@ class BrokerRouter:
                 if self.safety_store is not None: self.safety_store.halt("unresolved submission intents remain after broker reconciliation")
         return resolved
     def _authoritative_reconciliation_snapshot(self,route:BrokerRoute)->BrokerSnapshot:
-        """Build the single broker state used for readiness fingerprints.
-
-        Both orders and positions must come from explicit authoritative contracts. Partial
-        broker state must never authorize live execution.
-        """
         order_snapshot_fn=getattr(route.adapter,"get_order_snapshot",None); position_snapshot_fn=getattr(route.adapter,"get_position_snapshot",None)
         if order_snapshot_fn is None: raise RuntimeError("authoritative broker order snapshot is required for reconciliation")
         if position_snapshot_fn is None: raise RuntimeError("authoritative broker position snapshot is required for reconciliation")
@@ -168,7 +167,7 @@ class BrokerRouter:
                 return matches[0] if matches else None
             except NotImplementedError: return selected.adapter.find_order_by_client_id(client_order_id)
     def get_positions(self,route=None):
-        with self._route_lifecycle_lock: return self.get(route).get_positions() if False else self.get(route).adapter.get_positions()
+        with self._route_lifecycle_lock: return self.get(route).adapter.get_positions() if False else self.get(route).adapter.get_positions()
     def get_account(self,route=None):
         with self._route_lifecycle_lock: return self.get(route).adapter.get_account()
     def get_snapshot(self,route=None):
