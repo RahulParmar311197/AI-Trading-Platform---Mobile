@@ -1,4 +1,4 @@
-from __future__ import annotations
+from __future__
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -6,7 +6,7 @@ from app.trading_audit import TradingAuditLog
 from app.order_state_machine import InvalidOrderTransition, OrderState, OrderStateMachine
 
 class OrderStatus(str, Enum):
-    CREATED="CREATED"; SUBMISSION_INTENT="SUBMISSION_INTENT"; SUBMITTED="SUBMITTED"; PARTIALLY_FILLED="PARTIALLY_FILLED"; FILLED="FILLED"; CANCELLED="CANCELLED"; REJECTED="REJECTED"; PENDING_RECONCILIATION="PENDING_RECONCILIATION"
+    CREATED="CREATED"; SUBMISSION_INTENT="SUBMISSION_INTENT"; SUBMITTED="SUBMITTED"; OPEN="OPEN"; PARTIALLY_FILLED="PARTIALLY_FILLED"; FILLED="FILLED"; CANCELLED="CANCELLED"; REJECTED="REJECTED"; PENDING_RECONCILIATION="PENDING_RECONCILIATION"
 class PositionStatus(str, Enum): OPEN="OPEN"; CLOSED="CLOSED"
 
 @dataclass
@@ -24,7 +24,7 @@ class OrderRecord:
 class PositionRecord:
     symbol:str; side:str; quantity:float; entry_price:float; status:PositionStatus=PositionStatus.OPEN; exit_price:float|None=None; realized_pnl:float=0.0
 
-_STATUS_TO_STATE={OrderStatus.CREATED:OrderState.CREATED,OrderStatus.SUBMISSION_INTENT:OrderState.SUBMITTING,OrderStatus.SUBMITTED:OrderState.OPEN,OrderStatus.PARTIALLY_FILLED:OrderState.PARTIALLY_FILLED,OrderStatus.FILLED:OrderState.FILLED,OrderStatus.CANCELLED:OrderState.CANCELLED,OrderStatus.REJECTED:OrderState.REJECTED,OrderStatus.PENDING_RECONCILIATION:OrderState.PENDING_RECONCILIATION}
+_STATUS_TO_STATE={OrderStatus.CREATED:OrderState.CREATED,OrderStatus.SUBMISSION_INTENT:OrderState.SUBMITTING,OrderStatus.SUBMITTED:OrderState.OPEN,OrderStatus.OPEN:OrderState.OPEN,OrderStatus.PARTIALLY_FILLED:OrderState.PARTIALLY_FILLED,OrderStatus.FILLED:OrderState.FILLED,OrderStatus.CANCELLED:OrderState.CANCELLED,OrderStatus.REJECTED:OrderState.REJECTED,OrderStatus.PENDING_RECONCILIATION:OrderState.PENDING_RECONCILIATION}
 
 class OrderLifecycle:
     def __init__(self,audit_log:TradingAuditLog|None=None):
@@ -43,12 +43,9 @@ class OrderLifecycle:
         self.audit_log.record("ORDER_CREATED",metadata={"order_id":order_id,"symbol":order.symbol,"side":order.side,"quantity":quantity,"execution_id":order.execution_id,"owner_user_id":order.owner_user_id,"broker_account_id":order.broker_account_id,"broker_route":order.broker_route}); return order
     def mark_pending_reconciliation(self,order_id,reason="BROKER_SUBMISSION_AMBIGUOUS"):
         order=self.orders[order_id]
-        if order.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
-            raise ValueError("terminal order cannot enter reconciliation")
-        self._transition_machine(order_id,OrderStatus.PENDING_RECONCILIATION)
-        previous=order.status; order.status=OrderStatus.PENDING_RECONCILIATION; order.updated_at=datetime.now(timezone.utc)
-        self.audit_log.record("ORDER_PENDING_RECONCILIATION",metadata={"order_id":order_id,"previous_status":previous.value,"reason":reason,"broker_order_id":order.broker_order_id,"execution_id":order.execution_id})
-        return order
+        if order.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED): raise ValueError("terminal order cannot enter reconciliation")
+        self._transition_machine(order_id,OrderStatus.PENDING_RECONCILIATION); previous=order.status; order.status=OrderStatus.PENDING_RECONCILIATION; order.updated_at=datetime.now(timezone.utc)
+        self.audit_log.record("ORDER_PENDING_RECONCILIATION",metadata={"order_id":order_id,"previous_status":previous.value,"reason":reason,"broker_order_id":order.broker_order_id,"execution_id":order.execution_id}); return order
     def apply_fill(self,order_id,quantity,price,fill_id=None):
         if fill_id is not None and fill_id in self._applied_fill_ids:return self.orders[order_id]
         order=self.orders[order_id]; quantity=float(quantity); price=float(price)
@@ -56,8 +53,7 @@ class OrderLifecycle:
         if price<=0:raise ValueError("fill price must be positive")
         if order.filled_quantity+quantity>order.quantity:raise ValueError("invalid filled quantity")
         target=OrderStatus.FILLED if order.filled_quantity+quantity==order.quantity else OrderStatus.PARTIALLY_FILLED
-        self._transition_machine(order_id,target)
-        new_filled=order.filled_quantity+quantity; new_value=order.applied_fill_value+quantity*price; order.filled_quantity=new_filled; order.average_fill_price=new_value/new_filled; order.applied_fill_quantity=new_filled; order.applied_fill_value=new_value; order.status=target; order.updated_at=datetime.now(timezone.utc); self._apply_position_delta(order,quantity,price)
+        self._transition_machine(order_id,target); new_filled=order.filled_quantity+quantity; new_value=order.applied_fill_value+quantity*price; order.filled_quantity=new_filled; order.average_fill_price=new_value/new_filled; order.applied_fill_quantity=new_filled; order.applied_fill_value=new_value; order.status=target; order.updated_at=datetime.now(timezone.utc); self._apply_position_delta(order,quantity,price)
         if fill_id is not None:self._applied_fill_ids.add(fill_id)
         self.audit_log.record("ORDER_FILL",metadata={"order_id":order_id,"fill_id":fill_id,"quantity":quantity,"price":price,"cumulative_filled":new_filled,"status":order.status.value,"execution_id":order.execution_id}); return order
     def _transition_machine(self,order_id,status):
@@ -68,8 +64,7 @@ class OrderLifecycle:
         order=self.orders[order_id]; previous=order.status
         if status in (OrderStatus.FILLED,OrderStatus.PARTIALLY_FILLED) and not 0<=filled_quantity<=order.quantity:raise ValueError("invalid filled quantity")
         if filled_quantity<order.applied_fill_quantity:raise ValueError("filled quantity cannot move backwards")
-        self._transition_machine(order_id,status)
-        order.status=status; order.filled_quantity=filled_quantity
+        self._transition_machine(order_id,status); order.status=status; order.filled_quantity=filled_quantity
         if fill_price is not None:
             fill_price=float(fill_price)
             if fill_price<=0:raise ValueError("fill price must be positive")
