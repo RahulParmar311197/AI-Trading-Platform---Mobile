@@ -4,9 +4,13 @@ from datetime import datetime, timezone
 import hashlib
 import sqlite3
 from threading import RLock
-from typing import Callable
+from typing import Callable, Protocol
 
-from app.live_execution_gateway import ExecutionAuthorization
+
+class AuthorizationRecord(Protocol):
+    _nonce: str
+    _order_fingerprint: str
+    _expires_at: datetime
 
 
 class ExecutionAuthorizationStore:
@@ -29,7 +33,7 @@ class ExecutionAuthorizationStore:
             """
         )
 
-    def issue(self, authorization: ExecutionAuthorization) -> None:
+    def issue(self, authorization: AuthorizationRecord) -> None:
         with self._lock:
             self._connection.execute(
                 "INSERT INTO execution_authorizations "
@@ -39,7 +43,7 @@ class ExecutionAuthorizationStore:
 
     def consume(
         self,
-        authorization: ExecutionAuthorization,
+        authorization: AuthorizationRecord,
         order_fingerprint: str,
         now: Callable[[], datetime],
     ) -> str:
