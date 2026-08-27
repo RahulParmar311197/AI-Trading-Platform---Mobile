@@ -10,6 +10,7 @@ from app.broker_router import BrokerRoute, BrokerRouter
 from app.broker_snapshot import BrokerSnapshot
 from app.reconciliation import ReconciliationEngine
 from app.safety_state import SafetyStateStore
+from app.submission_intent_store import SubmissionIntentStore
 
 
 def test_default_route_submits():
@@ -26,23 +27,43 @@ def test_disabled_route_rejected():
 
 def _ready_router(tmp_path, max_age=2.0):
     store=SafetyStateStore(str(tmp_path/'safety.json'))
-    router=BrokerRouter([BrokerRoute('paper',PaperBrokerAdapter())],'paper', safety_store=store, max_reconciliation_age_seconds=max_age)
+    intents=SubmissionIntentStore(str(tmp_path/'intents.json'))
+    router=BrokerRouter([BrokerRoute('paper',PaperBrokerAdapter())],'paper', safety_store=store, max_reconciliation_age_seconds=max_age, submission_intent_store=intents)
     return router, store
 
 
 def _verified_result_after_halt(store, router, *, generation=1, account_id='paper', route='paper', route_generation='paper-1'):
     halted=store.halt('reconcile')
-    check=ReconciliationEngine().check([], [], [], [])
+    check=router.reconciliation_engine.check([], [], [], [])
     observed=datetime.fromisoformat(check.checked_at)
     fingerprint=router._current_snapshot_fingerprint(router.get(route))
     context=BrokerExecutionContext(account_id=account_id, broker_route=route, route_generation=route_generation, generation=generation, snapshot_fingerprint=fingerprint, observed_at=observed)
     reconciled_at=max(halted.halted_at + timedelta(seconds=0.001), observed)
-    return ReconciliationEngine().build_verified_result(check, context=context, reconciled_at=reconciled_at, open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True)
+    return router.reconciliation_engine.build_verified_result(check, context=context, reconciled_at=reconciled_at, open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True)
 
 
 def _clear_with_current_reconciliation(store, router=None):
     result=_verified_result_after_halt(store, router)
     store.clear(result, active_context=result.context)
+
+
+def test_router_and_reconciliation_share_the_same_intent_store(tmp_path):
+    router, _ = _ready_router(tmp_path)
+    assert router.reconciliation_engine.submission_intent_store is router.submission_intent_store
+
+
+def test_router_rejects_engine_bound_to_different_intent_store(tmp_path):
+    store=SafetyStateStore(str(tmp_path/'safety.json'))
+    intents_a=SubmissionIntentStore(str(tmp_path/'a.json'))
+    intents_b=SubmissionIntentStore(str(tmp_path/'b.json'))
+    engine=ReconciliationEngine(intents_a)
+    with pytest.raises(ValueError, match='same intent store'):
+        BrokerRouter([BrokerRoute('paper',PaperBrokerAdapter())],'paper', safety_store=store, submission_intent_store=intents_b, reconciliation_engine=engine)
+
+
+def test_default_router_reconciliation_engine_is_durable(tmp_path):
+    router, _ = _ready_router(tmp_path)
+    assert isinstance(router.reconciliation_engine.submission_intent_store, SubmissionIntentStore)
 
 
 def test_cancel_allowed_when_halted(tmp_path):
