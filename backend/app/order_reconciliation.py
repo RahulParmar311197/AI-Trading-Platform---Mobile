@@ -171,3 +171,36 @@ class OrderReconciler:
         for order_id in sorted(pending - matched):
             events.append(ReconciliationEvent(order_id, ReconciliationAction.PENDING, "BROKER_ORDER_NOT_FOUND"))
         return events
+
+
+# Backwards-compatible application-service import surface.  The implementation
+# lives here so callers importing from app.order_reconciliation keep one engine.
+@dataclass(frozen=True)
+class OrderReconciliationResult:
+    events: tuple[ReconciliationEvent, ...]
+
+    @property
+    def alerts(self) -> tuple[ReconciliationEvent, ...]:
+        return tuple(e for e in self.events if e.action is ReconciliationAction.ALERT)
+
+    @property
+    def changed(self) -> bool:
+        return any(e.action in (ReconciliationAction.CREATE, ReconciliationAction.UPDATE) for e in self.events)
+
+
+class OrderReconciliationService:
+    def __init__(self, lifecycle: OrderLifecycle):
+        self.lifecycle = lifecycle
+        self.reconciler = OrderReconciler(lifecycle)
+
+    def reconcile(self, broker_orders):
+        return OrderReconciliationResult(tuple(self.reconciler.reconcile(list(broker_orders))))
+
+    def reconcile_pending(self, broker_orders):
+        return OrderReconciliationResult(tuple(self.reconciler.reconcile_pending(list(broker_orders))))
+
+    def reconcile_or_raise(self, broker_orders):
+        result = self.reconcile(broker_orders)
+        if result.alerts:
+            raise RuntimeError("order reconciliation produced alerts: " + "; ".join(e.reason for e in result.alerts))
+        return result
