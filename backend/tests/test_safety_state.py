@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import tempfile
 
 import pytest
 
@@ -6,6 +7,7 @@ from app.broker_execution_context import BrokerExecutionContext
 from app.reconciliation import ReconciliationEngine, ReconciliationCheckResult
 from app.reconciliation_result import ReconciliationResult
 from app.safety_state import SafetyState, SafetyStateStore
+from app.submission_intent_store import SubmissionIntentStore
 
 
 def context(at: datetime, *, account_id: str = "acct-1", broker_route: str = "upstox", route_generation: str = "route-1", generation: int = 1, fingerprint: str = "fp-1") -> BrokerExecutionContext:
@@ -13,12 +15,14 @@ def context(at: datetime, *, account_id: str = "acct-1", broker_route: str = "up
 
 
 def verified_result(at: datetime, *, account_id: str = "acct-1", generation: int = 1, fingerprint: str = "fp-1") -> ReconciliationResult:
-    engine = ReconciliationEngine()
-    check = engine.check([], [], [], [])
-    observed = datetime.fromisoformat(check.checked_at)
-    if at < observed:
-        at = observed
-    return engine.build_verified_result(check, context=context(observed, account_id=account_id, generation=generation, fingerprint=fingerprint), reconciled_at=at, open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True)
+    with tempfile.TemporaryDirectory() as directory:
+        intent_store = SubmissionIntentStore(f"{directory}/intents.json")
+        engine = ReconciliationEngine(intent_store)
+        check = engine.check([], [], [], [])
+        observed = datetime.fromisoformat(check.checked_at)
+        if at < observed:
+            at = observed
+        return engine.build_verified_result(check, context=context(observed, account_id=account_id, generation=generation, fingerprint=fingerprint), reconciled_at=at, open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True)
 
 
 def clear(store, result):
@@ -38,15 +42,17 @@ def test_halt_survives_restart(tmp_path):
 
 def test_clear_requires_verified_post_halt_reconciliation(tmp_path):
     store = SafetyStateStore(str(tmp_path / "safety.json"))
-    engine = ReconciliationEngine()
-    check = engine.check([], [], [], [])
-    observed = datetime.fromisoformat(check.checked_at)
-    stale = engine.build_verified_result(check, context=context(observed), reconciled_at=observed, open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True)
-    store.halt("DRIFT")
-    with pytest.raises(ValueError, match="verified reconciliation result"):
-        store.clear(None, active_context=stale.context)
-    with pytest.raises(RuntimeError, match="after the safety halt"):
-        clear(store, stale)
+    with tempfile.TemporaryDirectory() as directory:
+        intent_store = SubmissionIntentStore(f"{directory}/intents.json")
+        engine = ReconciliationEngine(intent_store)
+        check = engine.check([], [], [], [])
+        observed = datetime.fromisoformat(check.checked_at)
+        stale = engine.build_verified_result(check, context=context(observed), reconciled_at=observed, open_orders_reconciled=True, positions_reconciled=True, submission_intents_resolved=0, broker_ready=True)
+        store.halt("DRIFT")
+        with pytest.raises(ValueError, match="verified reconciliation result"):
+            store.clear(None, active_context=stale.context)
+        with pytest.raises(RuntimeError, match="after the safety halt"):
+            clear(store, stale)
     cleared = clear(store, verified_result(datetime.now(timezone.utc)))
     restored = store.load()
     assert cleared.trading_halted is False
@@ -61,7 +67,8 @@ def test_clear_requires_verified_post_halt_reconciliation(tmp_path):
 def test_drift_check_result_cannot_clear_safety_halt(tmp_path):
     store = SafetyStateStore(str(tmp_path / "safety.json"))
     store.halt("DRIFT")
-    check = ReconciliationEngine().check([], [], [], [])
+    with tempfile.TemporaryDirectory() as directory:
+        check = ReconciliationEngine(SubmissionIntentStore(f"{directory}/intents.json")).check([], [], [], [])
     assert isinstance(check, ReconciliationCheckResult)
     with pytest.raises(ValueError, match="verified reconciliation result"):
         store.clear(check, active_context=context(datetime.now(timezone.utc)))
