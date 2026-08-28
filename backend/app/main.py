@@ -29,7 +29,7 @@ from app.startup_reconciliation_gate import StartupReconciliationGate
 from app.system_health import TradingSystemHealth
 
 settings = get_settings()
-resources = create_resources()
+resources = create_resources(broker_context_attestation_secret=settings.broker_context_attestation_secret)
 execution_store = resources.execution_store
 idempotency_store = resources.idempotency_store
 safety_store = resources.safety_store
@@ -66,6 +66,8 @@ async def lifespan(app: FastAPI):
     app.state.execution_observability = resources.execution_observability
     app.state.execution_health_token = settings.execution_health_token
     app.state.broker_router = execution_broker_router
+    app.state.broker_context_attestor = resources.broker_context_attestor
+    app.state.execution_authorization_store = resources.execution_authorization_store
     app.state.startup_execution_state = startup_state
     app.state.emergency_halt_controller = emergency_halt_controller
     app.state.trading_audit_log = resources.audit_log
