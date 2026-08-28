@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import os
@@ -19,12 +19,23 @@ class SafetyState:
     reconciliation_generation: int | None = None
     reconciliation_account_id: str | None = None
     broker_snapshot_fingerprint: str | None = None
+    reconciliation_by_account: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
 class SafetyStateStore:
     def __init__(self, path: str = "data/safety_state.json") -> None:
         self.path = Path(path)
         self.backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+
+    @staticmethod
+    def _context_record(reconciliation: ReconciliationResult, context: BrokerExecutionContext) -> dict[str, object]:
+        return {
+            "last_reconciliation_at": reconciliation.reconciled_at.astimezone(timezone.utc).isoformat(),
+            "reconciliation_generation": context.generation,
+            "broker_route": context.broker_route,
+            "route_generation": context.route_generation,
+            "broker_snapshot_fingerprint": context.snapshot_fingerprint,
+        }
 
     def save(self, state: SafetyState) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -36,6 +47,7 @@ class SafetyStateStore:
             "reconciliation_generation": state.reconciliation_generation,
             "reconciliation_account_id": state.reconciliation_account_id,
             "broker_snapshot_fingerprint": state.broker_snapshot_fingerprint,
+            "reconciliation_by_account": state.reconciliation_by_account,
         }
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         with tmp.open("wb") as handle:
@@ -62,6 +74,9 @@ class SafetyStateStore:
         data = json.loads(path.read_text(encoding="utf-8"))
         reconciled_at = data.get("last_reconciliation_at")
         halted_at = data.get("halted_at")
+        by_account = data.get("reconciliation_by_account") or {}
+        if not isinstance(by_account, dict):
+            raise ValueError("invalid account reconciliation state")
         return SafetyState(
             bool(data.get("trading_halted", False)),
             data.get("halt_reason"),
@@ -70,6 +85,7 @@ class SafetyStateStore:
             data.get("reconciliation_generation"),
             data.get("reconciliation_account_id"),
             data.get("broker_snapshot_fingerprint"),
+            by_account,
         )
 
     def load(self) -> SafetyState:
@@ -83,10 +99,24 @@ class SafetyStateStore:
             except (OSError, ValueError, TypeError, json.JSONDecodeError) as backup_exc:
                 raise RuntimeError("invalid persisted safety state") from backup_exc
 
+    def account_reconciliation(self, account_id: str) -> dict[str, object] | None:
+        state = self.load()
+        record = state.reconciliation_by_account.get(str(account_id))
+        if record is not None:
+            return dict(record)
+        # Backward-compatible read of the legacy single-account state.
+        if state.reconciliation_account_id is not None and str(state.reconciliation_account_id) == str(account_id):
+            return {
+                "last_reconciliation_at": state.last_reconciliation_at.isoformat() if state.last_reconciliation_at else None,
+                "reconciliation_generation": state.reconciliation_generation,
+                "broker_snapshot_fingerprint": state.broker_snapshot_fingerprint,
+            }
+        return None
+
     def halt(self, reason: str) -> SafetyState:
         if not reason.strip():
             raise ValueError("halt reason is required")
-        state = SafetyState(True, reason, None, datetime.now(timezone.utc), None, None, None)
+        state = SafetyState(True, reason, None, datetime.now(timezone.utc), None, None, None, {})
         self.save(state)
         return state
 
@@ -102,6 +132,9 @@ class SafetyStateStore:
         at = reconciliation.reconciled_at.astimezone(timezone.utc)
         if state.trading_halted and state.halted_at is not None and at <= state.halted_at:
             raise RuntimeError("reconciliation must occur after the safety halt")
+        account_id = str(active_context.account_id)
+        account_states = dict(state.reconciliation_by_account)
+        account_states[account_id] = self._context_record(reconciliation, active_context)
         cleared = SafetyState(
             False,
             None,
@@ -110,6 +143,7 @@ class SafetyStateStore:
             active_context.generation,
             active_context.account_id,
             active_context.snapshot_fingerprint,
+            account_states,
         )
         self.save(cleared)
         return cleared
