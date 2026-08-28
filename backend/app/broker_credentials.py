@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
-import hmac
 import json
 from typing import Any
 
@@ -15,8 +13,8 @@ class BrokerCredentialVault:
     """Encrypt/decrypt broker credentials using the configured application key.
 
     The vault deliberately has no logging and accepts only JSON-serializable
-    mappings. A missing key is a hard configuration error rather than a reason
-    to persist plaintext credentials.
+    mappings. A missing or malformed key is a hard configuration error rather
+    than a reason to persist plaintext credentials.
     """
 
     def __init__(self, key: str | None = None) -> None:
@@ -35,9 +33,12 @@ class BrokerCredentialVault:
     def _canonical(credentials: dict[str, Any]) -> bytes:
         if not isinstance(credentials, dict) or not credentials:
             raise ValueError("credentials must be a non-empty mapping")
-        return json.dumps(
-            credentials, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        ).encode("utf-8")
+        try:
+            return json.dumps(
+                credentials, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("credentials must be JSON serializable") from exc
 
     def encrypt(self, credentials: dict[str, Any]) -> str:
         return self._fernet.encrypt(self._canonical(credentials)).decode("ascii")
@@ -53,11 +54,3 @@ class BrokerCredentialVault:
         if not isinstance(value, dict) or not value:
             raise ValueError("decrypted broker credentials are invalid")
         return value
-
-    def fingerprint(self, credentials: dict[str, Any]) -> str:
-        """Return a non-secret deterministic fingerprint for diagnostics/deduping."""
-        return hmac.new(
-            self._fernet._signing_key,
-            self._canonical(credentials),
-            hashlib.sha256,
-        ).hexdigest()
