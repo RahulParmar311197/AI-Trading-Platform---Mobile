@@ -185,7 +185,7 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     app.state.execution_health_token = execution_health_token if execution_health_token is not None else "test-token"
     app.state.broker_context_attestor = resources.broker_context_attestor
     app.state.execution_authorization_store = resources.execution_authorization_store
-    app.state.broker_router = broker_router or build_broker_router(resources.safety_store)
+    app.state.broker_router = broker_router or build_broker_router(resources.safety_store, context_attestor=resources.broker_context_attestor)
     app.state.startup_execution_state = resources.startup_execution_state
     app.state.emergency_halt_controller = resources.emergency_halt_controller
     app.state.trading_audit_log = resources.audit_log
