@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from app.broker_execution_context import BrokerExecutionContext
 from app.broker_snapshot import BrokerSnapshot
 from app.execution_persistence import ExecutionStateStore
 from app.order_lifecycle import OrderLifecycle
-from app.reconciliation import ReconciliationEngine, ReconciliationResult
+from app.reconciliation import ReconciliationEngine
+from app.reconciliation_result import ReconciliationResult
 from app.safety_state import SafetyStateStore
 
 
@@ -19,7 +21,7 @@ class RecoveryResult:
 
 
 class StartupRecoveryManager:
-    """Restores local execution state and gates trading on broker reconciliation."""
+    """Restores local execution state and gates trading on verified broker reconciliation."""
 
     def __init__(self, execution_store: ExecutionStateStore, safety_store: SafetyStateStore, reconciliation: ReconciliationEngine | None = None) -> None:
         self.execution_store = execution_store
@@ -31,7 +33,11 @@ class StartupRecoveryManager:
         self,
         lifecycle: OrderLifecycle,
         broker_snapshot: Callable[[], BrokerSnapshot | tuple[list[dict], list[dict]]],
+        *,
+        verified_reconciliation: ReconciliationResult | None = None,
+        active_context: BrokerExecutionContext | None = None,
     ) -> RecoveryResult:
+        """Restore state and only report READY after verified reconciliation clears safety state."""
         try:
             state_loaded = self.execution_store.load(lifecycle)
             persisted = self.safety_store.load()
@@ -52,13 +58,17 @@ class StartupRecoveryManager:
             result = self.reconciliation.check(internal_orders, broker_orders, internal_positions, broker_positions)
             if not result.ok:
                 self.safety_store.halt("BROKER_STATE_DRIFT")
-                recovery = RecoveryResult(False, state_loaded, result, "BROKER_STATE_DRIFT")
+                recovery = RecoveryResult(False, state_loaded, None, "BROKER_STATE_DRIFT")
             elif persisted.trading_halted:
                 self.safety_store.halt(persisted.halt_reason or "PERSISTED_TRADING_HALT")
-                recovery = RecoveryResult(False, state_loaded, result, "PERSISTED_TRADING_HALT")
+                recovery = RecoveryResult(False, state_loaded, None, "PERSISTED_TRADING_HALT")
+            elif verified_reconciliation is None or active_context is None:
+                self.safety_store.halt("VERIFIED_RECONCILIATION_REQUIRED")
+                recovery = RecoveryResult(False, state_loaded, None, "VERIFIED_RECONCILIATION_REQUIRED")
             else:
-                self.safety_store.clear()
-                recovery = RecoveryResult(True, state_loaded, result, "RECOVERY_OK")
+                cleared = self.safety_store.clear(verified_reconciliation, active_context=active_context)
+                self.reconciliation.trading_halted = cleared.trading_halted
+                recovery = RecoveryResult(True, state_loaded, verified_reconciliation, "RECOVERY_OK")
         except Exception as exc:
             self.reconciliation.trading_halted = True
             self.safety_store.halt(f"RECOVERY_FAILED: {type(exc).__name__}")
@@ -69,10 +79,12 @@ class StartupRecoveryManager:
     def resume_after_verified_reconciliation(self) -> RecoveryResult:
         if self._last_result is None or self._last_result.reconciliation is None:
             raise RuntimeError("startup reconciliation has not completed")
-        if not self._last_result.reconciliation.ok:
-            raise RuntimeError("cannot resume while reconciliation has drift")
+        if not self._last_result.reconciliation.verified:
+            raise RuntimeError("startup reconciliation is not verified")
         self.reconciliation.reset_halt()
-        self.safety_store.clear()
+        state = self.safety_store.load()
+        if state.trading_halted:
+            raise RuntimeError("cannot resume while safety state remains halted")
         self._last_result = RecoveryResult(True, self._last_result.state_loaded, self._last_result.reconciliation, "RECOVERY_RESUMED")
         return self._last_result
 
