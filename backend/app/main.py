@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
 from app.api.broker_accounts import router as broker_accounts_router
+from app.api.upstox_oauth import router as upstox_oauth_router
 from app.api.emergency_halt import router as emergency_halt_router
 from app.api.orders import router as orders_router
 from app.api.health import router as health_router
@@ -96,9 +97,6 @@ async def lifespan(app: FastAPI):
         return
     trading_health.record("broker_account_routes", True, "all active broker accounts have bound routes")
 
-    # SafetyStateStore currently carries one reconciliation context. Never let
-    # startup recovery silently reconcile only the default route when multiple
-    # active broker accounts exist; that would leave other accounts unverified.
     if len(active_accounts) > 1:
         reason = "MULTI_ACCOUNT_RECONCILIATION_REQUIRED: startup recovery supports one active broker account until account-scoped safety state is available"
         trading_health.record("broker_account_reconciliation", False, reason)
@@ -205,6 +203,7 @@ app.add_middleware(
 for router in [
     auth_router,
     broker_accounts_router,
+    upstox_oauth_router,
     emergency_halt_router,
     health_router,
     execution_health_router,
