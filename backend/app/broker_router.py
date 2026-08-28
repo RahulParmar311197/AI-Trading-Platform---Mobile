@@ -7,6 +7,7 @@ from typing import Iterator
 import hashlib
 import json
 from app.broker_adapter import BrokerAdapter, BrokerOrderRequest, BrokerOrderUpdate, normalize_broker_update
+from app.broker_context_attestation import BrokerContextAttestor
 from app.broker_snapshot import BrokerSnapshot
 from app.reconciliation import ReconciliationEngine
 from app.reconciliation_coordinator import ReconciliationCoordinator
@@ -23,9 +24,10 @@ class BrokerRoute:
     generation: str | None = None
 
 class BrokerRouter:
-    def __init__(self,routes:list[BrokerRoute],default_route:str,safety_store:SafetyStateStore|None=None,trading_gate:TradingGate|None=None,max_reconciliation_age_seconds:float=2.0,submission_intent_store:SubmissionIntentStore|None=None,reconciliation_engine:ReconciliationEngine|None=None):
+    def __init__(self,routes:list[BrokerRoute],default_route:str,safety_store:SafetyStateStore|None=None,trading_gate:TradingGate|None=None,max_reconciliation_age_seconds:float=2.0,submission_intent_store:SubmissionIntentStore|None=None,reconciliation_engine:ReconciliationEngine|None=None,context_attestor:BrokerContextAttestor|None=None):
         if max_reconciliation_age_seconds<=0: raise ValueError("max_reconciliation_age_seconds must be positive")
-        self.routes={r.name:r for r in routes}; self.default_route=default_route; self.safety_store=safety_store; self.trading_gate=trading_gate or TradingGate(); self.max_reconciliation_age_seconds=float(max_reconciliation_age_seconds); self.submission_intent_store=submission_intent_store or SubmissionIntentStore(); self._submission_lock=Lock(); self._submission_claims=set(); self._route_lifecycle_lock=RLock()
+        if context_attestor is not None and not isinstance(context_attestor, BrokerContextAttestor): raise ValueError("context attestor is invalid")
+        self.routes={r.name:r for r in routes}; self.default_route=default_route; self.safety_store=safety_store; self.trading_gate=trading_gate or TradingGate(); self.max_reconciliation_age_seconds=float(max_reconciliation_age_seconds); self.submission_intent_store=submission_intent_store or SubmissionIntentStore(); self.context_attestor=context_attestor; self._submission_lock=Lock(); self._submission_claims=set(); self._route_lifecycle_lock=RLock()
         if default_route not in self.routes: raise ValueError("default broker route is not configured")
         self.reconciliation_engine=reconciliation_engine or ReconciliationEngine(self.submission_intent_store)
         if self.reconciliation_engine.submission_intent_store is not self.submission_intent_store:
@@ -84,10 +86,11 @@ class BrokerRouter:
     def reconcile_authoritative(self,internal_orders:list[dict],internal_positions:list[dict],route=None,broker_ready:bool=True):
         """Run the production reconciliation path from one authoritative broker snapshot."""
         selected=self.get(route)
+        if self.context_attestor is None: raise RuntimeError("canonical broker context attestor is required for verified reconciliation")
         if selected.broker_account_id is None: raise RuntimeError("broker route must be bound to a broker account for verified reconciliation")
         if selected.generation is None: raise RuntimeError("broker route generation is required for verified reconciliation")
         snapshot=self._authoritative_reconciliation_snapshot(selected)
-        coordinator=ReconciliationCoordinator(engine=self.reconciliation_engine,route=selected.name,account_id=str(selected.broker_account_id),route_generation=str(selected.generation),generation=0)
+        coordinator=ReconciliationCoordinator(engine=self.reconciliation_engine,route=selected.name,account_id=str(selected.broker_account_id),route_generation=str(selected.generation),context_attestor=self.context_attestor,generation=0)
         return coordinator.reconcile(internal_orders=internal_orders,internal_positions=internal_positions,broker_snapshot=snapshot,broker_ready=broker_ready)
     def _require_execution_ready(self,route:BrokerRoute)->None:
         self._halt_if_unresolved_submission_intents()
