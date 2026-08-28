@@ -41,17 +41,11 @@ class ExecutionAuthorization:
         if state.trading_halted:
             return AuthorizationResult(False, "TRADING_HALTED", state.halt_reason or "safety state active")
 
-        # A bound live order may only execute against the broker account whose
-        # authoritative reconciliation context cleared the safety state. This
-        # prevents a stale/default/global safety record from authorizing another
-        # account after route or credential changes.
         account_id = getattr(request, "broker_account_id", None)
         if account_id is not None:
-            reconciled_account = state.reconciliation_account_id
-            if reconciled_account is None:
+            account_state = self.safety_store.account_reconciliation(str(account_id))
+            if account_state is None:
                 return AuthorizationResult(False, "RECONCILIATION_CONTEXT_UNAVAILABLE", "no reconciled broker account is bound to safety state")
-            if str(reconciled_account) != str(account_id):
-                return AuthorizationResult(False, "RECONCILIATION_ACCOUNT_MISMATCH", "order broker account does not match reconciled safety context")
         return AuthorizationResult(True)
 
     def check(self, request: Any) -> AuthorizationResult:
@@ -79,9 +73,6 @@ class ExecutionAuthorization:
             if not first_decision.allowed:
                 return self._result(AuthorizationResult(False, "RISK_REJECTED", first_decision.reason), request, {"broker_snapshot_fingerprint": first_fingerprint})
 
-            # Re-read broker state immediately before reservation/submission. Freshness
-            # alone cannot protect against an external order changing exposure after
-            # the first risk snapshot was authorized.
             second_snapshot = self.risk_snapshot_provider(request)
             second_fingerprint = getattr(second_snapshot, "broker_snapshot_fingerprint", None)
             if first_fingerprint is None or second_fingerprint is None:
@@ -89,10 +80,11 @@ class ExecutionAuthorization:
             if str(first_fingerprint) != str(second_fingerprint):
                 return self._result(AuthorizationResult(False, "RISK_BROKER_SNAPSHOT_CHANGED", "broker state changed during authorization"), request, {"first_broker_snapshot_fingerprint": first_fingerprint, "second_broker_snapshot_fingerprint": second_fingerprint})
 
-            # The broker must still be in the exact reconciled state that cleared
-            # the safety halt. Two internally consistent reads are not sufficient:
-            # both reads could describe a new, externally changed state.
-            reconciled_fingerprint = self.safety_store.load().broker_snapshot_fingerprint
+            account_id = getattr(request, "broker_account_id", None)
+            reconciled = self.safety_store.account_reconciliation(str(account_id)) if account_id is not None else None
+            if account_id is not None and reconciled is None:
+                return self._result(AuthorizationResult(False, "RECONCILIATION_CONTEXT_UNAVAILABLE", "account has no authoritative reconciliation context"), request)
+            reconciled_fingerprint = reconciled.get("broker_snapshot_fingerprint") if reconciled else self.safety_store.load().broker_snapshot_fingerprint
             if reconciled_fingerprint is None:
                 return self._result(AuthorizationResult(False, "RECONCILIATION_CONTEXT_UNAVAILABLE", "safety state has no authoritative broker snapshot fingerprint"), request)
             if str(second_fingerprint) != str(reconciled_fingerprint):
