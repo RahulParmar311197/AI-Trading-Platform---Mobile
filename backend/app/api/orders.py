@@ -30,6 +30,11 @@ class OrderRequest(BaseModel):
 def require_trading_ready(request:Request)->None:
     resources=getattr(request.app.state,"resources",None); safety_store=resources.safety_store if resources else SafetyStateStore(); state=safety_store.load()
     if state.trading_halted: raise HTTPException(status_code=409,detail={"code":"TRADING_HALTED","reason":state.halt_reason})
+    circuit_breaker=getattr(request.app.state,"risk_circuit_breaker",None)
+    if circuit_breaker is None and resources is not None: circuit_breaker=getattr(resources,"risk_circuit_breaker",None)
+    if circuit_breaker is not None:
+        circuit_status=circuit_breaker.status()
+        if circuit_status.blocked: raise HTTPException(status_code=409,detail={"code":"RISK_CIRCUIT_BREAKER_BLOCKED","reason":circuit_status.reason or "risk circuit breaker engaged"})
     startup_state=getattr(request.app.state,"startup_execution_state",None)
     if startup_state is None and resources is not None: startup_state=resources.startup_execution_state
     if startup_state is not None and not startup_state.execution_allowed: raise HTTPException(status_code=409,detail={"code":"STARTUP_EXECUTION_LOCKED","reason":startup_state.status.reason or startup_state.state.value})
