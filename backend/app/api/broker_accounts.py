@@ -148,6 +148,50 @@ def _update_account_with_route_fence(request: Request, db: Session, account: Bro
             raise HTTPException(409, "broker account update failed; previous credentials and route remain authoritative") from exc
 
 
+def _create_account_with_route_fence(request: Request, db: Session, account: BrokerAccount) -> None:
+    """Publish a candidate account route only after identity exists, before DB commit."""
+    router = getattr(request.app.state, "broker_router", None)
+    if router is None:
+        raise HTTPException(503, "broker route manager unavailable")
+
+    with router.route_lifecycle_lock():
+        old_route = None
+        route_name = None
+        try:
+            db.add(account)
+            db.flush()
+            route_name = account_route_name(account)
+            old_route = router.routes.get(route_name)
+            if old_route is not None:
+                raise HTTPException(409, "broker account route already exists")
+
+            candidate = build_account_route(account)
+            if candidate.broker_account_id != int(account.id):
+                raise RuntimeError("candidate route account identity mismatch")
+            if candidate.generation != account_route_generation(account):
+                raise RuntimeError("candidate route generation mismatch")
+            router.routes[route_name] = candidate
+            try:
+                db.commit()
+                db.refresh(account)
+            except Exception as exc:
+                db.rollback()
+                raise exc
+        except HTTPException:
+            db.rollback()
+            if route_name is not None and old_route is None:
+                router.routes.pop(route_name, None)
+            raise
+        except Exception as exc:
+            db.rollback()
+            if route_name is not None:
+                if old_route is None:
+                    router.routes.pop(route_name, None)
+                else:
+                    router.routes[route_name] = old_route
+            raise HTTPException(409, "broker account creation failed; no account route was published") from exc
+
+
 @router.post("")
 def create_account(
     body: BrokerAccountCreate,
@@ -165,15 +209,10 @@ def create_account(
         encrypted_credentials=encrypt_credentials(body.credentials),
         status="active",
     )
-    db.add(account)
-    db.commit()
-    db.refresh(account)
+    _create_account_with_route_fence(request, db, account)
     errors = _sync_routes(request, db)
     if errors:
-        db.delete(account)
-        db.commit()
-        _sync_routes(request, db)
-        raise HTTPException(409, {"message": "broker account route provisioning failed", "errors": errors})
+        raise HTTPException(503, {"message": "broker account route validation failed after committed create", "errors": errors})
     return {"id": account.id, "broker": account.broker, "account_label": account.account_label, "status": account.status}
 
 
