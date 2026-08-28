@@ -93,10 +93,11 @@ def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected
     client_id = str(data.get("client_order_id")).strip() if data.get("client_order_id") is not None else None
     symbol = str(data.get("symbol")).strip().upper() if data.get("symbol") else None; side = str(data.get("side")).strip().upper() if data.get("side") else None
     if expected is not None:
-        if client_id is not None and client_id != expected.client_order_id: raise ValueError("broker client_order_id does not match request")
-        if symbol is not None and symbol != expected.symbol.upper(): raise ValueError("broker symbol does not match request")
-        if side is not None and side != expected.side.upper(): raise ValueError("broker side does not match request")
-        if quantity is not None and quantity > expected.quantity + 1e-9: raise ValueError("broker quantity exceeds requested quantity")
+        if client_id is None or client_id != expected.client_order_id: raise ValueError("broker client_order_id does not match request")
+        if symbol is None or symbol != expected.symbol.upper(): raise ValueError("broker symbol does not match request")
+        if side is None or side != expected.side.upper(): raise ValueError("broker side does not match request")
+        if quantity is None: raise ValueError("broker response missing requested quantity")
+        if abs(quantity - expected.quantity) > 1e-9: raise ValueError("broker quantity does not match requested quantity")
     if price is not None and price <= 0: raise ValueError("broker price must be positive")
     if average is not None and average <= 0: raise ValueError("broker average price must be positive")
     if status == BrokerOrderStatus.NEW.value and filled is not None and abs(filled) > 1e-9: raise ValueError("NEW broker status requires zero filled quantity")
@@ -128,7 +129,7 @@ class BrokerAdapter(ABC):
     def get_position_snapshot(self) -> BrokerPositionSnapshot:
         positions = self.get_positions()
         if not isinstance(positions, list): raise RuntimeError("broker position snapshot is invalid")
-        return BrokerPositionSnapshot(positions=[dict(p) for p in positions], complete=False, source=self.__class__.__name__)
+        return BrokerPositionSnapshot(positions=[dict(o) for o in positions], complete=False, source=self.__class__.__name__)
     def find_order_by_client_id(self, client_order_id: str):
         snapshot = self.get_order_snapshot().require_authoritative(); matches=[dict(o) for o in snapshot if str(o.get("client_order_id",o.get("tag","")))==client_order_id]
         if len(matches)>1: raise RuntimeError(f"ambiguous broker order identity for client_order_id: {client_order_id}")
