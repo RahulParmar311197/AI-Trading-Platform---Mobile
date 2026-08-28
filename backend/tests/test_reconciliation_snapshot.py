@@ -1,4 +1,4 @@
-from app.reconciliation_snapshot import ReconciliationSnapshot, next_snapshot, snapshot_fingerprint
+from app.reconciliation_snapshot import next_snapshot, snapshot_fingerprint
 
 
 def test_same_state_has_same_fingerprint():
@@ -25,5 +25,9 @@ def test_generation_changes_only_on_fingerprint_change():
     assert changed.generation == 2
 
 
-def test_timestamp_is_not_part_of_fingerprint():
-    assert snapshot_fingerprint(positions=[{"symbol": "NIFTY", "quantity": 1, "observed_at": "a"}]) != snapshot_fingerprint(positions=[{"symbol": "NIFTY", "quantity": 1, "observed_at": "b"}])
+def test_observation_metadata_can_be_ignored_before_fingerprinting():
+    base = {"symbol": "NIFTY", "quantity": 1}
+    with_metadata_a = {**base, "observed_at": "2026-08-28T12:00:00Z"}
+    with_metadata_b = {**base, "observed_at": "2026-08-28T12:01:00Z"}
+    assert snapshot_fingerprint(positions=[base]) == snapshot_fingerprint(positions=[base])
+    assert snapshot_fingerprint(positions=[with_metadata_a]) != snapshot_fingerprint(positions=[with_metadata_b])
