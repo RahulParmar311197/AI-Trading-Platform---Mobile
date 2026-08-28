@@ -10,10 +10,11 @@ from app.api.orders import router as orders_router
 from app.api.health import router as health_router
 from app.api.execution_health import router as execution_health_router
 from app.app_factory import create_resources
-from app.broker_factory import build_broker_router, provision_active_account_routes, validate_active_account_routes
+from app.broker_factory import build_broker_router, provision_active_account_routes, validate_active_account_routes, account_route_name
 from app.broker_recovery import BrokerStartupRecovery
 from app.config import get_settings
 from app.db import SessionLocal, init_db
+from app.models.broker_account import BrokerAccount
 from app.api_order_reconciliation import reconcile_api_order_projection
 from app.operational_api import create_operational_router
 from app.operational_metrics import TradingMetricsCollector
@@ -82,6 +83,7 @@ async def lifespan(app: FastAPI):
     app.state.order_lifecycle = lifecycle
 
     with SessionLocal() as db:
+        active_accounts = db.query(BrokerAccount).filter(BrokerAccount.status == "active").order_by(BrokerAccount.id.asc()).all()
         provisioning_errors = provision_active_account_routes(db, execution_broker_router)
         route_validation_errors = validate_active_account_routes(db, execution_broker_router)
     account_route_errors = provisioning_errors + route_validation_errors
@@ -94,6 +96,18 @@ async def lifespan(app: FastAPI):
         return
     trading_health.record("broker_account_routes", True, "all active broker accounts have bound routes")
 
+    # SafetyStateStore currently carries one reconciliation context. Never let
+    # startup recovery silently reconcile only the default route when multiple
+    # active broker accounts exist; that would leave other accounts unverified.
+    if len(active_accounts) > 1:
+        reason = "MULTI_ACCOUNT_RECONCILIATION_REQUIRED: startup recovery supports one active broker account until account-scoped safety state is available"
+        trading_health.record("broker_account_reconciliation", False, reason)
+        startup_state.fail(reason)
+        yield
+        return
+    recovery_route = account_route_name(active_accounts[0]) if active_accounts else None
+    app.state.recovery_route = recovery_route
+
     if emergency_halt_controller.is_halted():
         reason = safety_store.load().halt_reason or "persisted emergency halt"
         startup_state.halt(reason)
@@ -103,7 +117,7 @@ async def lifespan(app: FastAPI):
         startup_state.transition(
             StartupExecutionState.RECOVERING, "application startup recovery"
         )
-        result = broker_recovery.run(lifecycle)
+        result = broker_recovery.run(lifecycle, route=recovery_route)
         app.state.recovery_result = result
         trading_health.record("broker_recovery", result.ready, "ready" if result.ready else "failed")
         if not result.ready:
@@ -139,7 +153,7 @@ async def lifespan(app: FastAPI):
                 else:
                     local_positions = _persisted_local_positions(lifecycle)
                     try:
-                        broker_positions = execution_broker_router.get_positions()
+                        broker_positions = execution_broker_router.get_positions(recovery_route)
                         broker_error = None
                     except Exception as exc:
                         broker_positions = None
