@@ -28,7 +28,10 @@ def create_risk_circuit_router(breaker: ObservableRiskCircuitBreaker) -> APIRout
     def reset(action: CircuitBreakerAction) -> dict:
         if action.reason.strip().lower() != "authorized reset":
             raise HTTPException(status_code=403, detail="explicit authorized reset confirmation required")
-        breaker.reset()
+        try:
+            breaker.reset()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         state = breaker.status()
         return {"blocked": state.blocked, "reason": state.reason, "can_trade": breaker.can_trade()}
 
