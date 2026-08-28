@@ -157,7 +157,6 @@ def test_account_scoped_execution_readiness_uses_route_account_state(tmp_path):
     ],'a', safety_store=store)
     result_a=_verified_result_after_halt(store, router, generation=1, account_id='7', route='a', route_generation='a-1')
     store.clear(result_a, active_context=result_a.context)
-    # A is reconciled, but B must not inherit A's account-scoped readiness.
     with pytest.raises(RuntimeError, match='broker account has not been reconciled'):
         router.submit(BrokerOrderRequest('b-order','NIFTY','BUY',1,broker_route='b'))
 
@@ -209,6 +208,19 @@ class RecoveryPayloadBroker(PaperBrokerAdapter):
         raise RuntimeError('simulated submission transport failure')
 
 
+class IdentityFailingBroker(PaperBrokerAdapter):
+    def __init__(self, *, mismatch: bool = False):
+        super().__init__()
+        self.identity_checks = 0
+        self.mismatch = mismatch
+
+    def verify_authenticated_identity(self):
+        self.identity_checks += 1
+        if self.mismatch:
+            raise RuntimeError('wrong authenticated user')
+        return {'broker': 'UPSTOX', 'user_id': 'UCC-42'}
+
+
 def test_reconciliation_fingerprint_requires_authoritative_order_snapshot():
     router=BrokerRouter([BrokerRoute('paper',IncompleteOrderSnapshotBroker())],'paper')
     with pytest.raises(RuntimeError, match='not authoritative'):
@@ -252,3 +264,22 @@ def test_submit_recovery_rejects_incomplete_broker_payload(tmp_path):
     with pytest.raises(RuntimeError, match='recovery payload is incomplete'):
         router.submit(BrokerOrderRequest('c-recover','NIFTY','BUY',1))
     assert store.load().trading_halted is True
+
+
+def test_route_identity_failure_halts_authoritative_snapshot(tmp_path):
+    store=SafetyStateStore(str(tmp_path/'safety.json'))
+    broker=IdentityFailingBroker(mismatch=True)
+    router=BrokerRouter([BrokerRoute('upstox', broker, broker_account_id=42, generation='g1')], 'upstox', safety_store=store)
+    with pytest.raises(RuntimeError, match='authenticated identity could not be verified'):
+        router._current_snapshot_fingerprint(router.get('upstox'))
+    assert broker.identity_checks == 1
+    assert store.load().trading_halted is True
+
+
+def test_route_identity_is_verified_before_authoritative_snapshot(tmp_path):
+    store=SafetyStateStore(str(tmp_path/'safety.json'))
+    broker=IdentityFailingBroker()
+    router=BrokerRouter([BrokerRoute('upstox', broker, broker_account_id=42, generation='g1')], 'upstox', safety_store=store)
+    snapshot=router.get_snapshot('upstox')
+    assert snapshot.broker_account_id == 42
+    assert broker.identity_checks == 1
