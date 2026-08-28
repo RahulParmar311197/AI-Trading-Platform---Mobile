@@ -129,7 +129,7 @@ class BrokerAdapter(ABC):
     def get_position_snapshot(self) -> BrokerPositionSnapshot:
         positions = self.get_positions()
         if not isinstance(positions, list): raise RuntimeError("broker position snapshot is invalid")
-        return BrokerPositionSnapshot(positions=[dict(o) for o in positions], complete=False, source=self.__class__.__name__)
+        return BrokerPositionSnapshot(positions=[dict(p) for p in positions], complete=False, source=self.__class__.__name__)
     def find_order_by_client_id(self, client_order_id: str):
         snapshot = self.get_order_snapshot().require_authoritative(); matches=[dict(o) for o in snapshot if str(o.get("client_order_id",o.get("tag","")))==client_order_id]
         if len(matches)>1: raise RuntimeError(f"ambiguous broker order identity for client_order_id: {client_order_id}")
