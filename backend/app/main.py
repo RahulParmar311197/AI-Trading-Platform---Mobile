@@ -33,7 +33,10 @@ resources = create_resources(broker_context_attestation_secret=settings.broker_c
 execution_store = resources.execution_store
 idempotency_store = resources.idempotency_store
 safety_store = resources.safety_store
-execution_broker_router = build_broker_router(safety_store)
+execution_broker_router = build_broker_router(
+    safety_store,
+    context_attestor=resources.broker_context_attestor,
+)
 recovery_manager = StartupRecoveryManager(execution_store, safety_store)
 broker_recovery = BrokerStartupRecovery(
     execution_broker_router, execution_store, safety_store, recovery_manager
