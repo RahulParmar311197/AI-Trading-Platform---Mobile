@@ -6,7 +6,7 @@ from app.models.broker_account import BrokerAccount
 from app.models.user import User
 from app.auth.security import get_current_user
 from app.security.credential_encryption import encrypt_credentials
-from app.broker_factory import provision_active_account_routes
+from app.broker_factory import provision_active_account_routes, account_route_name
 
 router = APIRouter(prefix="/broker-accounts", tags=["broker-accounts"])
 
@@ -22,11 +22,46 @@ class BrokerAccountUpdate(BaseModel):
     status: str | None = Field(default=None, pattern="^(active|disabled)$")
 
 
+_TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELLED", "CANCELED", "REJECTED", "EXPIRED"}
+
+
 def _sync_routes(request: Request, db: Session) -> list[str]:
     router = getattr(request.app.state, "broker_router", None)
     if router is None:
         raise HTTPException(503, "broker route manager unavailable")
     return provision_active_account_routes(db, router)
+
+
+def _ensure_account_safe_to_delete(request: Request, account: BrokerAccount) -> None:
+    """Fail closed unless authoritative broker state proves the account is flat."""
+    if str(account.status).strip().lower() != "disabled":
+        raise HTTPException(409, "disable broker account before deletion")
+
+    router = getattr(request.app.state, "broker_router", None)
+    if router is None:
+        raise HTTPException(503, "broker route manager unavailable")
+    try:
+        route = account_route_name(account)
+        positions = router.get_positions(route)
+        position_rows = positions.require_authoritative() if hasattr(positions, "require_authoritative") else positions
+        for row in position_rows:
+            quantity = float(row.get("quantity", row.get("net_quantity", 0)) or 0)
+            if abs(quantity) > 1e-9:
+                raise HTTPException(409, "broker account has open positions")
+
+        broker_route = router.get(route)
+        snapshot_fn = getattr(broker_route.adapter, "get_order_snapshot", None)
+        if snapshot_fn is None:
+            raise HTTPException(503, "authoritative broker order snapshot is required before account deletion")
+        orders = snapshot_fn().require_authoritative()
+        for order in orders:
+            status = str(order.get("status", "")).strip().upper()
+            if status not in _TERMINAL_ORDER_STATUSES:
+                raise HTTPException(409, "broker account has non-terminal orders")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(503, "unable to verify broker account state before deletion") from exc
 
 
 @router.post("")
@@ -102,6 +137,7 @@ def delete_account(
     row = db.query(BrokerAccount).filter(BrokerAccount.id == account_id, BrokerAccount.user_id == current_user.id).first()
     if not row:
         raise HTTPException(404, "broker account not found")
+    _ensure_account_safe_to_delete(request, row)
     db.delete(row)
     db.commit()
     errors = _sync_routes(request, db)
