@@ -126,6 +126,26 @@ class SafetyStateStore:
         state = self.load()
         return state.risk_circuit_blocked, state.risk_circuit_reason
 
+    def risk_circuit_reset_ready(self) -> bool:
+        """Allow reset only after broker reconciliation newer than the circuit engagement."""
+        state = self.load()
+        if not state.risk_circuit_blocked or state.risk_circuit_engaged_at is None:
+            return False
+        engaged_at = state.risk_circuit_engaged_at.astimezone(timezone.utc)
+        candidates: list[datetime] = []
+        if state.last_reconciliation_at is not None:
+            candidates.append(state.last_reconciliation_at.astimezone(timezone.utc))
+        for record in state.reconciliation_by_account.values():
+            raw = record.get("last_reconciliation_at") if isinstance(record, dict) else None
+            if raw:
+                try:
+                    observed = datetime.fromisoformat(str(raw))
+                    if observed.tzinfo is not None:
+                        candidates.append(observed.astimezone(timezone.utc))
+                except ValueError:
+                    continue
+        return bool(candidates) and max(candidates) > engaged_at
+
     def engage_risk_circuit(self, reason: str) -> SafetyState:
         if not reason.strip():
             raise ValueError("risk circuit reason is required")
@@ -148,6 +168,8 @@ class SafetyStateStore:
 
     def reset_risk_circuit(self) -> SafetyState:
         state = self.load()
+        if state.risk_circuit_blocked and not self.risk_circuit_reset_ready():
+            raise RuntimeError("risk circuit reset requires broker reconciliation after circuit engagement")
         reset = SafetyState(
             state.trading_halted,
             state.halt_reason,
