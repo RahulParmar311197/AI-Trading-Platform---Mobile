@@ -111,12 +111,13 @@ def _execution_service(broker_router, resources):
             provider,
             audit_log=resources.audit_log,
         )
+    recovery = getattr(resources, "startup_recovery", None) or StartupRecoveryCoordinator()
     return OrderExecutionService(
         broker_router,
         lifecycle,
         resources.execution_store,
         resources.idempotency_store,
-        recovery=getattr(request_state := resources, "startup_recovery", None) or StartupRecoveryCoordinator(),
+        recovery=recovery,
         risk_gate=risk_gate,
         risk_snapshot_provider=provider,
         safety_state_store=resources.safety_store,
