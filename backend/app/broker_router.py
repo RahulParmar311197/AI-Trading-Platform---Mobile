@@ -27,9 +27,8 @@ class BrokerRouter:
     def __init__(self,routes:list[BrokerRoute],default_route:str,safety_store:SafetyStateStore|None=None,trading_gate:TradingGate|None=None,max_reconciliation_age_seconds:float=2.0,submission_intent_store:SubmissionIntentStore|None=None,reconciliation_engine:ReconciliationEngine|None=None,context_attestor:BrokerContextAttestor|None=None):
         if max_reconciliation_age_seconds<=0: raise ValueError("max_reconciliation_age_seconds must be positive")
         if context_attestor is not None and not isinstance(context_attestor, BrokerContextAttestor): raise ValueError("context attestor is invalid")
-        self.routes={r.name:r for r in routes}; self.default_route=default_route; self.safety_store=safety_store; self.trading_gate=trading_gate or TradingGate(); self.max_reconciliation_age_seconds=float(max_reconciliation_age_seconds); self.submission_intent_store=submission_intent_store or SubmissionIntentStore(); self.context_attestor=context_attestor; self._submission_lock=Lock(); self._submission_claims=set(); self._route_lifecycle_lock=RLock()
+        self.routes={r.name:r for r in routes}; self.default_route=default_route; self.safety_store=safety_store; self.trading_gate=trading_gate or TradingGate(); self.max_reconciliation_age_seconds=float(max_reconciliation_age_seconds); self.submission_intent_store=submission_intent_store or SubmissionIntentStore(); self.reconciliation_engine=reconciliation_engine or ReconciliationEngine(self.submission_intent_store); self.context_attestor=context_attestor; self._submission_lock=Lock(); self._submission_claims=set(); self._route_lifecycle_lock=RLock()
         if default_route not in self.routes: raise ValueError("default broker route is not configured")
-        self.reconciliation_engine=reconciliation_engine or ReconciliationEngine(self.submission_intent_store)
         if self.reconciliation_engine.submission_intent_store is not self.submission_intent_store:
             raise ValueError("reconciliation engine must use the router submission intent store")
     @contextmanager
@@ -92,25 +91,41 @@ class BrokerRouter:
         snapshot=self._authoritative_reconciliation_snapshot(selected)
         coordinator=ReconciliationCoordinator(engine=self.reconciliation_engine,route=selected.name,account_id=str(selected.broker_account_id),route_generation=str(selected.generation),context_attestor=self.context_attestor,generation=0)
         return coordinator.reconcile(internal_orders=internal_orders,internal_positions=internal_positions,broker_snapshot=snapshot,broker_ready=broker_ready)
+    def _reconciliation_record(self,route:BrokerRoute):
+        if self.safety_store is None:
+            return None
+        state=self.safety_store.load()
+        if route.broker_account_id is not None:
+            record=self.safety_store.account_reconciliation(str(route.broker_account_id))
+            if record is None:
+                raise RuntimeError("broker account has not been reconciled")
+            return record
+        return {
+            "last_reconciliation_at": state.last_reconciliation_at.isoformat() if state.last_reconciliation_at else None,
+            "reconciliation_generation": state.reconciliation_generation,
+            "broker_snapshot_fingerprint": state.broker_snapshot_fingerprint,
+            "route_generation": None,
+        }
     def _require_execution_ready(self,route:BrokerRoute)->None:
         self._halt_if_unresolved_submission_intents()
         if self.safety_store is None: halted=True; state=None
         else: state=self.safety_store.load(); halted=state.trading_halted
         self.trading_gate.require_ready(halted)
         if halted or state is None: return
+        record=self._reconciliation_record(route)
         if route.generation is not None:
-            if state.reconciliation_generation is None: raise RuntimeError("broker route has not been reconciled")
-            if str(state.reconciliation_generation)!=str(route.generation): raise RuntimeError("broker route generation is not reconciled")
-        if route.broker_account_id is not None:
-            if state.reconciliation_account_id is None: raise RuntimeError("broker account has not been reconciled")
-            if str(state.reconciliation_account_id)!=str(route.broker_account_id): raise RuntimeError("broker account is not reconciled")
-        reconciled_at=state.last_reconciliation_at
-        if reconciled_at is None or reconciled_at.tzinfo is None: raise RuntimeError("broker reconciliation timestamp is unavailable")
+            route_generation=record.get("route_generation") if record else None
+            if route_generation is None or str(route_generation)!=str(route.generation): raise RuntimeError("broker route generation is not reconciled")
+        reconciled_at_raw=record.get("last_reconciliation_at") if record else None
+        if not reconciled_at_raw: raise RuntimeError("broker reconciliation timestamp is unavailable")
+        reconciled_at=datetime.fromisoformat(str(reconciled_at_raw))
+        if reconciled_at.tzinfo is None: raise RuntimeError("broker reconciliation timestamp is unavailable")
         age=(datetime.now(timezone.utc)-reconciled_at.astimezone(timezone.utc)).total_seconds()
         if age<0 or age>self.max_reconciliation_age_seconds: raise RuntimeError("broker reconciliation is stale")
-        if not state.broker_snapshot_fingerprint: raise RuntimeError("broker reconciliation fingerprint is unavailable")
+        expected=record.get("broker_snapshot_fingerprint") if record else None
+        if not expected: raise RuntimeError("broker reconciliation fingerprint is unavailable")
         current=self._current_snapshot_fingerprint(route)
-        if current!=state.broker_snapshot_fingerprint: raise RuntimeError("broker state changed since reconciliation")
+        if current!=expected: raise RuntimeError("broker state changed since reconciliation")
     def _require_account_binding(self,request:BrokerOrderRequest,route:BrokerRoute)->None:
         if request.broker_account_id is None: return
         if route.broker_account_id is None: raise RuntimeError("broker route is not bound to a broker account")
@@ -150,7 +165,8 @@ class BrokerRouter:
                 if self.safety_store is not None:
                     state=self.safety_store.load()
                     if state.trading_halted: raise RuntimeError("trading is halted")
-                    expected=state.broker_snapshot_fingerprint
+                    record=self._reconciliation_record(selected)
+                    expected=record.get("broker_snapshot_fingerprint") if record else None
                     if expected is None: raise RuntimeError("broker reconciliation fingerprint is unavailable")
                     current=self._current_snapshot_fingerprint(selected)
                     if current!=expected: raise RuntimeError("broker state changed immediately before submission")
