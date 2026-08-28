@@ -22,12 +22,22 @@ from app.idempotency_store import IdempotencyStore
 from app.safety_state import SafetyStateStore
 from app.broker_factory import build_broker_router
 from app.broker_router import BrokerRouter
+from app.broker_context_attestation import BrokerContextAttestor
+from app.broker_execution_context import BrokerExecutionContext
 from app.execution_authorization import ExecutionAuthorization
+from app.execution_authorization_store import ExecutionAuthorizationStore
+from app.live_execution_gateway import LiveExecutionGateway, ExecutionPolicy
+from app.reconciliation import ReconciliationEngine
+from app.reconciliation_coordinator import ReconciliationCoordinator
 from app.startup_execution_state import StartupExecutionStateMachine
 from app.trading_audit import TradingAuditLog
 from app.emergency_halt import EmergencyHaltController
 from app.broker_connectivity_registry import BrokerConnectivityRegistry
 from app.broker_health_worker import BrokerHealthWorker
+
+
+_DEFAULT_ATTESTATION_SECRET = b"test-broker-context-attestation-secret-32+"
+
 
 @dataclass
 class AppResources:
@@ -46,13 +56,66 @@ class AppResources:
     execution_alert_worker_health: ExecutionAlertWorkerHealth
     execution_alert_dead_letter_store: ExecutionAlertDeadLetterStore
     connectivity_registry: BrokerConnectivityRegistry
+    broker_context_attestor: BrokerContextAttestor
+    execution_authorization_store: ExecutionAuthorizationStore
     authorization: ExecutionAuthorization | None = None
     session_local: object | None = None
     startup_execution_state: StartupExecutionStateMachine | None = None
     emergency_halt_controller: EmergencyHaltController | None = None
 
+    def create_reconciliation_coordinator(
+        self,
+        *,
+        engine: ReconciliationEngine,
+        route: str,
+        account_id: str,
+        route_generation: str,
+        generation: int = 0,
+    ) -> ReconciliationCoordinator:
+        """Create a coordinator using the application's canonical attestation key."""
+        return ReconciliationCoordinator(
+            engine=engine,
+            route=route,
+            account_id=account_id,
+            route_generation=route_generation,
+            context_attestor=self.broker_context_attestor,
+            generation=generation,
+        )
 
-def create_resources(*, execution_path="data/execution_state.json", idempotency_path="data/idempotency.sqlite3", safety_path="data/safety_state.json", audit_path="data/trading_audit.jsonl", database_url: str | None = None, alert_path="data/execution_alerts.sqlite3", alert_event_path="data/execution_alert_events.sqlite3", execution_health_token="test-token") -> AppResources:
+    def create_live_execution_gateway(
+        self,
+        executor,
+        *,
+        policy: ExecutionPolicy | None = None,
+        position_reader=None,
+        local_positions_reader=None,
+        incident_reporter=None,
+    ) -> LiveExecutionGateway:
+        """Create the canonical live gateway with the same attestor and durable auth store."""
+        return LiveExecutionGateway(
+            executor,
+            policy=policy,
+            position_reader=position_reader,
+            local_positions_reader=local_positions_reader,
+            incident_reporter=incident_reporter,
+            authorization_store=self.execution_authorization_store,
+            context_attestor=self.broker_context_attestor,
+        )
+
+
+def create_resources(
+    *,
+    execution_path="data/execution_state.json",
+    idempotency_path="data/idempotency.sqlite3",
+    safety_path="data/safety_state.json",
+    audit_path="data/trading_audit.jsonl",
+    database_url: str | None = None,
+    alert_path="data/execution_alerts.sqlite3",
+    alert_event_path="data/execution_alert_events.sqlite3",
+    execution_authorization_path="data/execution_authorizations.sqlite3",
+    execution_health_token="test-token",
+    broker_context_attestation_secret: bytes | str | None = None,
+) -> AppResources:
     session_local = None
     if database_url:
         _, session_local = create_db_runtime(database_url)
@@ -61,6 +124,13 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     startup_execution_state = StartupExecutionStateMachine(audit_log)
     emergency_halt_controller = EmergencyHaltController(safety_store, startup_execution_state, audit_log)
     authorization = ExecutionAuthorization(safety_store, audit_log=audit_log)
+    attestation_secret = broker_context_attestation_secret
+    if attestation_secret is None:
+        attestation_secret = _DEFAULT_ATTESTATION_SECRET
+    if isinstance(attestation_secret, str):
+        attestation_secret = attestation_secret.encode("utf-8")
+    broker_context_attestor = BrokerContextAttestor(attestation_secret)
+    execution_authorization_store = ExecutionAuthorizationStore(execution_authorization_path)
     observability = ExecutionObservability()
     health = ExecutionHealth(observability)
     event_store = ExecutionAlertEventStore(alert_event_path)
@@ -74,14 +144,35 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     dead_letter_store = ExecutionAlertDeadLetterStore(alert_event_path)
     observability.add_hook(alert_service.evaluate, priority=100)
     observability.add_hook(recovery.evaluate, priority=200)
-    return AppResources(ExecutionStateStore(execution_path), IdempotencyStore(idempotency_path), safety_store, audit_log, observability, alert_store, alert_service, recovery, event_store, event_publisher, dispatcher, worker, worker_health, dead_letter_store, BrokerConnectivityRegistry(), authorization, session_local, startup_execution_state, emergency_halt_controller)
+    return AppResources(
+        ExecutionStateStore(execution_path),
+        IdempotencyStore(idempotency_path),
+        safety_store,
+        audit_log,
+        observability,
+        alert_store,
+        alert_service,
+        recovery,
+        event_store,
+        event_publisher,
+        dispatcher,
+        worker,
+        worker_health,
+        dead_letter_store,
+        BrokerConnectivityRegistry(),
+        broker_context_attestor,
+        execution_authorization_store,
+        authorization,
+        session_local,
+        startup_execution_state,
+        emergency_halt_controller,
+    )
 
 
 def create_app(resources: AppResources | None = None, broker_router: BrokerRouter | None = None, execution_health_token: str | None = None) -> FastAPI:
     resources = resources or create_resources(execution_health_token=execution_health_token or "test-token")
     app = FastAPI(title="AI Trading Platform", version="1.0.0")
     app.state.resources = resources
-    app.state.execution_observability = resources.execution_observability
     app.state.execution_alert_store = resources.execution_alert_store
     app.state.execution_alert_service = resources.execution_alert_service
     app.state.execution_alert_recovery = resources.execution_alert_recovery
@@ -92,6 +183,8 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     app.state.execution_alert_worker_health = resources.execution_alert_worker_health
     app.state.execution_alert_dead_letter_store = resources.execution_alert_dead_letter_store
     app.state.execution_health_token = execution_health_token if execution_health_token is not None else "test-token"
+    app.state.broker_context_attestor = resources.broker_context_attestor
+    app.state.execution_authorization_store = resources.execution_authorization_store
     app.state.broker_router = broker_router or build_broker_router(resources.safety_store)
     app.state.startup_execution_state = resources.startup_execution_state
     app.state.emergency_halt_controller = resources.emergency_halt_controller
