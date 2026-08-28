@@ -63,51 +63,68 @@ class UpstoxClient:
             return response["data"]
         return response
 
+    @classmethod
+    def _object_data(cls, response: Any, operation: str) -> dict[str, Any]:
+        data = cls._data(response)
+        if not isinstance(data, dict):
+            raise UpstoxAPIError(f"Upstox {operation} response has invalid object data", payload=response)
+        return data
+
+    @classmethod
+    def _list_data(cls, response: Any, operation: str) -> list[dict[str, Any]]:
+        data = cls._data(response)
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise UpstoxAPIError(f"Upstox {operation} response has invalid list data", payload=response)
+        return data
+
     def get_profile(self) -> dict[str, Any]:
-        data = self._data(self._request("GET", self.API_BASE, "/user/profile"))
-        return data if isinstance(data, dict) else {"data": data}
+        return self._object_data(self._request("GET", self.API_BASE, "/user/profile"), "profile")
 
     def get_quote(self, instrument_key: str) -> dict[str, Any]:
         if not instrument_key:
             raise ValueError("instrument_key is required")
-        data = self._data(self._request("GET", self.API_BASE, "/market-quote/quotes", params={"instrument_key": instrument_key}))
-        return data if isinstance(data, dict) else {"data": data}
+        return self._object_data(
+            self._request("GET", self.API_BASE, "/market-quote/quotes", params={"instrument_key": instrument_key}),
+            "quote",
+        )
 
     def get_positions(self) -> list[dict[str, Any]]:
-        data = self._data(self._request("GET", self.API_BASE, "/portfolio/short-term-positions"))
-        return data if isinstance(data, list) else []
+        return self._list_data(self._request("GET", self.API_BASE, "/portfolio/short-term-positions"), "positions")
 
     def get_orders(self) -> list[dict[str, Any]]:
-        data = self._data(self._request("GET", self.API_BASE, "/order/retrieve-all"))
-        return data if isinstance(data, list) else []
+        return self._list_data(self._request("GET", self.API_BASE, "/order/retrieve-all"), "orders")
 
     def get_order(self, order_id: str) -> dict[str, Any]:
         if not order_id:
             raise ValueError("order_id is required")
-        data = self._data(self._request("GET", self.API_BASE, "/order/details", params={"order_id": order_id}))
-        return data if isinstance(data, dict) else {"data": data}
+        return self._object_data(
+            self._request("GET", self.API_BASE, "/order/details", params={"order_id": order_id}),
+            "order",
+        )
 
     def get_trades(self) -> list[dict[str, Any]]:
-        data = self._data(self._request("GET", self.API_BASE, "/order/trades/get-trades-for-day"))
-        return data if isinstance(data, list) else []
+        return self._list_data(self._request("GET", self.API_BASE, "/order/trades/get-trades-for-day"), "trades")
 
     def get_trades_for_order(self, order_id: str) -> list[dict[str, Any]]:
         if not order_id:
             raise ValueError("order_id is required")
-        data = self._data(self._request("GET", self.API_BASE, "/order/trades", params={"order_id": order_id}))
-        return data if isinstance(data, list) else []
+        return self._list_data(
+            self._request("GET", self.API_BASE, "/order/trades", params={"order_id": order_id}),
+            "order trades",
+        )
 
     def place_order(self, order: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(order, dict) or not order:
             raise ValueError("order must be a non-empty mapping")
-        data = self._data(self._request("POST", self.HFT_BASE, "/order/place", body=order))
-        return data if isinstance(data, dict) else {"data": data}
+        return self._object_data(self._request("POST", self.HFT_BASE, "/order/place", body=order), "place-order")
 
     def cancel_order(self, order_id: str) -> dict[str, Any]:
         if not order_id:
             raise ValueError("order_id is required")
-        data = self._data(self._request("DELETE", self.HFT_BASE, "/order/cancel", params={"order_id": order_id}))
-        return data if isinstance(data, dict) else {"data": data}
+        return self._object_data(
+            self._request("DELETE", self.HFT_BASE, "/order/cancel", params={"order_id": order_id}),
+            "cancel-order",
+        )
 
     def health(self) -> dict[str, Any]:
         self.get_profile()
