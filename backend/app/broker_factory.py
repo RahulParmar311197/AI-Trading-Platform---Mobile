@@ -6,6 +6,7 @@ import os
 from sqlalchemy.orm import Session
 
 from app.broker_adapter import PaperBrokerAdapter
+from app.broker_context_attestation import BrokerContextAttestor
 from app.broker_router import BrokerRoute, BrokerRouter
 from app.dhan_adapter import DhanAdapter, DhanConfig
 from app.models.broker_account import BrokerAccount
@@ -14,7 +15,7 @@ from app.safety_state import SafetyStateStore
 from app.upstox_adapter import UpstoxAdapter, UpstoxConfig
 
 
-def build_broker_router(safety_store: SafetyStateStore | None = None) -> BrokerRouter:
+def build_broker_router(safety_store: SafetyStateStore | None = None, *, context_attestor: BrokerContextAttestor | None = None) -> BrokerRouter:
     """Create the configured broker router without making network calls."""
     selected = os.getenv("BROKER_ROUTE", "paper").strip().lower()
     routes = [BrokerRoute("paper", PaperBrokerAdapter())]
@@ -25,7 +26,7 @@ def build_broker_router(safety_store: SafetyStateStore | None = None) -> BrokerR
     upstox = UpstoxAdapter()
     routes.append(BrokerRoute("upstox", upstox, enabled=bool(upstox.config.live_enabled)))
 
-    return BrokerRouter(routes, selected, safety_store=safety_store or SafetyStateStore())
+    return BrokerRouter(routes, selected, safety_store=safety_store or SafetyStateStore(), context_attestor=context_attestor)
 
 
 def account_route_name(account: BrokerAccount) -> str:
