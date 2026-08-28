@@ -20,11 +20,10 @@ def execute_decision(
     execution: OrderExecutionService,
     request_factory: Callable[[str], BrokerOrderRequest],
 ) -> DecisionExecutionResult:
-    """Convert an approved ensemble action into an execution request.
+    """Send only BUY/SELL decisions to the canonical safety/execution layer.
 
-    NO_TRADE is a hard stop: it cannot create a lifecycle record, reserve risk,
-    or reach the broker. BUY/SELL requests still pass through OrderExecutionService,
-    which owns idempotency, startup, risk, and broker safeguards.
+    ``executed`` means the order actually reached the broker submission path;
+    a rejected/blocked execution is therefore reported as ``False``.
     """
     action = decision.action.upper().strip()
     if action not in {"BUY", "SELL"}:
@@ -35,4 +34,7 @@ def execute_decision(
         return DecisionExecutionResult(False, None, "DECISION_SIDE_MISMATCH")
 
     result = execution.submit(request)
-    return DecisionExecutionResult(True, result, "EXECUTION_SUBMITTED_TO_SAFETY_LAYER")
+    accepted_statuses = {"SUBMITTED", "PARTIALLY_FILLED", "FILLED"}
+    executed = str(result.status).upper() in accepted_statuses
+    reason = "EXECUTION_ACCEPTED" if executed else (result.message or "EXECUTION_REJECTED")
+    return DecisionExecutionResult(executed, result, reason)
