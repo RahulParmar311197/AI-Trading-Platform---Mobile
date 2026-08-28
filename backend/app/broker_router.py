@@ -75,7 +75,18 @@ class BrokerRouter:
             if self.submission_intent_store.unresolved_count():
                 if self.safety_store is not None: self.safety_store.halt("unresolved submission intents remain after broker reconciliation")
         return resolved
+    def _verify_route_identity(self,route:BrokerRoute)->None:
+        verifier=getattr(route.adapter,"verify_authenticated_identity",None)
+        if verifier is None:
+            return
+        try:
+            verifier()
+        except Exception as exc:
+            if self.safety_store is not None:
+                self.safety_store.halt(f"broker identity verification failed for route {route.name}")
+            raise RuntimeError("broker authenticated identity could not be verified; trading halted") from exc
     def _authoritative_reconciliation_snapshot(self,route:BrokerRoute)->BrokerSnapshot:
+        self._verify_route_identity(route)
         order_snapshot_fn=getattr(route.adapter,"get_order_snapshot",None); position_snapshot_fn=getattr(route.adapter,"get_position_snapshot",None)
         if order_snapshot_fn is None: raise RuntimeError("authoritative broker order snapshot is required for reconciliation")
         if position_snapshot_fn is None: raise RuntimeError("authoritative broker position snapshot is required for reconciliation")
@@ -198,5 +209,4 @@ class BrokerRouter:
         with self._route_lifecycle_lock: return self.get(route).adapter.get_positions()
     def get_account(self,route=None):
         with self._route_lifecycle_lock: return self.get(route).adapter.get_account()
-    def get_snapshot(self,route=None):
-        with self._route_lifecycle_lock: return self._authoritative_reconciliation_snapshot(self.get(route))
+    def get_snapshot(self,route=None): return self._authoritative_reconciliation_snapshot(self.get(route))
