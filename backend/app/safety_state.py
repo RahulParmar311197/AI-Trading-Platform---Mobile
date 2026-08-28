@@ -20,6 +20,9 @@ class SafetyState:
     reconciliation_account_id: str | None = None
     broker_snapshot_fingerprint: str | None = None
     reconciliation_by_account: dict[str, dict[str, object]] = field(default_factory=dict)
+    risk_circuit_blocked: bool = False
+    risk_circuit_reason: str | None = None
+    risk_circuit_engaged_at: datetime | None = None
 
 
 class SafetyStateStore:
@@ -48,6 +51,9 @@ class SafetyStateStore:
             "reconciliation_account_id": state.reconciliation_account_id,
             "broker_snapshot_fingerprint": state.broker_snapshot_fingerprint,
             "reconciliation_by_account": state.reconciliation_by_account,
+            "risk_circuit_blocked": state.risk_circuit_blocked,
+            "risk_circuit_reason": state.risk_circuit_reason,
+            "risk_circuit_engaged_at": state.risk_circuit_engaged_at.isoformat() if state.risk_circuit_engaged_at else None,
         }
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         with tmp.open("wb") as handle:
@@ -74,6 +80,7 @@ class SafetyStateStore:
         data = json.loads(path.read_text(encoding="utf-8"))
         reconciled_at = data.get("last_reconciliation_at")
         halted_at = data.get("halted_at")
+        risk_engaged_at = data.get("risk_circuit_engaged_at")
         by_account = data.get("reconciliation_by_account") or {}
         if not isinstance(by_account, dict):
             raise ValueError("invalid account reconciliation state")
@@ -86,6 +93,9 @@ class SafetyStateStore:
             data.get("reconciliation_account_id"),
             data.get("broker_snapshot_fingerprint"),
             by_account,
+            bool(data.get("risk_circuit_blocked", False)),
+            data.get("risk_circuit_reason"),
+            datetime.fromisoformat(risk_engaged_at) if risk_engaged_at else None,
         )
 
     def load(self) -> SafetyState:
@@ -104,7 +114,6 @@ class SafetyStateStore:
         record = state.reconciliation_by_account.get(str(account_id))
         if record is not None:
             return dict(record)
-        # Backward-compatible read of the legacy single-account state.
         if state.reconciliation_account_id is not None and str(state.reconciliation_account_id) == str(account_id):
             return {
                 "last_reconciliation_at": state.last_reconciliation_at.isoformat() if state.last_reconciliation_at else None,
@@ -113,12 +122,59 @@ class SafetyStateStore:
             }
         return None
 
+    def risk_circuit_status(self) -> tuple[bool, str | None]:
+        state = self.load()
+        return state.risk_circuit_blocked, state.risk_circuit_reason
+
+    def engage_risk_circuit(self, reason: str) -> SafetyState:
+        if not reason.strip():
+            raise ValueError("risk circuit reason is required")
+        state = self.load()
+        engaged = SafetyState(
+            state.trading_halted,
+            state.halt_reason,
+            state.last_reconciliation_at,
+            state.halted_at,
+            state.reconciliation_generation,
+            state.reconciliation_account_id,
+            state.broker_snapshot_fingerprint,
+            dict(state.reconciliation_by_account),
+            True,
+            reason.strip(),
+            datetime.now(timezone.utc),
+        )
+        self.save(engaged)
+        return engaged
+
+    def reset_risk_circuit(self) -> SafetyState:
+        state = self.load()
+        reset = SafetyState(
+            state.trading_halted,
+            state.halt_reason,
+            state.last_reconciliation_at,
+            state.halted_at,
+            state.reconciliation_generation,
+            state.reconciliation_account_id,
+            state.broker_snapshot_fingerprint,
+            dict(state.reconciliation_by_account),
+            False,
+            None,
+            None,
+        )
+        self.save(reset)
+        return reset
+
     def halt(self, reason: str) -> SafetyState:
         if not reason.strip():
             raise ValueError("halt reason is required")
-        state = SafetyState(True, reason, None, datetime.now(timezone.utc), None, None, None, {})
-        self.save(state)
-        return state
+        state = self.load()
+        halted = SafetyState(
+            True, reason, None, datetime.now(timezone.utc), None, None, None,
+            dict(state.reconciliation_by_account), state.risk_circuit_blocked,
+            state.risk_circuit_reason, state.risk_circuit_engaged_at,
+        )
+        self.save(halted)
+        return halted
 
     def clear(self, reconciliation: ReconciliationResult, *, active_context: BrokerExecutionContext) -> SafetyState:
         if not isinstance(reconciliation, ReconciliationResult) or not reconciliation.verified:
@@ -144,6 +200,9 @@ class SafetyStateStore:
             active_context.account_id,
             active_context.snapshot_fingerprint,
             account_states,
+            state.risk_circuit_blocked,
+            state.risk_circuit_reason,
+            state.risk_circuit_engaged_at,
         )
         self.save(cleared)
         return cleared
