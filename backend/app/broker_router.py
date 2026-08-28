@@ -1,4 +1,4 @@
-from __future__ import annotations
+from __future__
 from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -71,6 +71,14 @@ class BrokerRouter:
                         if intent.account_id is not None and (selected.broker_account_id is None or str(intent.account_id)!=str(selected.broker_account_id)):
                             if self.safety_store is not None: self.safety_store.halt(f"submission intent account mismatch: {intent.client_order_id}")
                             raise RuntimeError(f"submission intent account mismatch: {intent.client_order_id}")
+                        actual_symbol=str(match.get("symbol") or "").strip().upper()
+                        actual_side=str(match.get("side") or "").strip().upper()
+                        actual_quantity=match.get("quantity",match.get("order_quantity",match.get("requested_quantity")))
+                        try: actual_quantity=float(actual_quantity)
+                        except (TypeError,ValueError): actual_quantity=float("nan")
+                        if actual_symbol != intent.symbol.upper() or actual_side != intent.side.upper() or actual_quantity != float(intent.quantity):
+                            if self.safety_store is not None: self.safety_store.halt(f"submission intent payload mismatch: {intent.client_order_id}")
+                            raise RuntimeError(f"submission intent payload mismatch: {intent.client_order_id}")
                         self.submission_intent_store.resolve(intent.client_order_id); resolved.append(intent.client_order_id); continue
             if self.submission_intent_store.unresolved_count():
                 if self.safety_store is not None: self.safety_store.halt("unresolved submission intents remain after broker reconciliation")
@@ -79,11 +87,9 @@ class BrokerRouter:
         verifier=getattr(route.adapter,"verify_authenticated_identity",None)
         if verifier is None:
             return
-        try:
-            verifier()
+        try: verifier()
         except Exception as exc:
-            if self.safety_store is not None:
-                self.safety_store.halt(f"broker identity verification failed for route {route.name}")
+            if self.safety_store is not None: self.safety_store.halt(f"broker identity verification failed for route {route.name}")
             raise RuntimeError("broker authenticated identity could not be verified; trading halted") from exc
     def _authoritative_reconciliation_snapshot(self,route:BrokerRoute)->BrokerSnapshot:
         self._verify_route_identity(route)
@@ -103,20 +109,13 @@ class BrokerRouter:
         coordinator=ReconciliationCoordinator(engine=self.reconciliation_engine,route=selected.name,account_id=str(selected.broker_account_id),route_generation=str(selected.generation),context_attestor=self.context_attestor,generation=0)
         return coordinator.reconcile(internal_orders=internal_orders,internal_positions=internal_positions,broker_snapshot=snapshot,broker_ready=broker_ready)
     def _reconciliation_record(self,route:BrokerRoute):
-        if self.safety_store is None:
-            return None
+        if self.safety_store is None: return None
         state=self.safety_store.load()
         if route.broker_account_id is not None:
             record=self.safety_store.account_reconciliation(str(route.broker_account_id))
-            if record is None:
-                raise RuntimeError("broker account has not been reconciled")
+            if record is None: raise RuntimeError("broker account has not been reconciled")
             return record
-        return {
-            "last_reconciliation_at": state.last_reconciliation_at.isoformat() if state.last_reconciliation_at else None,
-            "reconciliation_generation": state.reconciliation_generation,
-            "broker_snapshot_fingerprint": state.broker_snapshot_fingerprint,
-            "route_generation": None,
-        }
+        return {"last_reconciliation_at": state.last_reconciliation_at.isoformat() if state.last_reconciliation_at else None,"reconciliation_generation": state.reconciliation_generation,"broker_snapshot_fingerprint": state.broker_snapshot_fingerprint,"route_generation": None}
     def _require_execution_ready(self,route:BrokerRoute)->None:
         self._halt_if_unresolved_submission_intents()
         if self.safety_store is None: halted=True; state=None
