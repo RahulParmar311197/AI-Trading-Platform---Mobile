@@ -64,6 +64,37 @@ def _ensure_account_safe_to_delete(request: Request, account: BrokerAccount) -> 
         raise HTTPException(503, "unable to verify broker account state before deletion") from exc
 
 
+def _delete_account_with_route_fence(request: Request, db: Session, account: BrokerAccount) -> None:
+    """Remove the account route before DB deletion and restore it if the DB commit fails."""
+    router = getattr(request.app.state, "broker_router", None)
+    if router is None:
+        raise HTTPException(503, "broker route manager unavailable")
+    route_name = account_route_name(account)
+    with router.route_lifecycle_lock():
+        route = router.routes.get(route_name)
+        if route is None:
+            raise HTTPException(503, "broker account route is not registered")
+        if route.broker_account_id != int(account.id):
+            raise HTTPException(503, "broker account route identity mismatch")
+        if not route.enabled:
+            raise HTTPException(503, "broker account route is disabled")
+
+        router.routes.pop(route_name, None)
+        try:
+            db.delete(account)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            try:
+                router.routes[route_name] = route
+            except Exception as restore_error:
+                safety_store = getattr(router, "safety_store", None)
+                if safety_store is not None:
+                    safety_store.halt(f"broker account route restoration failed after DB delete failure: {restore_error}")
+                raise HTTPException(500, "broker account deletion failed and route restoration failed; trading halted") from restore_error
+            raise HTTPException(500, "broker account deletion failed; route restored") from exc
+
+
 @router.post("")
 def create_account(
     body: BrokerAccountCreate,
@@ -138,9 +169,5 @@ def delete_account(
     if not row:
         raise HTTPException(404, "broker account not found")
     _ensure_account_safe_to_delete(request, row)
-    db.delete(row)
-    db.commit()
-    errors = _sync_routes(request, db)
-    if errors:
-        raise HTTPException(500, {"message": "broker route cleanup failed", "errors": errors})
+    _delete_account_with_route_fence(request, db, row)
     return {"deleted": True, "id": account_id}
