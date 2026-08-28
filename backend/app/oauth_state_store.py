@@ -7,15 +7,15 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.models.oauth_state import OAuthState
+from app.models.broker_oauth_state import BrokerOAuthState
 
 
 class OAuthStateStore:
-    """Transactional, one-time OAuth state storage.
+    """Transactional, one-time broker OAuth state storage.
 
     Raw state values are returned only to the caller that creates them; only a
-    SHA-256 digest is persisted. Consumption is conditional on provider, user,
-    expiry, and an unconsumed row so replay attempts cannot succeed.
+    SHA-256 digest is persisted. Consumption is conditional on broker, user,
+    expiry, and an unused row so replay attempts cannot succeed.
     """
 
     def __init__(self, session_factory, *, ttl_seconds: int = 600):
@@ -26,38 +26,54 @@ class OAuthStateStore:
 
     @staticmethod
     def _hash(state: str) -> str:
+        if not isinstance(state, str) or not state:
+            raise ValueError("state must be a non-empty string")
         return hashlib.sha256(state.encode("utf-8")).hexdigest()
 
-    def create(self, *, user_id: int, provider: str) -> str:
+    def create(self, *, user_id: int, broker: str, account_label: str) -> str:
+        if user_id <= 0:
+            raise ValueError("user_id must be positive")
+        if not isinstance(broker, str) or not broker.strip():
+            raise ValueError("broker must be non-empty")
+        if not isinstance(account_label, str) or not account_label.strip():
+            raise ValueError("account_label must be non-empty")
+
         raw_state = secrets.token_urlsafe(48)
         now = datetime.now(timezone.utc)
         with self._session_factory() as session:  # type: Session
             session.add(
-                OAuthState(
+                BrokerOAuthState(
                     state_hash=self._hash(raw_state),
                     user_id=user_id,
-                    provider=provider,
-                    created_at=now,
+                    broker=broker.strip(),
+                    account_label=account_label.strip(),
                     expires_at=now + self._ttl,
+                    used=False,
+                    created_at=now,
                 )
             )
             session.commit()
         return raw_state
 
-    def consume(self, *, state: str, user_id: int, provider: str) -> bool:
+    def consume(self, *, state: str, user_id: int, broker: str) -> bool:
+        if user_id <= 0:
+            raise ValueError("user_id must be positive")
+        if not isinstance(broker, str) or not broker.strip():
+            raise ValueError("broker must be non-empty")
+
         now = datetime.now(timezone.utc)
         digest = self._hash(state)
         with self._session_factory() as session:  # type: Session
             result = session.execute(
-                update(OAuthState)
+                update(BrokerOAuthState)
                 .where(
-                    OAuthState.state_hash == digest,
-                    OAuthState.user_id == user_id,
-                    OAuthState.provider == provider,
-                    OAuthState.consumed_at.is_(None),
-                    OAuthState.expires_at > now,
+                    BrokerOAuthState.state_hash == digest,
+                    BrokerOAuthState.user_id == user_id,
+                    BrokerOAuthState.broker == broker.strip(),
+                    BrokerOAuthState.used.is_(False),
+                    BrokerOAuthState.expires_at > now,
                 )
-                .values(consumed_at=now)
+                .values(used=True)
             )
             session.commit()
             return result.rowcount == 1
@@ -65,10 +81,13 @@ class OAuthStateStore:
     def purge_expired(self) -> int:
         now = datetime.now(timezone.utc)
         with self._session_factory() as session:  # type: Session
-            rows = session.scalars(
-                select(OAuthState).where(OAuthState.expires_at <= now)
-            ).all()
-            for row in rows:
-                session.delete(row)
+            result = session.execute(
+                select(BrokerOAuthState.id).where(BrokerOAuthState.expires_at <= now)
+            )
+            ids = [row[0] for row in result]
+            if ids:
+                session.execute(
+                    BrokerOAuthState.__table__.delete().where(BrokerOAuthState.id.in_(ids))
+                )
             session.commit()
-            return len(rows)
+            return len(ids)
