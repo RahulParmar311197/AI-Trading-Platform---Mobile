@@ -50,7 +50,7 @@ def account():
     )
 
 
-def route(account_id=7, generation=None):
+def route(account_id=7, generation="gen"):
     return SimpleNamespace(
         name="paper:account:7",
         broker_account_id=account_id,
@@ -59,14 +59,16 @@ def route(account_id=7, generation=None):
     )
 
 
+def patch_generation(monkeypatch):
+    monkeypatch.setattr("app.api.broker_accounts.account_route_generation", lambda _account: "gen")
+
+
 def test_invalid_candidate_leaves_old_credentials_and_route(monkeypatch):
     row = account()
-    old_route = route(generation=None)
+    old_route = route()
     router = Router(old_route)
-    monkeypatch.setattr(
-        "app.api.broker_accounts.encrypt_credentials",
-        lambda value: f"encrypted:{value}",
-    )
+    patch_generation(monkeypatch)
+    monkeypatch.setattr("app.api.broker_accounts.encrypt_credentials", lambda value: f"encrypted:{value}")
     monkeypatch.setattr(
         "app.api.broker_accounts.build_account_route",
         lambda _account: (_ for _ in ()).throw(ValueError("bad credentials")),
@@ -83,13 +85,11 @@ def test_invalid_candidate_leaves_old_credentials_and_route(monkeypatch):
 
 def test_db_failure_restores_old_credentials_and_route(monkeypatch):
     row = account()
-    old_route = route(generation=None)
+    old_route = route()
     router = Router(old_route)
-    candidate = route(generation=None)
-    monkeypatch.setattr(
-        "app.api.broker_accounts.encrypt_credentials",
-        lambda value: f"encrypted:{value}",
-    )
+    candidate = route()
+    patch_generation(monkeypatch)
+    monkeypatch.setattr("app.api.broker_accounts.encrypt_credentials", lambda value: f"encrypted:{value}")
     monkeypatch.setattr("app.api.broker_accounts.build_account_route", lambda _account: candidate)
     db = DB(fail_commit=True)
 
@@ -106,11 +106,9 @@ def test_db_failure_restores_old_credentials_and_route(monkeypatch):
 def test_successful_rotation_publishes_candidate_before_commit(monkeypatch):
     row = account()
     router = Router(route())
-    candidate = route(generation=None)
-    monkeypatch.setattr(
-        "app.api.broker_accounts.encrypt_credentials",
-        lambda value: f"encrypted:{value}",
-    )
+    candidate = route()
+    patch_generation(monkeypatch)
+    monkeypatch.setattr("app.api.broker_accounts.encrypt_credentials", lambda value: f"encrypted:{value}")
 
     observed = {}
 
