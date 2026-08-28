@@ -127,7 +127,7 @@ def test_route_generation_must_have_matching_reconciliation(tmp_path):
 def test_stale_reconciliation_generation_blocks_submission(tmp_path):
     store=SafetyStateStore(str(tmp_path/'safety.json'))
     router=BrokerRouter([BrokerRoute('live',PaperBrokerAdapter(),broker_account_id=7,generation='g2')],'live', safety_store=store)
-    result=_verified_result_after_halt(store, router, generation=1, account_id='7', route='live', route_generation='g2')
+    result=_verified_result_after_halt(store, router, generation=1, account_id='7', route='live', route_generation='g1')
     store.clear(result, active_context=result.context)
     with pytest.raises(RuntimeError, match='generation is not reconciled'):
         router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1,broker_route='live'))
@@ -148,20 +148,46 @@ def test_fresh_reconciliation_allows_submission(tmp_path):
     assert order['order_id']
 
 
-def test_immediate_broker_state_change_blocks_submission(tmp_path):
-    router, store = _ready_router(tmp_path)
-    _clear_with_current_reconciliation(store, router)
-    broker = router.get('paper').adapter
-    original_get_orders = broker.get_orders
-    calls = {'count': 0}
+def test_account_scoped_execution_readiness_uses_route_account_state(tmp_path):
+    store=SafetyStateStore(str(tmp_path/'safety.json'))
+    broker_a=PaperBrokerAdapter(); broker_b=PaperBrokerAdapter()
+    router=BrokerRouter([
+        BrokerRoute('a',broker_a,broker_account_id=7,generation='a-1'),
+        BrokerRoute('b',broker_b,broker_account_id=8,generation='b-1'),
+    ],'a', safety_store=store)
+    result_a=_verified_result_after_halt(store, router, generation=1, account_id='7', route='a', route_generation='a-1')
+    store.clear(result_a, active_context=result_a.context)
+    # A is reconciled, but B must not inherit A's account-scoped readiness.
+    with pytest.raises(RuntimeError, match='broker account has not been reconciled'):
+        router.submit(BrokerOrderRequest('b-order','NIFTY','BUY',1,broker_route='b'))
 
+
+def test_account_scoped_execution_readiness_allows_matching_account(tmp_path):
+    store=SafetyStateStore(str(tmp_path/'safety.json'))
+    router=BrokerRouter([
+        BrokerRoute('a',PaperBrokerAdapter(),broker_account_id=7,generation='a-1'),
+        BrokerRoute('b',PaperBrokerAdapter(),broker_account_id=8,generation='b-1'),
+    ],'a', safety_store=store)
+    result_a=_verified_result_after_halt(store, router, generation=1, account_id='7', route='a', route_generation='a-1')
+    store.clear(result_a, active_context=result_a.context)
+    result_b=_verified_result_after_halt(store, router, generation=1, account_id='8', route='b', route_generation='b-1')
+    store.clear(result_b, active_context=result_b.context)
+    order=router.submit(BrokerOrderRequest('b-order','NIFTY','BUY',1,broker_route='b'))
+    assert order['order_id']
+
+
+def test_immediate_broker_state_change_blocks_submission(tmp_path):
+    router, store=_ready_router(tmp_path)
+    _clear_with_current_reconciliation(store, router)
+    broker=router.get('paper').adapter
+    original_get_orders=broker.get_orders
+    calls={'count':0}
     def get_orders_with_external_change():
         calls['count'] += 1
-        if calls['count'] == 3:
-            broker._orders['external'] = {'order_id':'external','broker_order_id':'external','client_order_id':'manual-1','symbol':'NIFTY','side':'BUY','quantity':1,'filled_quantity':0,'status':'OPEN'}
+        if calls['count']==3:
+            broker._orders['external']={'order_id':'external','broker_order_id':'external','client_order_id':'manual-1','symbol':'NIFTY','side':'BUY','quantity':1,'filled_quantity':0,'status':'OPEN'}
         return original_get_orders()
-
-    broker.get_orders = get_orders_with_external_change
+    broker.get_orders=get_orders_with_external_change
     with pytest.raises(RuntimeError, match='immediately before submission'):
         router.submit(BrokerOrderRequest('c1','NIFTY','BUY',1))
     assert 'c1' not in broker._orders
@@ -193,17 +219,17 @@ def test_reconciliation_snapshot_contains_route_and_account_identity():
     router=BrokerRouter([BrokerRoute('paper',PaperBrokerAdapter(),broker_account_id=17)],'paper')
     snapshot=router.get_snapshot('paper')
     assert isinstance(snapshot, BrokerSnapshot)
-    assert snapshot.broker_route == 'paper'
-    assert snapshot.broker_account_id == 17
+    assert snapshot.broker_route=='paper'
+    assert snapshot.broker_account_id==17
 
 
 def test_unresolved_submission_intent_zero_match_remains_unresolved(tmp_path):
     router, store=_ready_router(tmp_path)
     store.halt('recovery')
     intent=router.submission_intent_store.create(client_order_id='missing-client', route='paper', account_id=None, symbol='NIFTY', side='BUY', quantity=1, request_fingerprint='fp')
-    assert intent.client_order_id == 'missing-client'
-    assert router.reconcile_unresolved_submission_intents('paper') == []
-    assert router.submission_intent_store.unresolved_count() == 1
+    assert intent.client_order_id=='missing-client'
+    assert router.reconcile_unresolved_submission_intents('paper')==[]
+    assert router.submission_intent_store.unresolved_count()==1
     assert store.load().trading_halted is True
 
 
@@ -217,14 +243,12 @@ def test_unresolved_submission_intent_blocks_submission_even_if_safety_state_is_
 
 
 def test_submit_recovery_rejects_incomplete_broker_payload(tmp_path):
-    router, store = _ready_router(tmp_path)
+    router, store=_ready_router(tmp_path)
     _clear_with_current_reconciliation(store, router)
-    recovery = RecoveryPayloadBroker()
-    router.routes['paper'] = BrokerRoute('paper', recovery)
-    fingerprint = router._current_snapshot_fingerprint(router.get('paper'))
-    state = store.load()
-    state.broker_snapshot_fingerprint = fingerprint
-    store.save(state)
+    recovery=RecoveryPayloadBroker()
+    router.routes['paper']=BrokerRoute('paper',recovery)
+    fingerprint=router._current_snapshot_fingerprint(router.get('paper'))
+    state=store.load(); state.broker_snapshot_fingerprint=fingerprint; store.save(state)
     with pytest.raises(RuntimeError, match='recovery payload is incomplete'):
         router.submit(BrokerOrderRequest('c-recover','NIFTY','BUY',1))
     assert store.load().trading_halted is True
