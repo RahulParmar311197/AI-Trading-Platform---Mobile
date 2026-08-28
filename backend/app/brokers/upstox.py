@@ -14,8 +14,23 @@ class UpstoxAdapter(BrokerAdapter):
         access_token = credentials.get("access_token")
         if not isinstance(access_token, str) or not access_token.strip():
             raise ValueError("Upstox credentials require access_token")
+        broker_user_id = credentials.get("broker_user_id")
+        if not isinstance(broker_user_id, str) or not broker_user_id.strip():
+            raise ValueError("Upstox credentials require broker_user_id")
         self.client = UpstoxClient(access_token)
+        self.broker_user_id = broker_user_id.strip()
         self._live_trading_enabled = get_settings().live_trading_enabled
+
+    def verify_authenticated_identity(self) -> dict[str, Any]:
+        """Prove that the bearer token still belongs to the provisioned Upstox user."""
+        profile = self.client.get_profile()
+        returned_broker = profile.get("broker")
+        returned_user_id = profile.get("user_id")
+        if returned_broker not in (None, "UPSTOX"):
+            raise RuntimeError("Upstox authenticated broker identity mismatch")
+        if not isinstance(returned_user_id, str) or returned_user_id.strip() != self.broker_user_id:
+            raise RuntimeError("Upstox authenticated user identity mismatch")
+        return profile
 
     def get_quote(self, symbol: str) -> dict[str, Any]:
         return self.client.get_quote(symbol)
