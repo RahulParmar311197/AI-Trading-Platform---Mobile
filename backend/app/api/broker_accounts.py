@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -6,7 +8,7 @@ from app.models.broker_account import BrokerAccount
 from app.models.user import User
 from app.auth.security import get_current_user
 from app.security.credential_encryption import encrypt_credentials
-from app.broker_factory import provision_active_account_routes, account_route_name
+from app.broker_factory import account_route_generation, account_route_name, build_account_route, provision_active_account_routes
 
 router = APIRouter(prefix="/broker-accounts", tags=["broker-accounts"])
 
@@ -95,6 +97,57 @@ def _delete_account_with_route_fence(request: Request, db: Session, account: Bro
             raise HTTPException(500, "broker account deletion failed; route restored") from exc
 
 
+def _update_account_with_route_fence(request: Request, db: Session, account: BrokerAccount, *, credentials: str | None, status: str | None) -> None:
+    """Stage a candidate route before committing account credentials/status."""
+    router = getattr(request.app.state, "broker_router", None)
+    if router is None:
+        raise HTTPException(503, "broker route manager unavailable")
+
+    with router.route_lifecycle_lock():
+        route_name = account_route_name(account)
+        old_route = router.routes.get(route_name)
+        old_credentials = account.encrypted_credentials
+        old_status = account.status
+        old_updated_at = account.updated_at
+        try:
+            if credentials is not None:
+                account.encrypted_credentials = encrypt_credentials(credentials)
+            if status is not None:
+                account.status = status
+            account.updated_at = datetime.now(timezone.utc)
+
+            candidate = None
+            if str(account.status).strip().lower() == "active":
+                candidate = build_account_route(account)
+                if candidate.broker_account_id != int(account.id):
+                    raise RuntimeError("candidate route account identity mismatch")
+                if candidate.generation != account_route_generation(account):
+                    raise RuntimeError("candidate route generation mismatch")
+
+            if candidate is None:
+                router.routes.pop(route_name, None)
+            else:
+                router.routes[route_name] = candidate
+
+            try:
+                db.commit()
+                db.refresh(account)
+            except Exception as exc:
+                db.rollback()
+                raise exc
+        except Exception as exc:
+            account.encrypted_credentials = old_credentials
+            account.status = old_status
+            account.updated_at = old_updated_at
+            if old_route is None:
+                router.routes.pop(route_name, None)
+            else:
+                router.routes[route_name] = old_route
+            if isinstance(exc, HTTPException):
+                raise
+            raise HTTPException(409, "broker account update failed; previous credentials and route remain authoritative") from exc
+
+
 @router.post("")
 def create_account(
     body: BrokerAccountCreate,
@@ -143,18 +196,11 @@ def update_account(
         raise HTTPException(404, "broker account not found")
     if body.credentials is None and body.status is None:
         raise HTTPException(400, "credentials or status is required")
-    if body.credentials is not None:
-        row.encrypted_credentials = encrypt_credentials(body.credentials)
-    if body.status is not None:
-        row.status = body.status
-    db.commit()
-    db.refresh(row)
-    errors = _sync_routes(request, db)
-    if errors and row.status == "active":
-        row.status = "disabled"
-        db.commit()
-        _sync_routes(request, db)
-        raise HTTPException(409, {"message": "broker account route provisioning failed; account disabled", "errors": errors})
+    _update_account_with_route_fence(request, db, row, credentials=body.credentials, status=body.status)
+    if str(row.status).strip().lower() == "active":
+        errors = _sync_routes(request, db)
+        if errors:
+            raise HTTPException(503, {"message": "broker account route validation failed after committed update", "errors": errors})
     return {"id": row.id, "broker": row.broker, "account_label": row.account_label, "status": row.status}
 
 
