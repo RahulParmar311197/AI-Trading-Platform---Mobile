@@ -6,14 +6,14 @@ from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.auth.security import get_current_user
-from app.broker_factory import account_route_name, build_account_route, provision_active_account_routes
-from app.brokers.upstox_oauth import authorization_url, exchange_code, expires_at, new_state, state_hash
+from app.broker_factory import validate_active_account_routes
+from app.api.broker_accounts import _create_account_with_route_fence, _quarantine_account_after_route_validation_failure, _update_account_with_route_fence
+from app.brokers.upstox_oauth import authorization_url, exchange_code, expires_at, new_state, state_hash, validate_token_response
 from app.config import get_settings
 from app.db import get_db
 from app.models.broker_account import BrokerAccount
 from app.models.broker_oauth_state import BrokerOAuthState
 from app.models.user import User
-from app.security.credential_encryption import encrypt_credentials
 
 router = APIRouter(prefix="/broker-accounts/upstox", tags=["broker-oauth"])
 
@@ -65,9 +65,6 @@ def callback(
 
     digest = state_hash(state)
     now = datetime.now(timezone.utc)
-
-    # Consume the state atomically. This prevents two concurrent callbacks from
-    # exchanging the same authorization code/state pair.
     row = db.query(BrokerOAuthState).filter(
         BrokerOAuthState.state_hash == digest,
         BrokerOAuthState.broker == "upstox",
@@ -99,61 +96,64 @@ def callback(
             settings.upstox_client_secret,
             settings.upstox_redirect_uri,
         )
+        identity = validate_token_response(token)
+    except ValueError as exc:
+        raise HTTPException(502, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, "Upstox token exchange failed") from exc
 
-    access_token = str(token.get("access_token", "")).strip()
-    if not access_token:
-        raise HTTPException(502, "Upstox did not return an access token")
-
-    credentials = {"access_token": access_token}
+    credentials = {
+        "access_token": identity["access_token"],
+        "broker_user_id": identity["broker_user_id"],
+        "broker": identity["broker"],
+    }
     if token.get("extended_token"):
         credentials["extended_token"] = token["extended_token"]
-    encrypted = encrypt_credentials(json.dumps(credentials))
+    credentials_json = json.dumps(credentials, separators=(",", ":"))
 
     account = db.query(BrokerAccount).filter_by(
         user_id=row.user_id,
         broker="upstox",
         account_label=row.account_label,
     ).first()
-    if account is None:
-        account = BrokerAccount(
-            user_id=row.user_id,
-            broker="upstox",
-            account_label=row.account_label,
-            encrypted_credentials=encrypted,
-            status="active",
-        )
-        db.add(account)
-    else:
-        account.encrypted_credentials = encrypted
-        account.status = "active"
-    db.commit()
-    db.refresh(account)
-
-    # Do not expose the account as tradable unless the same route machinery used
-    # at startup can successfully construct and validate it.
     try:
-        router_obj = getattr(request.app.state, "broker_router", None) if request else None
-        if router_obj is None:
-            raise RuntimeError("broker route manager unavailable")
-        errors = provision_active_account_routes(db, router_obj)
-        if errors:
-            account.status = "disabled"
-            db.commit()
-            router_obj.routes.pop(account_route_name(account), None)
-            raise HTTPException(503, {"message": "Upstox credentials saved but account was disabled because route provisioning failed", "errors": errors})
+        if account is None:
+            account = BrokerAccount(
+                user_id=row.user_id,
+                broker="upstox",
+                account_label=row.account_label,
+                encrypted_credentials="pending",
+                status="active",
+            )
+            from app.security.credential_encryption import encrypt_credentials
+            account.encrypted_credentials = encrypt_credentials(credentials_json)
+            _create_account_with_route_fence(request, db, account)
+        else:
+            _update_account_with_route_fence(
+                request,
+                db,
+                account,
+                credentials=credentials_json,
+                status="active",
+            )
     except HTTPException:
         raise
-    except Exception as exc:
+
+    router_obj = getattr(request.app.state, "broker_router", None) if request else None
+    if router_obj is None:
         account.status = "disabled"
         db.commit()
-        raise HTTPException(503, "Upstox credentials saved but account was disabled because route provisioning failed") from exc
+        raise HTTPException(503, "Upstox credentials saved but broker route manager is unavailable; account disabled")
+
+    errors = validate_active_account_routes(db, router_obj)
+    if errors:
+        _quarantine_account_after_route_validation_failure(request, db, account, errors)
 
     return {
         "connected": True,
         "broker": "upstox",
         "account_label": row.account_label,
         "account_id": account.id,
+        "broker_user_id": identity["broker_user_id"],
         "status": account.status,
     }
