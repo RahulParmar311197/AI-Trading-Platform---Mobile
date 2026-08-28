@@ -34,6 +34,28 @@ def _sync_routes(request: Request, db: Session) -> list[str]:
     return provision_active_account_routes(db, router)
 
 
+def _quarantine_account_after_route_validation_failure(request: Request, db: Session, account: BrokerAccount, errors: list[str]) -> None:
+    """Fail closed after commit: an account with an invalid route must not remain execution-active."""
+    router = getattr(request.app.state, "broker_router", None)
+    if router is None:
+        raise HTTPException(503, {"message": "broker route validation failed and route manager is unavailable", "errors": errors})
+    route_name = account_route_name(account)
+    with router.route_lifecycle_lock():
+        try:
+            account.status = "disabled"
+            account.updated_at = datetime.now(timezone.utc)
+            router.routes.pop(route_name, None)
+            db.commit()
+            db.refresh(account)
+        except Exception as exc:
+            db.rollback()
+            safety_store = getattr(router, "safety_store", None)
+            if safety_store is not None:
+                safety_store.halt(f"broker account quarantine failed after route validation failure: {exc}")
+            raise HTTPException(500, "broker account route validation failed and quarantine failed; trading halted") from exc
+    raise HTTPException(503, {"message": "broker account route validation failed; account disabled", "errors": errors})
+
+
 def _ensure_account_safe_to_delete(request: Request, account: BrokerAccount) -> None:
     """Fail closed unless authoritative broker state proves the account is flat."""
     if str(account.status).strip().lower() != "disabled":
@@ -212,7 +234,7 @@ def create_account(
     _create_account_with_route_fence(request, db, account)
     errors = _sync_routes(request, db)
     if errors:
-        raise HTTPException(503, {"message": "broker account route validation failed after committed create", "errors": errors})
+        _quarantine_account_after_route_validation_failure(request, db, account, errors)
     return {"id": account.id, "broker": account.broker, "account_label": account.account_label, "status": account.status}
 
 
@@ -239,7 +261,7 @@ def update_account(
     if str(row.status).strip().lower() == "active":
         errors = _sync_routes(request, db)
         if errors:
-            raise HTTPException(503, {"message": "broker account route validation failed after committed update", "errors": errors})
+            _quarantine_account_after_route_validation_failure(request, db, row, errors)
     return {"id": row.id, "broker": row.broker, "account_label": row.account_label, "status": row.status}
 
 
