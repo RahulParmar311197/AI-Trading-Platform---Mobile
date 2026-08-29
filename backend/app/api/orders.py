@@ -113,3 +113,37 @@ def create_order(payload:OrderRequest,request:Request,response:Response,db:Sessi
         return _order_response(existing,"IDEMPOTENT_REPLAY")
     _commit_execution_intent(db,order)
     service=_execution_service(broker_router,execution_store,idempotency_store,recovery,resources); result=service.submit(_broker_request(client_order_id,symbol,payload.side,payload.quantity,payload.order_type,payload.price,payload.stop,payload.security_id,user_id,account.id,broker_route,route_generation)); order.status=result.status; order.broker_order_id=result.broker_order_id; order.note=result.message; _commit_execution_projection(db,order); _set_execution_response_status(response,result.status); return _order_response(order,result.message,result.execution_id)
+
+@router.delete("/{client_order_id}")
+def cancel_order(client_order_id:str,request:Request,response:Response,db:Session=Depends(get_order_db),current_user:User=Depends(get_current_user)):
+    """Cancel an owned live order without requiring the normal new-order READY gate."""
+    normalized=client_order_id.strip()
+    if not normalized or len(normalized)>128: raise HTTPException(status_code=422,detail="client_order_id is required")
+    order=db.query(Order).filter(Order.client_order_id==normalized).first()
+    if order is None: raise HTTPException(status_code=404,detail="ORDER_NOT_FOUND")
+    if order.user_id != current_user.id: raise HTTPException(status_code=403,detail="ORDER_NOT_OWNED")
+    if order.broker_account_id is None or not order.broker_route or not order.broker_route_generation:
+        raise HTTPException(status_code=409,detail="BROKER_ACCOUNT_BINDING_MISSING_OR_STALE")
+    if not order.broker_order_id:
+        raise HTTPException(status_code=409,detail={"code":"BROKER_ORDER_ID_UNAVAILABLE","reconciliation_required":True})
+    if order.status in {"CANCELLED","REJECTED","FILLED"}:
+        return _order_response(order,"CANCEL_IDEMPOTENT_NOOP")
+    broker_router=getattr(request.app.state,"broker_router",None)
+    if broker_router is None: raise HTTPException(status_code=503,detail="BROKER_ROUTER_UNAVAILABLE")
+    try:
+        result=broker_router.cancel(order.broker_order_id,route=order.broker_route,broker_account_id=order.broker_account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404,detail="BROKER_ORDER_NOT_FOUND") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502,detail={"code":"BROKER_CANCEL_FAILED","reason":type(exc).__name__}) from exc
+    order.status="CANCELLED"
+    order.note="BROKER_CANCEL_CONFIRMED"
+    try:
+        db.commit(); db.refresh(order)
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=503,detail={"code":"CANCELLATION_PROJECTION_PERSISTENCE_FAILED","client_order_id":order.client_order_id,"reconciliation_required":True}) from exc
+    response.status_code=200
+    return _order_response(order,"BROKER_CANCEL_CONFIRMED")
