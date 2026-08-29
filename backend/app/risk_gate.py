@@ -97,7 +97,13 @@ class ExposureReservationBook:
 
 class PreTradeRiskGate:
     """Fail-closed authorization immediately before broker submission."""
-    def __init__(self, limits: RiskLimits, reservations: ExposureReservationBook | None = None, reconciliation_state_store=None):
+    def __init__(
+        self,
+        limits: RiskLimits,
+        reservations: ExposureReservationBook | None = None,
+        reconciliation_state_store=None,
+        reconciliation_max_age_seconds: float = 30.0,
+    ):
         if not all(isfinite(float(value)) for value in (
             limits.max_order_quantity,
             limits.max_position_quantity,
@@ -109,9 +115,16 @@ class PreTradeRiskGate:
             raise ValueError("risk quantity limits must be positive")
         if limits.max_daily_loss < 0 or limits.max_trade_loss < 0:
             raise ValueError("risk loss limits cannot be negative")
+        try:
+            reconciliation_max_age_seconds = float(reconciliation_max_age_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("reconciliation_max_age_seconds must be positive and finite") from exc
+        if not isfinite(reconciliation_max_age_seconds) or reconciliation_max_age_seconds <= 0:
+            raise ValueError("reconciliation_max_age_seconds must be positive and finite")
         self.limits = limits
         self.reservations = reservations or ExposureReservationBook()
         self.reconciliation_state_store = reconciliation_state_store
+        self.reconciliation_max_age_seconds = reconciliation_max_age_seconds
 
     @staticmethod
     def _side_sign(side: object) -> int:
@@ -163,7 +176,11 @@ class PreTradeRiskGate:
             if account_id is None or not str(route or "").strip():
                 return RiskDecision(False, "RISK_RECONCILIATION_REQUIRED")
             try:
-                if self.reconciliation_state_store.is_trading_blocked(broker_account_id=account_id, broker_route=route):
+                if self.reconciliation_state_store.is_trading_blocked(
+                    broker_account_id=account_id,
+                    broker_route=route,
+                    max_age_seconds=self.reconciliation_max_age_seconds,
+                ):
                     return RiskDecision(False, "RISK_RECONCILIATION_REQUIRED")
             except Exception:
                 return RiskDecision(False, "RISK_RECONCILIATION_REQUIRED")
