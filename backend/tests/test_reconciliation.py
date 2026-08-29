@@ -1,6 +1,6 @@
 import pytest
 
-from app.reconciliation import ReconciliationEngine
+from app.reconciliation import ReconciliationEngine, ReconciliationCheckResult
 
 
 def test_order_missing_and_unknown_are_detected_and_halt_trading():
@@ -67,13 +67,13 @@ def test_halt_can_only_be_cleared_from_authenticated_clean_check():
 def test_forged_reconciliation_result_cannot_clear_halt():
     engine = ReconciliationEngine()
     engine.check([], [], [{"symbol": "NIFTY", "quantity": 1}], [])
-    forged = object.__new__(type(engine.check([], [], [], [])))
-    forged.ok = True
-    forged.trading_halted = False
-    forged.order_drift = []
-    forged.position_drift = []
-    forged.checked_at = "forged"
-    forged._verification_token = object()
+    forged = object.__new__(ReconciliationCheckResult)
+    object.__setattr__(forged, "ok", True)
+    object.__setattr__(forged, "trading_halted", False)
+    object.__setattr__(forged, "order_drift", [])
+    object.__setattr__(forged, "position_drift", [])
+    object.__setattr__(forged, "checked_at", "forged")
+    object.__setattr__(forged, "_verification_token", object())
     with pytest.raises(ValueError, match="authenticated"):
         engine.reset_halt(forged)
     assert engine.trading_halted
