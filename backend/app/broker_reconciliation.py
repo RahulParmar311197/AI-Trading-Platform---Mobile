@@ -229,9 +229,11 @@ def reconcile_positions(
         elif abs(delta) > quantity_tolerance:
             deltas.append(PositionDelta(symbol, lq, bq, delta))
 
+    broker_only = tuple(sorted(set(broker) - set(local)))
+    local_only = tuple(sorted(set(local) - set(broker)))
     return ReconciliationReport(
-        matched=not deltas,
+        matched=not deltas and not broker_only and not local_only,
         deltas=tuple(deltas),
-        broker_only=tuple(sorted(set(broker) - set(local))),
-        local_only=tuple(sorted(set(local) - set(broker))),
+        broker_only=broker_only,
+        local_only=local_only,
     )
