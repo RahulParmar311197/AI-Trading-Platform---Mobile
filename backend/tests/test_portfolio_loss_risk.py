@@ -16,8 +16,8 @@ def test_allows_trade_inside_portfolio_risk_budget():
     (PortfolioRiskLimits(max_drawdown=5000), dict(daily_pnl=0, current_drawdown=4500, open_risk=0, proposed_risk=1000), "drawdown"),
     (PortfolioRiskLimits(max_risk_budget=1500), dict(daily_pnl=0, current_drawdown=0, open_risk=1000, proposed_risk=600), "risk budget"),
 ])
-def test_blocks_projected_portfolio_risk(limit, kwargs, reason):
-    result = PortfolioLossRisk(limit).evaluate(**kwargs)
+def test_blocks_projected_portfolio_risk(limits, kwargs, reason):
+    result = PortfolioLossRisk(limits).evaluate(**kwargs)
     assert result.approved is False
     assert reason in result.reason
 
