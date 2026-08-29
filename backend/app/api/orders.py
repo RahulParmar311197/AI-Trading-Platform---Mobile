@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -86,6 +87,19 @@ def _resolve_broker_account(db:Session,user_id:int,requested_id:int|None)->Broke
     if not accounts: raise HTTPException(status_code=409,detail="BROKER_ACCOUNT_REQUIRED")
     raise HTTPException(status_code=409,detail="BROKER_ACCOUNT_SELECTION_REQUIRED")
 
+def _project_authoritative_broker_update(order:Order,result)->None:
+    """Project authoritative broker fill data without allowing fabricated values."""
+    if result.filled_quantity is not None:
+        filled=float(result.filled_quantity)
+        if not math.isfinite(filled) or filled < 0 or filled > float(order.quantity)+1e-9:
+            raise ValueError("broker cancellation fill quantity is invalid")
+        order.filled_quantity=filled
+    if result.average_price is not None:
+        average=float(result.average_price)
+        if not math.isfinite(average) or average <= 0:
+            raise ValueError("broker cancellation average price is invalid")
+        order.average_fill_price=average
+
 @router.post("")
 def create_order(payload:OrderRequest,request:Request,response:Response,db:Session=Depends(get_order_db),_:None=Depends(require_trading_ready),current_user:User=Depends(get_current_user),idempotency_key:str|None=Header(default=None,alias="Idempotency-Key")):
     from app.startup_recovery import StartupRecoveryCoordinator
@@ -141,6 +155,7 @@ def cancel_order(client_order_id:str,request:Request,response:Response,db:Sessio
             raise ValueError("broker cancellation response account identity mismatch")
         if result.status not in {BrokerOrderStatus.CANCELLED.value,BrokerOrderStatus.FILLED.value,BrokerOrderStatus.REJECTED.value}:
             raise ValueError("broker cancellation response is not terminal")
+        _project_authoritative_broker_update(order,result)
     except ValueError as exc:
         raise HTTPException(status_code=409,detail={"code":"BROKER_CANCEL_RESPONSE_INVALID","reason":str(exc),"reconciliation_required":True}) from exc
     except RuntimeError as exc:
