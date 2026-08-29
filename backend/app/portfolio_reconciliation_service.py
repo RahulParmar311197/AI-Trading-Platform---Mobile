@@ -10,10 +10,16 @@ class PositionMismatch:
 
 
 @dataclass(frozen=True)
-class ReconciliationResult:
+class PortfolioReconciliationResult:
+    """Position comparison result; not sufficient for execution authorization."""
+
     matched: bool
     mismatches: tuple[PositionMismatch, ...]
     errors: tuple[str, ...] = ()
+
+
+# Backward-compatible alias for existing callers. New code should use the explicit name.
+ReconciliationResult = PortfolioReconciliationResult
 
 
 def _signed_quantity(position: dict) -> float:
@@ -38,7 +44,7 @@ def _signed_quantity(position: dict) -> float:
 class PortfolioReconciliationService:
     """Compare normalized broker/local positions and fail closed on bad remote data."""
 
-    def compare(self, local_positions: Mapping[str, float], broker_positions: list[dict]) -> ReconciliationResult:
+    def compare(self, local_positions: Mapping[str, float], broker_positions: list[dict]) -> PortfolioReconciliationResult:
         remote: dict[str, float] = {}
         errors: list[str] = []
         for index, position in enumerate(broker_positions):
@@ -74,4 +80,4 @@ class PortfolioReconciliationService:
             for s in sorted(symbols)
             if abs(local.get(s, 0.0) - remote.get(s, 0.0)) > 1e-9
         )
-        return ReconciliationResult(matched=not mismatches and not errors, mismatches=mismatches, errors=tuple(errors))
+        return PortfolioReconciliationResult(matched=not mismatches and not errors, mismatches=mismatches, errors=tuple(errors))
