@@ -82,10 +82,7 @@ def ict_context(candles:list[Candle])->dict:
 
 def _choch(highs:list[Swing], lows:list[Swing])->str|None:
     if len(highs)<2 or len(lows)<2:return None
-    hh=highs[-1].price>highs[-2].price
-    hl=lows[-1].price>lows[-2].price
-    lh=highs[-1].price<highs[-2].price
-    ll=lows[-1].price<lows[-2].price
+    hh=highs[-1].price>highs[-2].price;hl=lows[-1].price>lows[-2].price;lh=highs[-1].price<highs[-2].price;ll=lows[-1].price<lows[-2].price
     if ll and highs[-1].price>highs[-2].price:return 'BULLISH'
     if hh and lows[-1].price<lows[-2].price:return 'BEARISH'
     if lh and lows[-1].price>lows[-2].price:return 'BULLISH'
@@ -104,3 +101,14 @@ def structure(candles:list[Candle])->dict:
         elif lh and ll:bos=bias='BEARISH'
     pools=liquidity_pools(candles); sweeps=liquidity_sweeps(candles,pools); fvg=fair_value_gaps(candles); obs=order_blocks(candles)
     return {'bias':bias,'bos':bos,'choch':_choch(highs,lows),'swings':[asdict(x) for x in sw],'structure_labels':labels,'fvg':[asdict(x) for x in fvg],'liquidity_pools':[asdict(x) for x in pools],'liquidity_sweeps':sweeps,'order_blocks':[asdict(x) for x in obs],'dealing_range':dealing_range(candles),'ict':ict_context(candles)}
+
+class ICTEngine:
+    """Compatibility facade over the functional ICT analysis API."""
+    swings = staticmethod(swings)
+    fair_value_gaps = staticmethod(fair_value_gaps)
+    liquidity_pools = staticmethod(liquidity_pools)
+    liquidity_sweeps = staticmethod(liquidity_sweeps)
+    order_blocks = staticmethod(order_blocks)
+    dealing_range = staticmethod(dealing_range)
+    ict_context = staticmethod(ict_context)
+    structure = staticmethod(structure)
