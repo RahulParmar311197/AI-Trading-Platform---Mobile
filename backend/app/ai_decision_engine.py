@@ -19,6 +19,14 @@ class DecisionConfig:
     confluence_weight: float = 0.0
     ml: MLDecisionConfig | None = None
 
+    def __post_init__(self) -> None:
+        if not math.isfinite(float(self.minimum_confidence)) or not 0 <= self.minimum_confidence <= 1:
+            raise ValueError('minimum_confidence must be between 0 and 1')
+        if not math.isfinite(float(self.minimum_edge)) or not 0 <= self.minimum_edge <= 1:
+            raise ValueError('minimum_edge must be between 0 and 1')
+        if not math.isfinite(float(self.confluence_weight)) or not 0 <= self.confluence_weight <= 1:
+            raise ValueError('confluence_weight must be between 0 and 1')
+
 
 @dataclass(frozen=True)
 class TradingDecision:
@@ -40,12 +48,6 @@ class AIDecisionEngine:
 
     def __init__(self, config: DecisionConfig | None = None):
         self.config = config or DecisionConfig()
-        if not 0 <= self.config.minimum_confidence <= 1:
-            raise ValueError('minimum_confidence must be between 0 and 1')
-        if not 0 <= self.config.minimum_edge <= 1:
-            raise ValueError('minimum_edge must be between 0 and 1')
-        if not 0 <= self.config.confluence_weight <= 1:
-            raise ValueError('confluence_weight must be between 0 and 1')
 
     def _decision_inputs_ready(self, context: MarketContext, values: dict[str, float | None]) -> tuple[bool, tuple[str, ...]]:
         reasons: list[str] = []
@@ -93,7 +95,6 @@ class AIDecisionEngine:
         if context.ict.kill_zone: reasons.append(f'ICT {context.ict.kill_zone}')
         if adx is not None and math.isfinite(float(adx)) and adx >= 25: reasons.append('ADX confirms directional regime')
 
-        # Optional confluence is explicit evidence, not a second execution gate.
         if confluence is not None and self.config.confluence_weight > 0:
             weight = self.config.confluence_weight
             if confluence.action == 'BUY': bullish += weight; reasons.append(f'confluence BUY ({confluence.score:.2f})')
