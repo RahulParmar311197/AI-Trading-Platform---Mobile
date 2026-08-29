@@ -1,4 +1,4 @@
-from __future__
+from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
