@@ -45,6 +45,28 @@ def test_tolerance_prevents_false_mismatch():
     assert report.matched is True
 
 
+def test_untracked_broker_position_is_not_hidden_by_tolerance():
+    report = reconcile_positions(
+        [],
+        [{"symbol": "NIFTY", "quantity": 0.001}],
+        quantity_tolerance=0.01,
+    )
+    assert report.matched is False
+    assert report.deltas == ()
+    assert report.broker_only == ("NIFTY",)
+
+
+def test_untracked_local_position_is_not_hidden_by_tolerance():
+    report = reconcile_positions(
+        [{"symbol": "NIFTY", "quantity": 0.001}],
+        [],
+        quantity_tolerance=0.01,
+    )
+    assert report.matched is False
+    assert report.deltas == ()
+    assert report.local_only == ("NIFTY",)
+
+
 @pytest.mark.parametrize(
     "broker_row",
     [
