@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import asdict,dataclass
 from app.market_data import Candle
+from app.market_context import ICTSnapshot
 
 @dataclass(frozen=True)
 class Swing: index:int; price:float; kind:str
@@ -112,3 +113,14 @@ class ICTEngine:
     dealing_range = staticmethod(dealing_range)
     ict_context = staticmethod(ict_context)
     structure = staticmethod(structure)
+
+    def analyze(self, candles):
+        context = ict_context(list(candles))
+        return ICTSnapshot(
+            dealing_range_high=context.get('high'),
+            dealing_range_low=context.get('low'),
+            optimal_trade_entry=context.get('ote_mid'),
+            session=context.get('session'),
+            kill_zone=context.get('kill_zone'),
+            liquidity_target=context.get('liquidity_target'),
+        )
