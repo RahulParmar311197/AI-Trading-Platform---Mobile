@@ -1,4 +1,4 @@
-from __future__ import annotations
+from __future__
 
 import json
 import sqlite3
@@ -53,7 +53,11 @@ class TransactionalExecutionRepository:
         elif not {"broker_account_id","broker_route","symbol","quantity"}.issubset(pcols):
             if self._db.execute("SELECT COUNT(*) FROM positions").fetchone()[0]: raise RuntimeError("legacy symbol-only positions cannot be safely attributed to a broker account")
             self._db.execute("DROP TABLE positions"); self._db.execute("CREATE TABLE positions(broker_account_id INTEGER NOT NULL,broker_route TEXT NOT NULL,symbol TEXT NOT NULL,quantity REAL NOT NULL,PRIMARY KEY(broker_account_id,broker_route,symbol))")
-        self._db.execute("CREATE TABLE IF NOT EXISTS execution_events(event_id TEXT PRIMARY KEY,order_id TEXT NOT NULL,event_kind TEXT NOT NULL,payload TEXT NOT NULL)")
+        self._db.execute("CREATE TABLE IF NOT EXISTS execution_events(event_id TEXT PRIMARY KEY,order_id TEXT NOT NULL,event_kind TEXT NOT NULL,payload TEXT NOT NULL,event_sequence INTEGER)")
+        event_cols={row[1] for row in self._db.execute("PRAGMA table_info(execution_events)")}
+        if "event_sequence" not in event_cols: self._db.execute("ALTER TABLE execution_events ADD COLUMN event_sequence INTEGER")
+        self._db.execute("CREATE INDEX IF NOT EXISTS idx_execution_events_order_sequence ON execution_events(order_id,event_sequence)")
+        self._db.execute("CREATE TABLE IF NOT EXISTS execution_event_cursors(broker_account_id INTEGER NOT NULL,broker_route TEXT NOT NULL,order_id TEXT NOT NULL,last_sequence INTEGER NOT NULL,last_event_id TEXT NOT NULL,PRIMARY KEY(broker_account_id,broker_route,order_id))")
         self._db.execute("CREATE TABLE IF NOT EXISTS execution_outbox(id INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT UNIQUE NOT NULL,event_type TEXT NOT NULL,payload TEXT NOT NULL,published INTEGER NOT NULL DEFAULT 0,claim_token TEXT,claim_expires_at REAL)")
         outbox_cols={row[1] for row in self._db.execute("PRAGMA table_info(execution_outbox)")}
         if "claim_token" not in outbox_cols: self._db.execute("ALTER TABLE execution_outbox ADD COLUMN claim_token TEXT")
@@ -95,10 +99,8 @@ class TransactionalExecutionRepository:
             try:
                 self._db.execute("INSERT OR IGNORE INTO order_submissions(idempotency_key,client_order_id,broker_account_id,broker_route,status,broker_order_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",(idempotency_key,client_order_id,broker_account_id,broker_route,"PENDING",None,now,now))
                 row=self._db.execute("SELECT idempotency_key,client_order_id,broker_account_id,broker_route,status,broker_order_id FROM order_submissions WHERE idempotency_key=?",(idempotency_key,)).fetchone()
-                if row[1:]!=(client_order_id,broker_account_id,broker_route,row[4],row[5]):
-                    raise ValueError("idempotency key is bound to a different order scope")
-                self._db.commit()
-                return SubmissionRecord(*row)
+                if row[1:]!=(client_order_id,broker_account_id,broker_route,row[4],row[5]): raise ValueError("idempotency key is bound to a different order scope")
+                self._db.commit(); return SubmissionRecord(*row)
             except Exception:
                 self._db.rollback(); raise
 
@@ -155,13 +157,25 @@ class TransactionalExecutionRepository:
             row=self._db.execute("SELECT client_order_id,broker,broker_order_id,broker_account_id,broker_route FROM order_identity WHERE broker=? AND broker_order_id=? AND broker_account_id=? AND broker_route=?",(broker,broker_order_id,broker_account_id,broker_route)).fetchone()
         return OrderIdentity(*row) if row else None
 
-    def _apply_event_tx(self,event_id:str,order_id:str,kind:str,*,broker_account_id:int,broker_route:str,price:float|None,quantity:float)->bool:
-        if self._db.execute("SELECT 1 FROM execution_events WHERE event_id=?",(event_id,)).fetchone(): return False
+    def _apply_event_tx(self,event_id:str,order_id:str,kind:str,*,broker_account_id:int,broker_route:str,price:float|None,quantity:float,event_sequence:int|None)->bool:
+        existing=self._db.execute("SELECT order_id,event_kind,payload,event_sequence FROM execution_events WHERE event_id=?",(event_id,)).fetchone()
+        if existing:
+            if existing[0]!=order_id or existing[3]!=event_sequence:
+                raise ValueError("event id is already bound to a different execution event")
+            return False
+        if event_sequence is not None:
+            if isinstance(event_sequence,bool) or not isinstance(event_sequence,int) or event_sequence<0: raise ValueError("event sequence must be a non-negative integer")
         row=self._db.execute("SELECT symbol,side,quantity,filled_quantity,broker_account_id,broker_route FROM orders WHERE order_id=?",(order_id,)).fetchone()
         if row is None: raise KeyError(order_id)
         symbol,side,total,filled,stored_account,stored_route=row
         if stored_account!=broker_account_id or stored_route!=broker_route: raise ValueError("broker account identity mismatch")
         normalized=kind.upper()
+        if event_sequence is not None:
+            cursor=self._db.execute("SELECT last_sequence,last_event_id FROM execution_event_cursors WHERE broker_account_id=? AND broker_route=? AND order_id=?",(broker_account_id,broker_route,order_id)).fetchone()
+            if cursor:
+                last_sequence,last_event_id=cursor
+                if event_sequence<last_sequence: raise ValueError("stale execution event sequence")
+                if event_sequence==last_sequence: raise ValueError("execution event sequence already consumed")
         if normalized in {"PARTIAL_FILL","FILLED","FILL"}:
             if quantity<=0 or filled+quantity>total: raise ValueError("invalid fill quantity")
             new_filled=filled+quantity; status=OrderStatus.FILLED.value if new_filled==total else OrderStatus.PARTIALLY_FILLED.value
@@ -171,25 +185,27 @@ class TransactionalExecutionRepository:
         elif normalized=="SUBMITTED": self._db.execute("UPDATE orders SET status=? WHERE order_id=?",(OrderStatus.SUBMITTED.value,order_id))
         elif normalized in {"CANCELLED","REJECTED"}: self._db.execute("UPDATE orders SET status=? WHERE order_id=?",(OrderStatus.CANCELLED.value if normalized=="CANCELLED" else OrderStatus.REJECTED.value,order_id))
         else: raise ValueError(f"unsupported execution event: {kind}")
-        payload=json.dumps({"broker_account_id":broker_account_id,"broker_route":broker_route,"price":price,"quantity":quantity,"kind":normalized},sort_keys=True)
-        self._db.execute("INSERT INTO execution_events(event_id,order_id,event_kind,payload) VALUES(?,?,?,?)",(event_id,order_id,normalized,payload))
+        payload=json.dumps({"broker_account_id":broker_account_id,"broker_route":broker_route,"price":price,"quantity":quantity,"kind":normalized,"event_sequence":event_sequence},sort_keys=True)
+        self._db.execute("INSERT INTO execution_events(event_id,order_id,event_kind,payload,event_sequence) VALUES(?,?,?,?,?)",(event_id,order_id,normalized,payload,event_sequence))
+        if event_sequence is not None:
+            self._db.execute("INSERT INTO execution_event_cursors(broker_account_id,broker_route,order_id,last_sequence,last_event_id) VALUES(?,?,?,?,?)",(broker_account_id,broker_route,order_id,event_sequence,event_id))
         self._db.execute("INSERT INTO execution_outbox(event_id,event_type,payload) VALUES(?,?,?)",(event_id,normalized,payload)); return True
 
-    def apply_event(self,event_id:str,order_id:str,kind:str,*,broker_account_id:int,broker_route:str,price:float|None=None,quantity:float=0.0)->bool:
+    def apply_event(self,event_id:str,order_id:str,kind:str,*,broker_account_id:int,broker_route:str,price:float|None=None,quantity:float=0.0,event_sequence:int|None=None)->bool:
         if not event_id or not order_id or broker_account_id<=0 or not broker_route: raise ValueError("event and broker account identity are required")
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
-                result=self._apply_event_tx(event_id,order_id,kind,broker_account_id=broker_account_id,broker_route=broker_route,price=price,quantity=quantity); self._db.commit(); return result
+                result=self._apply_event_tx(event_id,order_id,kind,broker_account_id=broker_account_id,broker_route=broker_route,price=price,quantity=quantity,event_sequence=event_sequence); self._db.commit(); return result
             except Exception: self._db.rollback(); raise
 
-    def bind_identity_and_apply_event(self,identity:OrderIdentity,event_id:str,kind:str,*,broker_account_id:int,broker_route:str,price:float|None=None,quantity:float=0.0)->bool:
+    def bind_identity_and_apply_event(self,identity:OrderIdentity,event_id:str,kind:str,*,broker_account_id:int,broker_route:str,price:float|None=None,quantity:float=0.0,event_sequence:int|None=None)->bool:
         if identity.broker_account_id!=broker_account_id or identity.broker_route!=broker_route: raise ValueError("identity scope does not match execution scope")
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 self._bind_identity_tx(identity)
-                result=self._apply_event_tx(event_id,identity.client_order_id,kind,broker_account_id=broker_account_id,broker_route=broker_route,price=price,quantity=quantity)
+                result=self._apply_event_tx(event_id,identity.client_order_id,kind,broker_account_id=broker_account_id,broker_route=broker_route,price=price,quantity=quantity,event_sequence=event_sequence)
                 self._db.commit(); return result
             except Exception: self._db.rollback(); raise
 
