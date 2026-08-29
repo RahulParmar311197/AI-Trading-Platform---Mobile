@@ -30,8 +30,17 @@ class OrderLifecycle:
     def __init__(self,audit_log:TradingAuditLog|None=None):
         self.orders={}; self.positions={}; self.realized_pnl_by_symbol={}; self.realized_pnl_by_day={}; self._applied_fill_ids=set(); self.audit_log=audit_log or TradingAuditLog(); self._machines={}
     def create(self,order_id,symbol,side,quantity,**metadata):
+        if not str(order_id).strip(): raise ValueError("order_id is required")
         if order_id in self.orders: raise ValueError("duplicate order_id")
-        allowed={k:v for k,v in metadata.items() if k in OrderRecord.__dataclass_fields__}; order=OrderRecord(order_id,symbol.upper(),side.upper(),quantity,**allowed)
+        normalized_symbol=str(symbol or "").strip().upper()
+        if not normalized_symbol: raise ValueError("symbol is required")
+        normalized_side=str(side or "").strip().upper()
+        if normalized_side not in {"BUY", "SELL"}: raise ValueError("side must be BUY or SELL")
+        try: normalized_quantity=float(quantity)
+        except (TypeError, ValueError): raise ValueError("quantity must be a finite positive number") from None
+        import math
+        if not math.isfinite(normalized_quantity) or normalized_quantity<=0: raise ValueError("quantity must be a finite positive number")
+        allowed={k:v for k,v in metadata.items() if k in OrderRecord.__dataclass_fields__}; order=OrderRecord(str(order_id),normalized_symbol,normalized_side,normalized_quantity,**allowed)
         if order.owner_user_id is not None:
             order.owner_user_id=int(order.owner_user_id)
             if order.owner_user_id<=0: raise ValueError("owner_user_id must be positive")
@@ -40,7 +49,7 @@ class OrderLifecycle:
             if order.broker_account_id<=0: raise ValueError("broker_account_id must be positive")
         if order.broker_route is not None and not str(order.broker_route).strip(): raise ValueError("broker_route must not be empty")
         self.orders[order_id]=order; self._machines[order_id]=OrderStateMachine(OrderState.CREATED)
-        self.audit_log.record("ORDER_CREATED",metadata={"order_id":order_id,"symbol":order.symbol,"side":order.side,"quantity":quantity,"execution_id":order.execution_id,"owner_user_id":order.owner_user_id,"broker_account_id":order.broker_account_id,"broker_route":order.broker_route}); return order
+        self.audit_log.record("ORDER_CREATED",metadata={"order_id":order_id,"symbol":order.symbol,"side":order.side,"quantity":normalized_quantity,"execution_id":order.execution_id,"owner_user_id":order.owner_user_id,"broker_account_id":order.broker_account_id,"broker_route":order.broker_route}); return order
     def mark_pending_reconciliation(self,order_id,reason="BROKER_SUBMISSION_AMBIGUOUS"):
         order=self.orders[order_id]
         if order.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED): raise ValueError("terminal order cannot enter reconciliation")
