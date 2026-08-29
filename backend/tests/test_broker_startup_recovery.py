@@ -15,6 +15,7 @@ def test_bound_route_passes_verified_reconciliation_to_recovery_manager():
         reconciliation_engine=object(),
         get=Mock(return_value=route),
         get_snapshot=Mock(return_value=object()),
+        _next_reconciliation_generation=Mock(return_value=4),
     )
     manager = Mock()
     manager.startup.return_value = SimpleNamespace(ready=True)
@@ -38,11 +39,13 @@ def test_bound_route_passes_verified_reconciliation_to_recovery_manager():
 
     assert result.ready is True
     execution_store.load.assert_called_once_with(lifecycle)
+    router._next_reconciliation_generation.assert_called_once_with(route)
     manager.startup.assert_called_once()
     kwargs = manager.startup.call_args.kwargs
     assert kwargs["verified_reconciliation"] is verified
     assert kwargs["active_context"] is verified.context
     coordinator.return_value.reconcile.assert_called_once()
+    assert coordinator.call_args.kwargs["generation"] == 4
 
 
 def test_unbound_route_keeps_recovery_manager_fallback():
