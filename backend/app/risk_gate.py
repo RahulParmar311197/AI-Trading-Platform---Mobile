@@ -173,13 +173,21 @@ class PreTradeRiskGate:
             return RiskDecision(False, "RISK_BROKER_NOT_READY")
         try:
             quantity = float(request.quantity)
+        except (TypeError, ValueError):
+            return RiskDecision(False, "RISK_INVALID_NUMERIC_INPUT")
+        try:
             current_position = float(snapshot.position_quantity)
+        except (TypeError, ValueError):
+            return RiskDecision(False, "RISK_INVALID_POSITION_SNAPSHOT")
+        try:
             daily_pnl = float(snapshot.daily_pnl)
             projected_trade_loss = float(snapshot.projected_trade_loss)
         except (TypeError, ValueError):
             return RiskDecision(False, "RISK_INVALID_NUMERIC_INPUT")
-        if not all(isfinite(value) for value in (quantity, current_position, daily_pnl, projected_trade_loss)):
+        if not isfinite(quantity) or not isfinite(daily_pnl) or not isfinite(projected_trade_loss):
             return RiskDecision(False, "RISK_INVALID_NUMERIC_INPUT")
+        if not isfinite(current_position):
+            return RiskDecision(False, "RISK_INVALID_POSITION_SNAPSHOT")
         if quantity <= 0:
             return RiskDecision(False, "RISK_INVALID_QUANTITY")
         if quantity > self.limits.max_order_quantity:
