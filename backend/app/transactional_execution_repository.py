@@ -158,11 +158,6 @@ class TransactionalExecutionRepository:
         return OrderIdentity(*row) if row else None
 
     def _apply_event_tx(self,event_id:str,order_id:str,kind:str,*,broker_account_id:int,broker_route:str,price:float|None,quantity:float,event_sequence:int|None)->bool:
-        existing=self._db.execute("SELECT order_id,event_kind,payload,event_sequence FROM execution_events WHERE event_id=?",(event_id,)).fetchone()
-        if existing:
-            if existing[0]!=order_id or existing[3]!=event_sequence:
-                raise ValueError("event id is already bound to a different execution event")
-            return False
         if event_sequence is not None:
             if isinstance(event_sequence,bool) or not isinstance(event_sequence,int) or event_sequence<0: raise ValueError("event sequence must be a non-negative integer")
         row=self._db.execute("SELECT symbol,side,quantity,filled_quantity,broker_account_id,broker_route FROM orders WHERE order_id=?",(order_id,)).fetchone()
@@ -170,6 +165,16 @@ class TransactionalExecutionRepository:
         symbol,side,total,filled,stored_account,stored_route=row
         if stored_account!=broker_account_id or stored_route!=broker_route: raise ValueError("broker account identity mismatch")
         normalized=kind.upper()
+        if normalized not in {"PARTIAL_FILL","FILLED","FILL","SUBMITTED","CANCELLED","REJECTED"}:
+            raise ValueError(f"unsupported execution event: {kind}")
+        payload=json.dumps({"broker_account_id":broker_account_id,"broker_route":broker_route,"price":price,"quantity":quantity,"kind":normalized,"event_sequence":event_sequence},sort_keys=True)
+        existing=self._db.execute("SELECT order_id,event_kind,payload,event_sequence FROM execution_events WHERE event_id=?",(event_id,)).fetchone()
+        if existing:
+            if existing[0]!=order_id or existing[3]!=event_sequence:
+                raise ValueError("event id is already bound to a different execution event")
+            if existing[1]!=normalized or existing[2]!=payload:
+                raise ValueError("event id is already bound to conflicting execution payload")
+            return False
         if event_sequence is not None:
             cursor=self._db.execute("SELECT last_sequence,last_event_id FROM execution_event_cursors WHERE broker_account_id=? AND broker_route=? AND order_id=?",(broker_account_id,broker_route,order_id)).fetchone()
             if cursor:
@@ -184,8 +189,6 @@ class TransactionalExecutionRepository:
             self._db.execute("INSERT INTO positions(broker_account_id,broker_route,symbol,quantity) VALUES(?,?,?,?) ON CONFLICT(broker_account_id,broker_route,symbol) DO UPDATE SET quantity=quantity+excluded.quantity",(broker_account_id,broker_route,symbol,delta))
         elif normalized=="SUBMITTED": self._db.execute("UPDATE orders SET status=? WHERE order_id=?",(OrderStatus.SUBMITTED.value,order_id))
         elif normalized in {"CANCELLED","REJECTED"}: self._db.execute("UPDATE orders SET status=? WHERE order_id=?",(OrderStatus.CANCELLED.value if normalized=="CANCELLED" else OrderStatus.REJECTED.value,order_id))
-        else: raise ValueError(f"unsupported execution event: {kind}")
-        payload=json.dumps({"broker_account_id":broker_account_id,"broker_route":broker_route,"price":price,"quantity":quantity,"kind":normalized,"event_sequence":event_sequence},sort_keys=True)
         self._db.execute("INSERT INTO execution_events(event_id,order_id,event_kind,payload,event_sequence) VALUES(?,?,?,?,?)",(event_id,order_id,normalized,payload,event_sequence))
         if event_sequence is not None:
             self._db.execute("INSERT INTO execution_event_cursors(broker_account_id,broker_route,order_id,last_sequence,last_event_id) VALUES(?,?,?,?,?)",(broker_account_id,broker_route,order_id,event_sequence,event_id))
