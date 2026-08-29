@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import isfinite
 from threading import Lock
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -97,6 +98,13 @@ class ExposureReservationBook:
 class PreTradeRiskGate:
     """Fail-closed authorization immediately before broker submission."""
     def __init__(self, limits: RiskLimits, reservations: ExposureReservationBook | None = None):
+        if not all(isfinite(float(value)) for value in (
+            limits.max_order_quantity,
+            limits.max_position_quantity,
+            limits.max_daily_loss,
+            limits.max_trade_loss,
+        )):
+            raise ValueError("risk limits must be finite")
         if limits.max_order_quantity <= 0 or limits.max_position_quantity <= 0:
             raise ValueError("risk quantity limits must be positive")
         if limits.max_daily_loss < 0 or limits.max_trade_loss < 0:
@@ -137,11 +145,11 @@ class PreTradeRiskGate:
             trade_loss = float(projected_trade_loss)
         except (TypeError, ValueError) as exc:
             raise RuntimeError("invalid risk snapshot numeric value") from exc
-        if daily != daily or daily in (float("inf"), float("-inf")):
+        if not isfinite(daily):
             raise RuntimeError("invalid persisted daily realized pnl")
-        if position != position or position in (float("inf"), float("-inf")):
+        if not isfinite(position):
             raise RuntimeError("invalid risk snapshot position")
-        if trade_loss != trade_loss or trade_loss in (float("inf"), float("-inf")):
+        if not isfinite(trade_loss):
             raise RuntimeError("invalid risk snapshot trade loss")
         if broker_snapshot_fingerprint is not None and not str(broker_snapshot_fingerprint).strip():
             raise RuntimeError("invalid broker snapshot fingerprint")
@@ -154,8 +162,13 @@ class PreTradeRiskGate:
             return RiskDecision(False, "RISK_BROKER_NOT_READY")
         try:
             quantity = float(request.quantity)
+            current_position = float(snapshot.position_quantity)
+            daily_pnl = float(snapshot.daily_pnl)
+            projected_trade_loss = float(snapshot.projected_trade_loss)
         except (TypeError, ValueError):
-            return RiskDecision(False, "RISK_INVALID_QUANTITY")
+            return RiskDecision(False, "RISK_INVALID_NUMERIC_INPUT")
+        if not all(isfinite(value) for value in (quantity, current_position, daily_pnl, projected_trade_loss)):
+            return RiskDecision(False, "RISK_INVALID_NUMERIC_INPUT")
         if quantity <= 0:
             return RiskDecision(False, "RISK_INVALID_QUANTITY")
         if quantity > self.limits.max_order_quantity:
@@ -163,13 +176,12 @@ class PreTradeRiskGate:
         side_sign = self._side_sign(request.side)
         if side_sign == 0:
             return RiskDecision(False, "RISK_INVALID_SIDE")
-        current_position = float(snapshot.position_quantity)
         projected_position = current_position + side_sign * quantity
         if abs(projected_position) > self.limits.max_position_quantity + 1e-9:
             return RiskDecision(False, "RISK_MAX_POSITION_QUANTITY")
-        if -float(snapshot.daily_pnl) >= self.limits.max_daily_loss:
+        if -daily_pnl >= self.limits.max_daily_loss:
             return RiskDecision(False, "RISK_DAILY_LOSS_LIMIT")
-        if float(snapshot.projected_trade_loss) > self.limits.max_trade_loss + 1e-9:
+        if projected_trade_loss > self.limits.max_trade_loss + 1e-9:
             return RiskDecision(False, "RISK_TRADE_LOSS_LIMIT")
         return RiskDecision(True, "RISK_OK")
 
