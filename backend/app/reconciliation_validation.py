@@ -59,6 +59,15 @@ def validate_orders(orders: Iterable[dict[str, Any]], *, source: str) -> list[di
     return validated
 
 
+def _position_side_sign(side: Any) -> int:
+    normalized = str(side or "").strip().upper()
+    if normalized in {"BUY", "B", "LONG", "1", "+1"}:
+        return 1
+    if normalized in {"SELL", "S", "SHORT", "-1"}:
+        return -1
+    raise ValueError(f"unknown position side: {side}")
+
+
 def validate_positions(positions: Iterable[dict[str, Any]], *, source: str) -> list[dict[str, Any]]:
     validated: list[dict[str, Any]] = []
     symbols: set[str] = set()
@@ -71,15 +80,22 @@ def validate_positions(positions: Iterable[dict[str, Any]], *, source: str) -> l
         if symbol in symbols:
             raise ValueError(f"duplicate {source} position symbol: {symbol}")
         symbols.add(symbol)
+        has_explicit_signed_quantity = "signed_quantity" in position
         quantity = _finite_number(
             position.get("signed_quantity", position.get("quantity", position.get("net_quantity", position.get("netQty")))),
             field=f"{source} position quantity",
             default=0.0,
         )
         if "side" in position and abs(quantity) > 1e-9:
-            side = str(position.get("side") or "").strip().upper()
-            if side not in {"BUY", "SELL", "B", "S", "LONG", "SHORT", "1", "-1", "+1"}:
-                raise ValueError(f"unknown {source} position side: {position.get('side')}")
+            side_sign = _position_side_sign(position.get("side"))
+            if has_explicit_signed_quantity and quantity * side_sign < 0:
+                raise ValueError(
+                    f"{source} position signed quantity conflicts with side: {symbol}"
+                )
+        elif "side" in position:
+            # Validate a supplied side even when the position is flat so malformed
+            # broker payloads cannot be silently accepted during reconciliation.
+            _position_side_sign(position.get("side"))
         validated.append(dict(position))
     return validated
 
