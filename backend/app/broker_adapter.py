@@ -104,8 +104,9 @@ def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected
         if symbol is None or symbol != expected.symbol.upper(): raise ValueError("broker symbol does not match request")
         if side is None or side != expected.side.upper(): raise ValueError("broker side does not match request")
         if quantity is None: raise ValueError("broker response missing requested quantity")
-        if abs(quantity - expected.quantity) > 1e-9: raise ValueError("broker quantity does not match requested quantity")
-        if broker_account_id is not None and expected.broker_account_id is not None and broker_account_id != expected.broker_account_id: raise ValueError("broker account does not match request")
+        if expected.broker_account_id is not None:
+            if broker_account_id is None: raise ValueError("broker response missing account identity")
+            if broker_account_id != expected.broker_account_id: raise ValueError("broker account does not match request")
     if price is not None and price <= 0: raise ValueError("broker price must be positive")
     if average is not None and average <= 0: raise ValueError("broker average price must be positive")
     if status == BrokerOrderStatus.NEW.value and filled is not None and abs(filled) > 1e-9: raise ValueError("NEW broker status requires zero filled quantity")
