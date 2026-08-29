@@ -20,8 +20,9 @@ class ReconciliationState:
 class ReconciliationStateStore:
     """Durable, account/route-scoped reconciliation safety state.
 
-    Missing state is deliberately treated as blocked by ``is_trading_blocked``.
-    A process restart therefore cannot silently clear an unresolved halt.
+    Missing or stale state is deliberately treated as blocked by
+    ``is_trading_blocked``. A process restart therefore cannot silently clear
+    an unresolved or expired reconciliation halt.
     """
 
     def __init__(self, database_url: str | None = None, *, engine=None):
@@ -51,6 +52,18 @@ class ReconciliationStateStore:
             raise ValueError("positive broker_account_id is required")
         if not str(broker_route or "").strip():
             raise ValueError("broker_route is required")
+
+    @staticmethod
+    def _checked_at_datetime(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(timezone.utc)
 
     def record_check(self, *, broker_account_id: int, broker_route: str, result) -> ReconciliationState:
         self._validate_scope(broker_account_id, broker_route)
@@ -116,5 +129,27 @@ class ReconciliationStateStore:
             position_drift_count=int(row["position_drift_count"]),
         )
 
-    def is_trading_blocked(self, *, broker_account_id: int, broker_route: str) -> bool:
-        return self.get_state(broker_account_id=broker_account_id, broker_route=broker_route).trading_halted
+    def is_trading_blocked(
+        self,
+        *,
+        broker_account_id: int,
+        broker_route: str,
+        max_age_seconds: float = 30.0,
+    ) -> bool:
+        self._validate_scope(broker_account_id, broker_route)
+        try:
+            max_age = float(max_age_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_age_seconds must be positive and finite") from exc
+        if max_age <= 0 or max_age != max_age or max_age == float("inf") or max_age == float("-inf"):
+            raise ValueError("max_age_seconds must be positive and finite")
+        state = self.get_state(broker_account_id=broker_account_id, broker_route=broker_route)
+        if state.trading_halted or state.status != "VERIFIED":
+            return True
+        checked_at = self._checked_at_datetime(state.checked_at)
+        if checked_at is None:
+            return True
+        age = (datetime.now(timezone.utc) - checked_at).total_seconds()
+        if age < 0:
+            return True
+        return age > max_age
