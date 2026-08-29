@@ -5,17 +5,23 @@ import math
 
 import pytest
 
+from app.broker_adapter import BrokerOrderUpdate
 from app.broker_context_attestation import BrokerContextAttestor
 from app.broker_execution_context import BrokerExecutionContext
 from app.execution_authorization_store import ExecutionAuthorizationStore
 from app.live_execution_gateway import ExecutionMode, ExecutionPolicy, ExecutionSafetyError, LiveExecutionGateway
 from app.order_intent import OrderIntent
+from app.broker_order_lifecycle import InvalidOrderTransition, OrderStatus
 
 SECRET = b"t" * 32
 
 class FakeExecutor:
     def __init__(self): self.orders = []
     def execute(self, order): self.orders.append(order); return {"status": "accepted"}
+
+class UpdateExecutor:
+    def __init__(self, update): self.update = update; self.orders = []
+    def execute(self, order): self.orders.append(order); return self.update
 
 class FakePositionReader:
     def __init__(self, positions=None): self.positions = positions or []
@@ -35,6 +41,48 @@ def live_gateway(executor=None, store=None, policy=None, positions=None, local=N
 
 def test_paper_mode_delegates():
     executor = FakeExecutor(); assert LiveExecutionGateway(executor, authorization_store=ExecutionAuthorizationStore(":memory:")).execute(make_order()).result["status"] == "accepted"
+
+def test_paper_broker_update_reaches_terminal_lifecycle():
+    executor = UpdateExecutor(BrokerOrderUpdate(order_id="b1", status="FILLED", client_order_id="c1", symbol="NIFTY", side="BUY", quantity=1, filled_quantity=1, average_price=100))
+    gateway = LiveExecutionGateway(executor, authorization_store=ExecutionAuthorizationStore(":memory:"))
+    tracked = gateway.execute(make_order())
+    assert tracked.lifecycle.status is OrderStatus.FILLED
+    assert tracked.lifecycle.filled_quantity == 1
+    assert tracked.lifecycle.average_price == 100
+    assert tracked.lifecycle.events[-1].broker_order_id == "b1"
+
+def test_broker_partial_fill_is_projected_into_lifecycle():
+    executor = UpdateExecutor(BrokerOrderUpdate(order_id="b2", status="PARTIALLY_FILLED", client_order_id="c2", symbol="NIFTY", side="BUY", quantity=1, filled_quantity=0.5, average_price=100))
+    tracked = LiveExecutionGateway(executor, authorization_store=ExecutionAuthorizationStore(":memory:")).execute(make_order())
+    assert tracked.lifecycle.status is OrderStatus.PARTIALLY_FILLED
+    assert tracked.lifecycle.filled_quantity == 0.5
+
+def test_broker_rejection_is_terminal_lifecycle_state_without_duplicate_rejection_transition():
+    executor = UpdateExecutor(BrokerOrderUpdate(order_id="b3", status="REJECTED", client_order_id="c3", symbol="NIFTY", side="BUY", quantity=1, filled_quantity=0, message="broker rejected"))
+    tracked = LiveExecutionGateway(executor, authorization_store=ExecutionAuthorizationStore(":memory:")).execute(make_order())
+    assert tracked.lifecycle.status is OrderStatus.REJECTED
+    assert len(tracked.lifecycle.events) == 2
+    assert tracked.lifecycle.events[-1].reason == "broker rejected"
+
+def test_lifecycle_rejects_negative_and_non_finite_fills():
+    lifecycle = __import__("app.broker_order_lifecycle", fromlist=["OrderLifecycle"]).OrderLifecycle(requested_quantity=1)
+    lifecycle.apply(__import__("app.broker_order_lifecycle", fromlist=["OrderLifecycleEvent"]).OrderLifecycleEvent(OrderStatus.ACCEPTED, datetime.now(timezone.utc)))
+    with pytest.raises(InvalidOrderTransition, match="finite and non-negative"):
+        lifecycle.apply(__import__("app.broker_order_lifecycle", fromlist=["OrderLifecycleEvent"]).OrderLifecycleEvent(OrderStatus.PARTIALLY_FILLED, datetime.now(timezone.utc), filled_quantity=math.nan))
+
+def test_lifecycle_rejects_fill_above_requested_quantity():
+    lifecycle = __import__("app.broker_order_lifecycle", fromlist=["OrderLifecycle"]).OrderLifecycle(requested_quantity=1)
+    lifecycle.apply(__import__("app.broker_order_lifecycle", fromlist=["OrderLifecycleEvent"]).OrderLifecycleEvent(OrderStatus.ACCEPTED, datetime.now(timezone.utc)))
+    with pytest.raises(InvalidOrderTransition, match="cannot exceed"):
+        lifecycle.apply(__import__("app.broker_order_lifecycle", fromlist=["OrderLifecycleEvent"]).OrderLifecycleEvent(OrderStatus.FILLED, datetime.now(timezone.utc), filled_quantity=2))
+
+def test_lifecycle_rejects_out_of_order_timestamps():
+    lifecycle = __import__("app.broker_order_lifecycle", fromlist=["OrderLifecycle"]).OrderLifecycle()
+    now = datetime.now(timezone.utc)
+    Event = __import__("app.broker_order_lifecycle", fromlist=["OrderLifecycleEvent"]).OrderLifecycleEvent
+    lifecycle.apply(Event(OrderStatus.ACCEPTED, now))
+    with pytest.raises(InvalidOrderTransition, match="timestamp"):
+        lifecycle.apply(Event(OrderStatus.REJECTED, now - timedelta(seconds=1)))
 
 def test_live_mode_requires_explicit_enablement():
     with pytest.raises(ExecutionSafetyError, match="disabled"): LiveExecutionGateway(FakeExecutor(), ExecutionPolicy(mode=ExecutionMode.LIVE), authorization_store=ExecutionAuthorizationStore(":memory:")).execute(make_order())
