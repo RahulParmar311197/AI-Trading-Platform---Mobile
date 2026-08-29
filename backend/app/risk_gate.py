@@ -97,7 +97,7 @@ class ExposureReservationBook:
 
 class PreTradeRiskGate:
     """Fail-closed authorization immediately before broker submission."""
-    def __init__(self, limits: RiskLimits, reservations: ExposureReservationBook | None = None):
+    def __init__(self, limits: RiskLimits, reservations: ExposureReservationBook | None = None, reconciliation_state_store=None):
         if not all(isfinite(float(value)) for value in (
             limits.max_order_quantity,
             limits.max_position_quantity,
@@ -111,6 +111,7 @@ class PreTradeRiskGate:
             raise ValueError("risk loss limits cannot be negative")
         self.limits = limits
         self.reservations = reservations or ExposureReservationBook()
+        self.reconciliation_state_store = reconciliation_state_store
 
     @staticmethod
     def _side_sign(side: object) -> int:
@@ -156,6 +157,16 @@ class PreTradeRiskGate:
         return RiskSnapshot(position_quantity=position, daily_pnl=daily, projected_trade_loss=trade_loss, kill_switch=bool(kill_switch), broker_ready=bool(broker_ready), broker_snapshot_fingerprint=broker_snapshot_fingerprint)
 
     def evaluate(self, request: BrokerOrderRequest, snapshot: RiskSnapshot) -> RiskDecision:
+        if self.reconciliation_state_store is not None:
+            account_id = request.broker_account_id
+            route = request.broker_route
+            if account_id is None or not str(route or "").strip():
+                return RiskDecision(False, "RISK_RECONCILIATION_REQUIRED")
+            try:
+                if self.reconciliation_state_store.is_trading_blocked(broker_account_id=account_id, broker_route=route):
+                    return RiskDecision(False, "RISK_RECONCILIATION_REQUIRED")
+            except Exception:
+                return RiskDecision(False, "RISK_RECONCILIATION_REQUIRED")
         if snapshot.kill_switch:
             return RiskDecision(False, "RISK_KILL_SWITCH_ACTIVE")
         if not snapshot.broker_ready:
