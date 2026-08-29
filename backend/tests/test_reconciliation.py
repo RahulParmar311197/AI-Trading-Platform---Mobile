@@ -1,3 +1,5 @@
+import pytest
+
 from app.reconciliation import ReconciliationEngine
 
 
@@ -44,9 +46,34 @@ def test_matching_state_is_clean():
     assert not result.trading_halted
 
 
-def test_halt_persists_until_explicit_reset():
+def test_halt_cannot_be_cleared_from_failed_reconciliation():
+    engine = ReconciliationEngine()
+    failed = engine.check([], [], [{"symbol": "NIFTY", "quantity": 1}], [])
+    with pytest.raises(ValueError, match="cannot be cleared"):
+        engine.reset_halt(failed)
+    assert engine.trading_halted
+
+
+def test_halt_can_only_be_cleared_from_authenticated_clean_check():
+    engine = ReconciliationEngine()
+    failed = engine.check([], [], [{"symbol": "NIFTY", "quantity": 1}], [])
+    assert failed.trading_halted
+    clean = engine.check([], [], [], [])
+    assert clean.ok
+    assert engine.reset_halt(clean) == {"trading_halted": False}
+    assert not engine.trading_halted
+
+
+def test_forged_reconciliation_result_cannot_clear_halt():
     engine = ReconciliationEngine()
     engine.check([], [], [{"symbol": "NIFTY", "quantity": 1}], [])
-    result = engine.check([], [], [], [])
-    assert result.trading_halted
-    assert engine.reset_halt() == {"trading_halted": False}
+    forged = object.__new__(type(engine.check([], [], [], [])))
+    forged.ok = True
+    forged.trading_halted = False
+    forged.order_drift = []
+    forged.position_drift = []
+    forged.checked_at = "forged"
+    forged._verification_token = object()
+    with pytest.raises(ValueError, match="authenticated"):
+        engine.reset_halt(forged)
+    assert engine.trading_halted
