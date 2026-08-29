@@ -1,4 +1,4 @@
-from __future__
+from __future__ import annotations
 
 import json
 import sqlite3
@@ -202,6 +202,12 @@ class TransactionalExecutionRepository:
                 result=self._apply_event_tx(event_id,order_id,kind,broker_account_id=broker_account_id,broker_route=broker_route,price=price,quantity=quantity,event_sequence=event_sequence); self._db.commit(); return result
             except Exception: self._db.rollback(); raise
 
+    def apply_broker_event(self,event_id:str,order_id:str,kind:str,*,broker_account_id:int,broker_route:str,price:float|None=None,quantity:float=0.0,event_sequence:int)->bool:
+        """Apply a live broker event; live events must carry a durable ordering token."""
+        if isinstance(event_sequence,bool) or not isinstance(event_sequence,int) or event_sequence<0:
+            raise ValueError("live broker events require a non-negative integer event sequence")
+        return self.apply_event(event_id,order_id,kind,broker_account_id=broker_account_id,broker_route=broker_route,price=price,quantity=quantity,event_sequence=event_sequence)
+
     def bind_identity_and_apply_event(self,identity:OrderIdentity,event_id:str,kind:str,*,broker_account_id:int,broker_route:str,price:float|None=None,quantity:float=0.0,event_sequence:int|None=None)->bool:
         if identity.broker_account_id!=broker_account_id or identity.broker_route!=broker_route: raise ValueError("identity scope does not match execution scope")
         with self._lock:
@@ -210,7 +216,14 @@ class TransactionalExecutionRepository:
                 self._bind_identity_tx(identity)
                 result=self._apply_event_tx(event_id,identity.client_order_id,kind,broker_account_id=broker_account_id,broker_route=broker_route,price=price,quantity=quantity,event_sequence=event_sequence)
                 self._db.commit(); return result
-            except Exception: self._db.rollback(); raise
+            except Exception:
+                self._db.rollback(); raise
+
+    def bind_identity_and_apply_broker_event(self,identity:OrderIdentity,event_id:str,kind:str,*,broker_account_id:int,broker_route:str,price:float|None=None,quantity:float=0.0,event_sequence:int)->bool:
+        """Atomically bind a broker identity and apply a live ordered event."""
+        if isinstance(event_sequence,bool) or not isinstance(event_sequence,int) or event_sequence<0:
+            raise ValueError("live broker events require a non-negative integer event sequence")
+        return self.bind_identity_and_apply_event(identity,event_id,kind,broker_account_id=broker_account_id,broker_route=broker_route,price=price,quantity=quantity,event_sequence=event_sequence)
 
     def snapshot(self)->ExecutionSnapshot:
         with self._lock:
