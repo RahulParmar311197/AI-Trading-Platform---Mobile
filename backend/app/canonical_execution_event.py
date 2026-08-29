@@ -29,6 +29,7 @@ class CanonicalExecutionEvent:
     broker: str = ""
     broker_account_id: int | None = None
     broker_route: str | None = None
+    event_sequence: int | None = None
 
     def __post_init__(self) -> None:
         if not self.event_id.strip() or not self.broker_order_id.strip() or not self.client_order_id.strip():
@@ -41,5 +42,8 @@ class CanonicalExecutionEvent:
             raise ValueError("broker_account_id must be positive")
         if self.broker_account_id is not None and not self.broker_route:
             raise ValueError("broker_route is required with broker_account_id")
+        if self.event_sequence is not None:
+            if isinstance(self.event_sequence, bool) or not isinstance(self.event_sequence, int) or self.event_sequence < 0:
+                raise ValueError("event_sequence must be a non-negative integer")
         object.__setattr__(self, "symbol", self.symbol.upper())
         object.__setattr__(self, "side", self.side.upper())
