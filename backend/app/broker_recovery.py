@@ -48,7 +48,7 @@ class BrokerStartupRecovery:
             account_id=str(selected.broker_account_id),
             route_generation=str(selected.generation),
             context_attestor=self.router.context_attestor,
-            generation=0,
+            generation=self.router._next_reconciliation_generation(selected),
         )
         verified = coordinator.reconcile(
             internal_orders=internal_orders,
