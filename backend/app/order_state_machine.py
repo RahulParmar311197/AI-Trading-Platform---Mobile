@@ -16,7 +16,19 @@ class OrderState(str, Enum):
 
 
 _ALLOWED: dict[OrderState, set[OrderState]] = {
-    OrderState.CREATED: {OrderState.SUBMITTING, OrderState.REJECTED},
+    # A locally-created order may be initialized from a broker snapshot/event
+    # whose first observed state is already OPEN or terminal. This is required
+    # for restart/reconciliation and offline event replay. Once an order has
+    # progressed, normal monotonic transitions remain enforced below.
+    OrderState.CREATED: {
+        OrderState.SUBMITTING,
+        OrderState.OPEN,
+        OrderState.PARTIALLY_FILLED,
+        OrderState.FILLED,
+        OrderState.REJECTED,
+        OrderState.CANCELLED,
+        OrderState.PENDING_RECONCILIATION,
+    },
     OrderState.SUBMITTING: {
         OrderState.OPEN,
         OrderState.PARTIALLY_FILLED,
@@ -68,7 +80,9 @@ class OrderStateMachine:
 
     def transition(self, target: OrderState) -> OrderState:
         if target not in _ALLOWED[self.state]:
-            raise InvalidOrderTransition(f"invalid order transition: {self.state.value} -> {target.value}")
+            raise InvalidOrderTransition(
+                f"invalid order transition: {self.state.value} -> {target.value}"
+            )
         self.state = target
         return self.state
 
@@ -77,4 +91,8 @@ class OrderStateMachine:
 
     @property
     def terminal(self) -> bool:
-        return self.state in {OrderState.FILLED, OrderState.CANCELLED, OrderState.REJECTED}
+        return self.state in {
+            OrderState.FILLED,
+            OrderState.CANCELLED,
+            OrderState.REJECTED,
+        }
