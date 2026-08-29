@@ -198,8 +198,7 @@ class PaperBrokerAdapter(BrokerAdapter):
     def get_order_snapshot(self): return BrokerOrderSnapshot(orders=self.get_orders(), complete=True, source=self.__class__.__name__)
     def get_positions(self):
         with self._lock: return [{"symbol":s,"quantity":q} for s,q in self._positions.items() if q != 0]
-    def get_position_snapshot(self):
-        with self._lock: return [{"symbol":s,"quantity":q} for s,q in self._positions.items() if q != 0]
+    def get_position_snapshot(self): return BrokerPositionSnapshot(positions=self.get_positions(), complete=True, source=self.__class__.__name__)
     def get_account(self): return {"mode":"paper","healthy":True,"authenticated":True,"live_trading_enabled":False}
     def health(self): return BrokerHealth(broker=self.__class__.__name__,healthy=True,authenticated=True,live_trading_enabled=False,message="paper broker")
 
