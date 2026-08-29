@@ -115,7 +115,6 @@ class PreTradeRiskGate:
 
     @staticmethod
     def trading_day_key(now: datetime | None = None, timezone_name: str = "UTC") -> str:
-        """Return the calendar trading-day key in an explicit IANA timezone."""
         try:
             zone = ZoneInfo(timezone_name)
         except ZoneInfoNotFoundError as exc:
@@ -127,7 +126,6 @@ class PreTradeRiskGate:
 
     @staticmethod
     def snapshot_from_lifecycle(lifecycle, position_quantity: float, broker_ready: bool, kill_switch: bool = False, projected_trade_loss: float = 0.0, trading_day: str | None = None, trading_day_timezone: str = "UTC", broker_snapshot_fingerprint: str | None = None) -> RiskSnapshot:
-        """Build the durable daily-P&L component using an explicit trading-day timezone."""
         if trading_day is None:
             trading_day = PreTradeRiskGate.trading_day_key(timezone_name=trading_day_timezone)
         else:
@@ -135,15 +133,12 @@ class PreTradeRiskGate:
         daily = lifecycle.realized_pnl_by_day.get(trading_day, 0.0)
         try:
             daily = float(daily)
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError("invalid persisted daily realized pnl") from exc
-        if daily != daily or daily in (float("inf"), float("-inf")):
-            raise RuntimeError("invalid persisted daily realized pnl")
-        try:
             position = float(position_quantity)
             trade_loss = float(projected_trade_loss)
         except (TypeError, ValueError) as exc:
             raise RuntimeError("invalid risk snapshot numeric value") from exc
+        if daily != daily or daily in (float("inf"), float("-inf")):
+            raise RuntimeError("invalid persisted daily realized pnl")
         if position != position or position in (float("inf"), float("-inf")):
             raise RuntimeError("invalid risk snapshot position")
         if trade_loss != trade_loss or trade_loss in (float("inf"), float("-inf")):
@@ -168,10 +163,7 @@ class PreTradeRiskGate:
         side_sign = self._side_sign(request.side)
         if side_sign == 0:
             return RiskDecision(False, "RISK_INVALID_SIDE")
-        try:
-            current_position = float(snapshot.position_quantity)
-        except (TypeError, ValueError):
-            return RiskDecision(False, "RISK_INVALID_POSITION_SNAPSHOT")
+        current_position = float(snapshot.position_quantity)
         projected_position = current_position + side_sign * quantity
         if abs(projected_position) > self.limits.max_position_quantity + 1e-9:
             return RiskDecision(False, "RISK_MAX_POSITION_QUANTITY")
@@ -202,3 +194,23 @@ class PreTradeRiskGate:
 
     def release(self, client_order_id: str) -> None:
         self.reservations.release(client_order_id)
+
+
+@dataclass(frozen=True)
+class RiskGateDecision:
+    approved: bool
+    checks: dict[str, bool]
+
+
+class RiskGate:
+    """Compatibility facade for lightweight portfolio-level execution checks."""
+    def __init__(self, max_gross_exposure: float, max_positions: int):
+        self.max_gross_exposure = float(max_gross_exposure)
+        self.max_positions = int(max_positions)
+
+    def evaluate(self, portfolio, requested_notional: float) -> RiskGateDecision:
+        exposure_ok = self.max_gross_exposure > 0 and float(requested_notional) <= self.max_gross_exposure
+        positions = getattr(portfolio, "positions", None)
+        position_count_ok = positions is not None and len(positions) < self.max_positions
+        checks = {"exposure_limit": exposure_ok, "position_count_limit": position_count_ok}
+        return RiskGateDecision(approved=all(checks.values()), checks=checks)
