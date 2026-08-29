@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from math import isfinite
 
 
 class CanonicalExecutionEventType(str, Enum):
@@ -32,10 +33,10 @@ class CanonicalExecutionEvent:
     def __post_init__(self) -> None:
         if not self.event_id or not self.broker_order_id or not self.client_order_id:
             raise ValueError("event_id, broker_order_id and client_order_id are required")
-        if self.quantity < 0:
-            raise ValueError("quantity cannot be negative")
-        if self.price is not None and self.price < 0:
-            raise ValueError("price cannot be negative")
+        if not isfinite(float(self.quantity)) or self.quantity < 0:
+            raise ValueError("quantity must be finite and non-negative")
+        if self.price is not None and (not isfinite(float(self.price)) or self.price < 0):
+            raise ValueError("price must be finite and non-negative")
         if self.broker_account_id is not None and self.broker_account_id <= 0:
             raise ValueError("broker_account_id must be positive")
         if self.broker_account_id is not None and not self.broker_route:
