@@ -56,6 +56,7 @@ class BrokerOrderUpdate:
     filled_quantity: float | None = None
     price: float | None = None
     average_price: float | None = None
+    broker_account_id: int | None = None
     message: str | None = None
     def __getitem__(self, key: str): return getattr(self, key, None)
     def get(self, key: str, default: Any = None): return getattr(self, key, default)
@@ -92,12 +93,19 @@ def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected
     if quantity is not None and filled is not None and filled > quantity + 1e-9: raise ValueError("broker filled quantity exceeds order quantity")
     client_id = str(data.get("client_order_id")).strip() if data.get("client_order_id") is not None else None
     symbol = str(data.get("symbol")).strip().upper() if data.get("symbol") else None; side = str(data.get("side")).strip().upper() if data.get("side") else None
+    broker_account_id_raw = data.get("broker_account_id") if data.get("broker_account_id") is not None else data.get("account_id")
+    broker_account_id = None
+    if broker_account_id_raw not in (None, ""):
+        try: broker_account_id = int(broker_account_id_raw)
+        except (TypeError, ValueError): raise ValueError("invalid broker account identity")
+        if broker_account_id <= 0: raise ValueError("invalid broker account identity")
     if expected is not None:
         if client_id is None or client_id != expected.client_order_id: raise ValueError("broker client_order_id does not match request")
         if symbol is None or symbol != expected.symbol.upper(): raise ValueError("broker symbol does not match request")
         if side is None or side != expected.side.upper(): raise ValueError("broker side does not match request")
         if quantity is None: raise ValueError("broker response missing requested quantity")
         if abs(quantity - expected.quantity) > 1e-9: raise ValueError("broker quantity does not match requested quantity")
+        if broker_account_id is not None and expected.broker_account_id is not None and broker_account_id != expected.broker_account_id: raise ValueError("broker account does not match request")
     if price is not None and price <= 0: raise ValueError("broker price must be positive")
     if average is not None and average <= 0: raise ValueError("broker average price must be positive")
     if status == BrokerOrderStatus.NEW.value and filled is not None and abs(filled) > 1e-9: raise ValueError("NEW broker status requires zero filled quantity")
@@ -106,7 +114,7 @@ def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected
     if status == BrokerOrderStatus.REJECTED.value and filled is not None and abs(filled) > 1e-9: raise ValueError("REJECTED broker status requires zero filled quantity")
     if status in {BrokerOrderStatus.PARTIALLY_FILLED.value, BrokerOrderStatus.FILLED.value} and (filled is None or filled <= 0): raise ValueError("filled broker status requires positive filled quantity")
     if filled is not None and filled > 0 and average is None: raise ValueError("non-zero broker fill requires average_price")
-    return BrokerOrderUpdate(order_id=order_id,status=status,client_order_id=client_id,symbol=symbol,side=side,quantity=quantity,filled_quantity=filled,price=price,average_price=average,message=data.get("message"))
+    return BrokerOrderUpdate(order_id=order_id,status=status,client_order_id=client_id,symbol=symbol,side=side,quantity=quantity,filled_quantity=filled,price=price,average_price=average,broker_account_id=broker_account_id,message=data.get("message"))
 
 class BrokerAdapter(ABC):
     @abstractmethod
