@@ -1,5 +1,9 @@
 import os
 
+# Configure non-production test settings before test modules import app.main.
+os.environ.setdefault("ENVIRONMENT", "test")
+os.environ.setdefault("BROKER_CONTEXT_ATTESTATION_SECRET", "test-broker-context-attestation-secret-32-bytes-min")
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
