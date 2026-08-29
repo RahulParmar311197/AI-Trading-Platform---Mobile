@@ -93,13 +93,30 @@ class BrokerRouter:
         orders=order_snapshot_fn().require_authoritative(); positions=position_snapshot_fn().require_authoritative()
         return BrokerSnapshot(orders=[dict(x) for x in orders],positions=[dict(x) for x in positions],broker_route=route.name,broker_account_id=route.broker_account_id)
     def _current_snapshot_fingerprint(self,route:BrokerRoute)->str:return self._authoritative_reconciliation_snapshot(route).fingerprint()
+    def _next_reconciliation_generation(self, route: BrokerRoute) -> int:
+        """Return a strictly increasing per-account reconciliation generation."""
+        if self.safety_store is None:
+            return 1
+        if route.broker_account_id is None:
+            return 1
+        record = self.safety_store.account_reconciliation(str(route.broker_account_id))
+        if record is None:
+            return 1
+        raw = record.get("reconciliation_generation")
+        try:
+            previous = int(raw)
+        except (TypeError, ValueError):
+            raise RuntimeError("persisted broker reconciliation generation is invalid")
+        if previous < 0:
+            raise RuntimeError("persisted broker reconciliation generation is invalid")
+        return previous + 1
     def reconcile_authoritative(self,internal_orders:list[dict],internal_positions:list[dict],route=None,broker_ready:bool=True):
         selected=self.get(route)
         if self.context_attestor is None: raise RuntimeError("canonical broker context attestor is required for verified reconciliation")
         if selected.broker_account_id is None: raise RuntimeError("broker route must be bound to a broker account for verified reconciliation")
         if selected.generation is None: raise RuntimeError("broker route generation is required for verified reconciliation")
         snapshot=self._authoritative_reconciliation_snapshot(selected)
-        coordinator=ReconciliationCoordinator(engine=self.reconciliation_engine,route=selected.name,account_id=str(selected.broker_account_id),route_generation=str(selected.generation),context_attestor=self.context_attestor,generation=0)
+        coordinator=ReconciliationCoordinator(engine=self.reconciliation_engine,route=selected.name,account_id=str(selected.broker_account_id),route_generation=str(selected.generation),context_attestor=self.context_attestor,generation=self._next_reconciliation_generation(selected))
         return coordinator.reconcile(internal_orders=internal_orders,internal_positions=internal_positions,broker_snapshot=snapshot,broker_ready=broker_ready)
     def _reconciliation_record(self,route:BrokerRoute):
         if self.safety_store is None:return None
