@@ -87,4 +87,11 @@ class ReconciliationEngine:
         if unresolved: raise ValueError(f"cannot build verified result with {unresolved} unresolved submission intent(s)")
         return ReconciliationResult.from_verified_check(context=context,reconciled_at=reconciled_at,open_orders_reconciled=open_orders_reconciled,positions_reconciled=positions_reconciled,submission_intents_resolved=submission_intents_resolved,broker_ready=broker_ready,_check_token=_CHECK_TOKEN)
 
-    def reset_halt(self): self.trading_halted=False; return {"trading_halted":False}
+    def reset_halt(self, check: ReconciliationCheckResult):
+        """Clear the trading halt only from an authenticated, successful check."""
+        if not isinstance(check, ReconciliationCheckResult) or not check.verified:
+            raise ValueError("authenticated reconciliation check is required")
+        if not check.ok or check.trading_halted or check.order_drift or check.position_drift:
+            raise ValueError("trading halt cannot be cleared from failed reconciliation")
+        self.trading_halted=False
+        return {"trading_halted":False}
