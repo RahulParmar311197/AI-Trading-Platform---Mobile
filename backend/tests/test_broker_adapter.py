@@ -113,3 +113,28 @@ def test_normalize_broker_update_accepts_valid_partial_fill():
     })
     assert result.status == 'PARTIALLY_FILLED'
     assert result.filled_quantity == 4
+
+
+def test_normalize_broker_update_rejects_missing_account_identity_when_request_is_scoped():
+    request = BrokerOrderRequest(
+        client_order_id='c1', symbol='NIFTY', side='BUY', quantity=10,
+        broker_account_id=42,
+    )
+    with pytest.raises(ValueError, match='missing account identity'):
+        normalize_broker_update({
+            'order_id': 'b1', 'status': 'NEW', 'quantity': 10,
+            'client_order_id': 'c1', 'symbol': 'NIFTY', 'side': 'BUY',
+        }, expected=request)
+
+
+def test_normalize_broker_update_accepts_matching_account_identity():
+    request = BrokerOrderRequest(
+        client_order_id='c1', symbol='NIFTY', side='BUY', quantity=10,
+        broker_account_id=42,
+    )
+    result = normalize_broker_update({
+        'order_id': 'b1', 'status': 'NEW', 'quantity': 10,
+        'client_order_id': 'c1', 'symbol': 'NIFTY', 'side': 'BUY',
+        'broker_account_id': '42',
+    }, expected=request)
+    assert result.broker_account_id == 42
