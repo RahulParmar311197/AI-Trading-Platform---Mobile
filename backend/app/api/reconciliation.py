@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
 from app.db import engine as database_engine
@@ -13,10 +13,10 @@ engine = ReconciliationEngine(state_store=state_store)
 class ReconcileRequest(BaseModel):
     broker_account_id: int = Field(gt=0)
     broker_route: str = Field(min_length=1, max_length=160)
-    internal_orders: list[dict] = []
-    broker_orders: list[dict] = []
-    internal_positions: list[dict] = []
-    broker_positions: list[dict] = []
+    internal_orders: list[dict] = Field(default_factory=list)
+    broker_orders: list[dict] = Field(default_factory=list)
+    internal_positions: list[dict] = Field(default_factory=list)
+    broker_positions: list[dict] = Field(default_factory=list)
 
 
 @router.post("/check")
@@ -33,7 +33,10 @@ def check(p: ReconcileRequest):
 
 
 @router.get("/status")
-def status(broker_account_id: int = Field(gt=0), broker_route: str = Field(min_length=1, max_length=160)):
+def status(
+    broker_account_id: int = Query(gt=0),
+    broker_route: str = Query(min_length=1, max_length=160),
+):
     state = state_store.get_state(broker_account_id=broker_account_id, broker_route=broker_route)
     return {
         "broker_account_id": state.broker_account_id,
