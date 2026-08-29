@@ -33,12 +33,13 @@ class TradingDecision:
     symbol: str
     decision: Decision
     confidence: float
-    bullish_score: float
-    bearish_score: float
-    entry: float | None
-    stop_loss: float | None
-    target: float | None
-    reasons: tuple[str, ...]
+    bullish_score: float = 0.0
+    bearish_score: float = 0.0
+    entry: float | None = None
+    stop_loss: float | None = None
+    target: float | None = None
+    reasons: tuple[str, ...] = ()
+    rationale: str | None = None
 
 
 class AIDecisionEngine:
