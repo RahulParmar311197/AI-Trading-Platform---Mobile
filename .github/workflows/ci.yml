@@ -12,6 +12,10 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    env:
+      ENVIRONMENT: test
+      PYTHONPATH: .:..
+      BROKER_CONTEXT_ATTESTATION_SECRET: ci-test-broker-context-attestation-secret-0123456789abcdef
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
