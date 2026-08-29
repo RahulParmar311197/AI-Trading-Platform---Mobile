@@ -31,7 +31,7 @@ class CanonicalExecutionEvent:
     broker_route: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.event_id or not self.broker_order_id or not self.client_order_id:
+        if not self.event_id.strip() or not self.broker_order_id.strip() or not self.client_order_id.strip():
             raise ValueError("event_id, broker_order_id and client_order_id are required")
         if not isfinite(float(self.quantity)) or self.quantity < 0:
             raise ValueError("quantity must be finite and non-negative")
