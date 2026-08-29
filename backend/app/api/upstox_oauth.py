@@ -33,7 +33,7 @@ def start(account_label: str = "Upstox", db: Session = Depends(get_db), current_
 
 
 @router.get("/oauth/callback")
-def callback(code: str | None = None, state: str | None = None, error: str | None = None, request: Request | None = None, db: Session = Depends(get_db)):
+def callback(code: str | None = None, state: str | None = None, error: str | None = None, request: Request = None, db: Session = Depends(get_db)):
     if error:
         raise HTTPException(400, "Upstox authorization was declined or failed")
     if not code or not state:
@@ -80,7 +80,6 @@ def callback(code: str | None = None, state: str | None = None, error: str | Non
         db.commit()
         raise HTTPException(503, "Upstox credentials saved but broker route manager is unavailable; account disabled")
 
-    # Explicitly synchronize the newly persisted account into the live router before success.
     errors = provision_active_account_routes(db, router_obj)
     errors += validate_active_account_routes(db, router_obj)
     if errors:
