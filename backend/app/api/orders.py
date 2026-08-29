@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.auth.security import get_current_user
-from app.broker_adapter import BrokerOrderRequest
+from app.broker_adapter import BrokerOrderRequest, normalize_broker_update, BrokerOrderStatus
 from app.broker_factory import account_route_generation
 from app.db import get_db
 from app.models import BrokerAccount, Order, User
@@ -131,19 +131,30 @@ def cancel_order(client_order_id:str,request:Request,response:Response,db:Sessio
     broker_router=getattr(request.app.state,"broker_router",None)
     if broker_router is None: raise HTTPException(status_code=503,detail="BROKER_ROUTER_UNAVAILABLE")
     try:
-        result=broker_router.cancel(order.broker_order_id,route=order.broker_route,broker_account_id=order.broker_account_id)
+        raw_result=broker_router.cancel(order.broker_order_id,route=order.broker_route,broker_account_id=order.broker_account_id)
+        result=normalize_broker_update(raw_result)
+        if result.order_id != str(order.broker_order_id):
+            raise ValueError("broker cancellation response order identity mismatch")
+        if result.client_order_id is not None and result.client_order_id != order.client_order_id:
+            raise ValueError("broker cancellation response client identity mismatch")
+        if result.broker_account_id is not None and result.broker_account_id != int(order.broker_account_id):
+            raise ValueError("broker cancellation response account identity mismatch")
+        if result.status not in {BrokerOrderStatus.CANCELLED.value,BrokerOrderStatus.FILLED.value,BrokerOrderStatus.REJECTED.value}:
+            raise ValueError("broker cancellation response is not terminal")
     except ValueError as exc:
-        raise HTTPException(status_code=404,detail="BROKER_ORDER_NOT_FOUND") from exc
+        raise HTTPException(status_code=409,detail={"code":"BROKER_CANCEL_RESPONSE_INVALID","reason":str(exc),"reconciliation_required":True}) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409,detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502,detail={"code":"BROKER_CANCEL_FAILED","reason":type(exc).__name__}) from exc
-    order.status="CANCELLED"
-    order.note="BROKER_CANCEL_CONFIRMED"
+    order.status=result.status
+    order.note="BROKER_CANCEL_CONFIRMED" if result.status==BrokerOrderStatus.CANCELLED.value else f"BROKER_CANCEL_RACE_{result.status}"
+    if result.order_id:
+        order.broker_order_id=result.order_id
     try:
         db.commit(); db.refresh(order)
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=503,detail={"code":"CANCELLATION_PROJECTION_PERSISTENCE_FAILED","client_order_id":order.client_order_id,"reconciliation_required":True}) from exc
     response.status_code=200
-    return _order_response(order,"BROKER_CANCEL_CONFIRMED")
+    return _order_response(order,order.note)
