@@ -10,5 +10,3 @@ class ReconcileRequest(BaseModel):
 def check(p:ReconcileRequest): return engine.check(p.internal_orders,p.broker_orders,p.internal_positions,p.broker_positions).__dict__
 @router.get("/status")
 def status(): return {"trading_halted":engine.trading_halted}
-@router.post("/reset-halt")
-def reset_halt(): return engine.reset_halt()
