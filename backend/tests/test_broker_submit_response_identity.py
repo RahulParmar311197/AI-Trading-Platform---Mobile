@@ -39,6 +39,7 @@ REQUEST = BrokerOrderRequest(
     symbol="NIFTY",
     side="BUY",
     quantity=5,
+    broker_account_id=101,
 )
 
 
@@ -57,6 +58,7 @@ def test_successful_submission_response_is_normalized_and_identity_bound():
             symbol="NIFTY",
             side="BUY",
             quantity=5,
+            broker_account_id=101,
         )
     )
 
@@ -67,6 +69,7 @@ def test_successful_submission_response_is_normalized_and_identity_bound():
     assert result.symbol == "NIFTY"
     assert result.side == "BUY"
     assert result.quantity == 5
+    assert result.broker_account_id == 101
     assert adapter.submissions == 1
     assert router.unresolved_submission_intent_count() == 0
 
@@ -92,6 +95,7 @@ def test_submit_response_quantity_mismatch_fails_closed_and_leaves_intent_unreso
             symbol="NIFTY",
             side="BUY",
             quantity=4,
+            broker_account_id=101,
         )
     )
 
@@ -100,3 +104,41 @@ def test_submit_response_quantity_mismatch_fails_closed_and_leaves_intent_unreso
 
     assert adapter.submissions == 1
     assert router.unresolved_submission_intent_count() == 1
+
+
+def test_submit_response_account_mismatch_fails_closed_and_leaves_intent_unresolved():
+    router, adapter = router_for(
+        BrokerOrderUpdate(
+            order_id="broker-1",
+            status="NEW",
+            client_order_id="client-1",
+            symbol="NIFTY",
+            side="BUY",
+            quantity=5,
+            broker_account_id=202,
+        )
+    )
+
+    with pytest.raises(ValueError, match="broker account does not match request"):
+        router.submit(REQUEST)
+
+    assert adapter.submissions == 1
+    assert router.unresolved_submission_intent_count() == 1
+
+
+def test_malformed_broker_account_identity_fails_closed():
+    with pytest.raises(ValueError, match="invalid broker account identity"):
+        from app.broker_adapter import normalize_broker_update
+
+        normalize_broker_update(
+            {
+                "order_id": "broker-1",
+                "status": "NEW",
+                "client_order_id": "client-1",
+                "symbol": "NIFTY",
+                "side": "BUY",
+                "quantity": 5,
+                "broker_account_id": "not-an-account",
+            },
+            expected=REQUEST,
+        )
