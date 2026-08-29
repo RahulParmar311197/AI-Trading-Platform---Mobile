@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import math
+import time
 
 
 class ConnectivityState(str, Enum):
@@ -44,17 +46,27 @@ class BrokerConnectivitySupervisor:
         self._last_success_at: float | None = None
         self._next_retry_at: float | None = None
 
+    @staticmethod
+    def _validate_now(now: float) -> float:
+        value = float(now)
+        if not math.isfinite(value):
+            raise ValueError("connectivity timestamp must be finite")
+        return value
+
     def success(self, now: float) -> ConnectivitySnapshot:
+        now = self._validate_now(now)
         self._failures = 0
         self._last_success_at = now
         self._next_retry_at = None
         self._state = ConnectivityState.HEALTHY
         return self.snapshot()
 
-    def record_success(self, now: float = 0.0) -> ConnectivitySnapshot:
-        return self.success(now)
+    def record_success(self, now: float | None = None) -> ConnectivitySnapshot:
+        """Record a successful broker interaction using a real timestamp by default."""
+        return self.success(time.time() if now is None else now)
 
     def failure(self, now: float) -> ConnectivitySnapshot:
+        now = self._validate_now(now)
         self._failures += 1
         self._state = ConnectivityState.DEGRADED if self._failures < self.max_failures else ConnectivityState.DISCONNECTED
         delay = min(self.base_backoff_seconds * (2 ** (self._failures - 1)), self.max_backoff_seconds)
@@ -62,6 +74,7 @@ class BrokerConnectivitySupervisor:
         return self.snapshot()
 
     def begin_recovery(self, now: float) -> ConnectivitySnapshot:
+        now = self._validate_now(now)
         if self._next_retry_at is not None and now < self._next_retry_at:
             return self.snapshot()
         self._state = ConnectivityState.RECOVERING
