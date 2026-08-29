@@ -17,7 +17,7 @@ class LiveExecutionOrder:
 
 
 class LiveExecutionRepositoryBridge:
-    """Execution integration boundary with mandatory broker-account identity."""
+    """Execution integration boundary with mandatory broker-account identity and ordering."""
 
     def __init__(self, repository: TransactionalExecutionRepository) -> None:
         self.repository = repository
@@ -47,13 +47,22 @@ class LiveExecutionRepositoryBridge:
             broker_route,
         )
 
-    def submitted(self, *, event_id: str, order_id: str, broker_account_id: int, broker_route: str) -> bool:
-        return self.repository.apply_event(
+    def submitted(
+        self,
+        *,
+        event_id: str,
+        order_id: str,
+        broker_account_id: int,
+        broker_route: str,
+        event_sequence: int,
+    ) -> bool:
+        return self.repository.apply_broker_event(
             event_id,
             order_id,
             "SUBMITTED",
             broker_account_id=broker_account_id,
             broker_route=broker_route,
+            event_sequence=event_sequence,
         )
 
     def fill(
@@ -64,9 +73,10 @@ class LiveExecutionRepositoryBridge:
         quantity: float,
         broker_account_id: int,
         broker_route: str,
+        event_sequence: int,
         price: float | None = None,
     ) -> bool:
-        return self.repository.apply_event(
+        return self.repository.apply_broker_event(
             event_id,
             order_id,
             "FILL",
@@ -74,24 +84,43 @@ class LiveExecutionRepositoryBridge:
             broker_route=broker_route,
             quantity=quantity,
             price=price,
+            event_sequence=event_sequence,
         )
 
-    def cancelled(self, *, event_id: str, order_id: str, broker_account_id: int, broker_route: str) -> bool:
-        return self.repository.apply_event(
+    def cancelled(
+        self,
+        *,
+        event_id: str,
+        order_id: str,
+        broker_account_id: int,
+        broker_route: str,
+        event_sequence: int,
+    ) -> bool:
+        return self.repository.apply_broker_event(
             event_id,
             order_id,
             OrderStatus.CANCELLED.value,
             broker_account_id=broker_account_id,
             broker_route=broker_route,
+            event_sequence=event_sequence,
         )
 
-    def rejected(self, *, event_id: str, order_id: str, broker_account_id: int, broker_route: str) -> bool:
-        return self.repository.apply_event(
+    def rejected(
+        self,
+        *,
+        event_id: str,
+        order_id: str,
+        broker_account_id: int,
+        broker_route: str,
+        event_sequence: int,
+    ) -> bool:
+        return self.repository.apply_broker_event(
             event_id,
             order_id,
             OrderStatus.REJECTED.value,
             broker_account_id=broker_account_id,
             broker_route=broker_route,
+            event_sequence=event_sequence,
         )
 
     def state(self):
