@@ -40,3 +40,6 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+      # CI trigger marker: keeps this workflow changeable through the repository API
+      # so a fresh push event can validate the current main revision.
