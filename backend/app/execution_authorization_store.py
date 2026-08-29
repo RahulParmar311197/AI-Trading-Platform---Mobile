@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import os
 import sqlite3
 from threading import RLock
 from typing import Callable, Protocol
@@ -19,6 +20,7 @@ class ExecutionAuthorizationStore:
 
     def __init__(self, path: str = "data/execution_authorizations.sqlite3") -> None:
         self.path = path
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         self._lock = RLock()
         self._connection = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self._connection.execute("PRAGMA journal_mode=WAL")
@@ -36,33 +38,18 @@ class ExecutionAuthorizationStore:
         )
         columns = {row[1] for row in self._connection.execute("PRAGMA table_info(execution_authorizations)")}
         if "context_key" not in columns:
-            self._connection.execute(
-                "ALTER TABLE execution_authorizations ADD COLUMN context_key TEXT NOT NULL DEFAULT ''"
-            )
+            self._connection.execute("ALTER TABLE execution_authorizations ADD COLUMN context_key TEXT NOT NULL DEFAULT ''")
 
     def issue(self, authorization: AuthorizationRecord) -> None:
         if not authorization._context_key.strip():
             raise ValueError("authorization context key is required")
         with self._lock:
             self._connection.execute(
-                "INSERT INTO execution_authorizations "
-                "(nonce_hash, order_fingerprint, context_key, expires_at, consumed_at) VALUES (?, ?, ?, ?, NULL)",
-                (
-                    _hash_nonce(authorization._nonce),
-                    authorization._order_fingerprint,
-                    authorization._context_key,
-                    authorization._expires_at.isoformat(),
-                ),
+                "INSERT INTO execution_authorizations (nonce_hash, order_fingerprint, context_key, expires_at, consumed_at) VALUES (?, ?, ?, ?, NULL)",
+                (_hash_nonce(authorization._nonce), authorization._order_fingerprint, authorization._context_key, authorization._expires_at.isoformat()),
             )
 
-    def consume(
-        self,
-        authorization: AuthorizationRecord,
-        order_fingerprint: str,
-        context_key: str,
-        now: Callable[[], datetime],
-    ) -> str:
-        """Atomically consume an unexpired authorization bound to one order and broker context."""
+    def consume(self, authorization: AuthorizationRecord, order_fingerprint: str, context_key: str, now: Callable[[], datetime]) -> str:
         current = now()
         if current.tzinfo is None:
             raise ValueError("authorization clock must be timezone-aware")
@@ -71,11 +58,7 @@ class ExecutionAuthorizationStore:
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
-                row = self._connection.execute(
-                    "SELECT order_fingerprint, context_key, expires_at, consumed_at "
-                    "FROM execution_authorizations WHERE nonce_hash = ?",
-                    (_hash_nonce(authorization._nonce),),
-                ).fetchone()
+                row = self._connection.execute("SELECT order_fingerprint, context_key, expires_at, consumed_at FROM execution_authorizations WHERE nonce_hash = ?", (_hash_nonce(authorization._nonce),)).fetchone()
                 if row is None:
                     self._connection.execute("ROLLBACK")
                     return "missing"
@@ -97,11 +80,7 @@ class ExecutionAuthorizationStore:
                     self._connection.execute("ROLLBACK")
                     return "expired"
                 consumed_at = current.astimezone(timezone.utc).isoformat()
-                updated = self._connection.execute(
-                    "UPDATE execution_authorizations SET consumed_at = ? "
-                    "WHERE nonce_hash = ? AND consumed_at IS NULL",
-                    (consumed_at, _hash_nonce(authorization._nonce)),
-                ).rowcount
+                updated = self._connection.execute("UPDATE execution_authorizations SET consumed_at = ? WHERE nonce_hash = ? AND consumed_at IS NULL", (consumed_at, _hash_nonce(authorization._nonce))).rowcount
                 if updated != 1:
                     self._connection.execute("ROLLBACK")
                     return "consumed"
