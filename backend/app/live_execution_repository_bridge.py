@@ -47,6 +47,22 @@ class LiveExecutionRepositoryBridge:
             broker_route,
         )
 
+    def _require_transition(
+        self,
+        order_id: str,
+        *,
+        broker_account_id: int,
+        broker_route: str,
+        allowed: set[str],
+    ) -> None:
+        order = self.repository.get_order(order_id)
+        if order is None:
+            raise KeyError(order_id)
+        if order["broker_account_id"] != broker_account_id or order["broker_route"] != broker_route:
+            raise ValueError("broker account identity mismatch")
+        if order["status"] not in allowed:
+            raise ValueError(f"invalid live execution transition from {order['status']}")
+
     def submitted(
         self,
         *,
@@ -56,6 +72,12 @@ class LiveExecutionRepositoryBridge:
         broker_route: str,
         event_sequence: int,
     ) -> bool:
+        self._require_transition(
+            order_id,
+            broker_account_id=broker_account_id,
+            broker_route=broker_route,
+            allowed={OrderStatus.CREATED.value, OrderStatus.RISK_APPROVED.value},
+        )
         return self.repository.apply_broker_event(
             event_id,
             order_id,
@@ -76,6 +98,12 @@ class LiveExecutionRepositoryBridge:
         event_sequence: int,
         price: float | None = None,
     ) -> bool:
+        self._require_transition(
+            order_id,
+            broker_account_id=broker_account_id,
+            broker_route=broker_route,
+            allowed={OrderStatus.SUBMITTED.value, OrderStatus.PARTIALLY_FILLED.value},
+        )
         return self.repository.apply_broker_event(
             event_id,
             order_id,
@@ -96,6 +124,12 @@ class LiveExecutionRepositoryBridge:
         broker_route: str,
         event_sequence: int,
     ) -> bool:
+        self._require_transition(
+            order_id,
+            broker_account_id=broker_account_id,
+            broker_route=broker_route,
+            allowed={OrderStatus.SUBMITTED.value, OrderStatus.PARTIALLY_FILLED.value},
+        )
         return self.repository.apply_broker_event(
             event_id,
             order_id,
@@ -114,6 +148,12 @@ class LiveExecutionRepositoryBridge:
         broker_route: str,
         event_sequence: int,
     ) -> bool:
+        self._require_transition(
+            order_id,
+            broker_account_id=broker_account_id,
+            broker_route=broker_route,
+            allowed={OrderStatus.CREATED.value, OrderStatus.SUBMITTED.value},
+        )
         return self.repository.apply_broker_event(
             event_id,
             order_id,
