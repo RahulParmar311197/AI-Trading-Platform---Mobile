@@ -57,6 +57,8 @@ class BrokerOrderUpdate:
     price: float | None = None
     average_price: float | None = None
     broker_account_id: int | None = None
+    broker_route: str | None = None
+    broker_route_generation: str | None = None
     message: str | None = None
     def __getitem__(self, key: str): return getattr(self, key, None)
     def get(self, key: str, default: Any = None): return getattr(self, key, default)
@@ -72,11 +74,19 @@ class BrokerOrder:
     stop: float | None = None
     target: float | None = None
 
+
 def _finite_optional(value: Any, field: str) -> float | None:
     if value is None or value == "": return None
     number = float(value)
     if not math.isfinite(number): raise ValueError(f"invalid broker {field}")
     return number
+
+
+def _optional_identity(value: Any, field: str) -> str | None:
+    if value is None or value == "": return None
+    identity = str(value).strip()
+    if not identity: raise ValueError(f"invalid broker {field}")
+    return identity
 
 
 def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected: BrokerOrderRequest | None = None) -> BrokerOrderUpdate:
@@ -99,6 +109,8 @@ def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected
         try: broker_account_id = int(broker_account_id_raw)
         except (TypeError, ValueError): raise ValueError("invalid broker account identity")
         if broker_account_id <= 0: raise ValueError("invalid broker account identity")
+    broker_route = _optional_identity(data.get("broker_route") if data.get("broker_route") is not None else data.get("route"), "route identity")
+    broker_route_generation = _optional_identity(data.get("broker_route_generation") if data.get("broker_route_generation") is not None else data.get("route_generation"), "route generation")
     if expected is not None:
         if client_id is None or client_id != expected.client_order_id: raise ValueError("broker client_order_id does not match request")
         if symbol is None or symbol != expected.symbol.upper(): raise ValueError("broker symbol does not match request")
@@ -107,6 +119,12 @@ def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected
         if expected.broker_account_id is not None:
             if broker_account_id is None: raise ValueError("broker response missing account identity")
             if broker_account_id != expected.broker_account_id: raise ValueError("broker account does not match request")
+        if expected.broker_route is not None:
+            if broker_route is None: raise ValueError("broker response missing route identity")
+            if broker_route != expected.broker_route: raise ValueError("broker route does not match request")
+        if expected.broker_route_generation is not None:
+            if broker_route_generation is None: raise ValueError("broker response missing route generation")
+            if broker_route_generation != expected.broker_route_generation: raise ValueError("broker route generation does not match request")
     if price is not None and price <= 0: raise ValueError("broker price must be positive")
     if average is not None and average <= 0: raise ValueError("broker average price must be positive")
     if status == BrokerOrderStatus.NEW.value and filled is not None and abs(filled) > 1e-9: raise ValueError("NEW broker status requires zero filled quantity")
@@ -115,7 +133,7 @@ def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected
     if status == BrokerOrderStatus.REJECTED.value and filled is not None and abs(filled) > 1e-9: raise ValueError("REJECTED broker status requires zero filled quantity")
     if status in {BrokerOrderStatus.PARTIALLY_FILLED.value, BrokerOrderStatus.FILLED.value} and (filled is None or filled <= 0): raise ValueError("filled broker status requires positive filled quantity")
     if filled is not None and filled > 0 and average is None: raise ValueError("non-zero broker fill requires average_price")
-    return BrokerOrderUpdate(order_id=order_id,status=status,client_order_id=client_id,symbol=symbol,side=side,quantity=quantity,filled_quantity=filled,price=price,average_price=average,broker_account_id=broker_account_id,message=data.get("message"))
+    return BrokerOrderUpdate(order_id=order_id,status=status,client_order_id=client_id,symbol=symbol,side=side,quantity=quantity,filled_quantity=filled,price=price,average_price=average,broker_account_id=broker_account_id,broker_route=broker_route,broker_route_generation=broker_route_generation,message=data.get("message"))
 
 class BrokerAdapter(ABC):
     @abstractmethod
@@ -180,7 +198,8 @@ class PaperBrokerAdapter(BrokerAdapter):
     def get_order_snapshot(self): return BrokerOrderSnapshot(orders=self.get_orders(), complete=True, source=self.__class__.__name__)
     def get_positions(self):
         with self._lock: return [{"symbol":s,"quantity":q} for s,q in self._positions.items() if q != 0]
-    def get_position_snapshot(self): return BrokerPositionSnapshot(positions=self.get_positions(), complete=True, source=self.__class__.__name__)
+    def get_position_snapshot(self):
+        with self._lock: return [{"symbol":s,"quantity":q} for s,q in self._positions.items() if q != 0]
     def get_account(self): return {"mode":"paper","healthy":True,"authenticated":True,"live_trading_enabled":False}
     def health(self): return BrokerHealth(broker=self.__class__.__name__,healthy=True,authenticated=True,live_trading_enabled=False,message="paper broker")
 
