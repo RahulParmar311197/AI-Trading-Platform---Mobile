@@ -7,7 +7,7 @@ import hashlib
 import secrets
 from typing import Any, Callable, Protocol
 
-from app.broker_adapter import BrokerOrderRequest
+from app.broker_adapter import BrokerOrderRequest, BrokerOrderUpdate
 from app.broker_context_attestation import BrokerContextAttestor
 from app.broker_execution_context import BrokerExecutionContext
 from app.broker_order_lifecycle import OrderLifecycle, OrderLifecycleEvent, OrderStatus
@@ -132,12 +132,14 @@ class LiveExecutionGateway:
         if self.policy.mode is ExecutionMode.LIVE:
             self._consume_authorization(safe_order, authorization, context)
 
-        lifecycle = OrderLifecycle()
+        lifecycle = OrderLifecycle(requested_quantity=safe_order.quantity)
         lifecycle.apply(OrderLifecycleEvent(status=OrderStatus.ACCEPTED, timestamp=_now()))
         try:
             result = self.executor.execute(safe_order)
+            self._apply_broker_result(lifecycle, result)
         except Exception as exc:
-            lifecycle.apply(OrderLifecycleEvent(status=OrderStatus.REJECTED, timestamp=_now(), reason=str(exc)))
+            if not lifecycle.terminal:
+                lifecycle.apply(OrderLifecycleEvent(status=OrderStatus.REJECTED, timestamp=_now(), reason=str(exc)))
             self.incident_reporter.report_order_rejection(str(exc))
             raise
         return TrackedExecution(result=result, lifecycle=lifecycle)
@@ -149,6 +151,33 @@ class LiveExecutionGateway:
         context: BrokerExecutionContext | None = None,
     ) -> TrackedExecution:
         return self.execute(_order_intent_from_request(request), authorization, context)
+
+    @staticmethod
+    def _apply_broker_result(lifecycle: OrderLifecycle, result: object) -> None:
+        if not isinstance(result, BrokerOrderUpdate):
+            return
+        status_map = {
+            "NEW": OrderStatus.ACCEPTED,
+            "PARTIALLY_FILLED": OrderStatus.PARTIALLY_FILLED,
+            "FILLED": OrderStatus.FILLED,
+            "REJECTED": OrderStatus.REJECTED,
+            "CANCELLED": OrderStatus.CANCELLED,
+        }
+        try:
+            status = status_map[result.status.upper()]
+        except (AttributeError, KeyError) as exc:
+            raise ExecutionSafetyError("execution blocked: broker returned unsupported lifecycle status") from exc
+        filled = result.filled_quantity if result.filled_quantity is not None else 0
+        lifecycle.apply(
+            OrderLifecycleEvent(
+                status=status,
+                timestamp=_now(),
+                broker_order_id=result.order_id,
+                filled_quantity=filled,
+                average_price=result.average_price,
+                reason=result.message if status in {OrderStatus.REJECTED, OrderStatus.CANCELLED} else None,
+            )
+        )
 
     def _validate_order(self, order: OrderIntent) -> OrderIntent:
         try:
