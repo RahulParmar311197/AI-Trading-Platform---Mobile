@@ -1,12 +1,46 @@
 from fastapi import APIRouter
-from pydantic import BaseModel
-from app.reconciliation import ReconciliationEngine
+from pydantic import BaseModel, Field
 
-router=APIRouter(prefix="/api/reconciliation",tags=["reconciliation"])
-engine=ReconciliationEngine()
+from app.db import engine as database_engine
+from app.reconciliation import ReconciliationEngine
+from app.reconciliation_state_store import ReconciliationStateStore
+
+router = APIRouter(prefix="/api/reconciliation", tags=["reconciliation"])
+state_store = ReconciliationStateStore(engine=database_engine)
+engine = ReconciliationEngine(state_store=state_store)
+
+
 class ReconcileRequest(BaseModel):
-    internal_orders:list[dict]=[]; broker_orders:list[dict]=[]; internal_positions:list[dict]=[]; broker_positions:list[dict]=[]
+    broker_account_id: int = Field(gt=0)
+    broker_route: str = Field(min_length=1, max_length=160)
+    internal_orders: list[dict] = []
+    broker_orders: list[dict] = []
+    internal_positions: list[dict] = []
+    broker_positions: list[dict] = []
+
+
 @router.post("/check")
-def check(p:ReconcileRequest): return engine.check(p.internal_orders,p.broker_orders,p.internal_positions,p.broker_positions).__dict__
+def check(p: ReconcileRequest):
+    result = engine.check(
+        p.internal_orders,
+        p.broker_orders,
+        p.internal_positions,
+        p.broker_positions,
+        broker_account_id=p.broker_account_id,
+        broker_route=p.broker_route,
+    )
+    return result.__dict__
+
+
 @router.get("/status")
-def status(): return {"trading_halted":engine.trading_halted}
+def status(broker_account_id: int = Field(gt=0), broker_route: str = Field(min_length=1, max_length=160)):
+    state = state_store.get_state(broker_account_id=broker_account_id, broker_route=broker_route)
+    return {
+        "broker_account_id": state.broker_account_id,
+        "broker_route": state.broker_route,
+        "status": state.status,
+        "trading_halted": state.trading_halted,
+        "checked_at": state.checked_at,
+        "order_drift_count": state.order_drift_count,
+        "position_drift_count": state.position_drift_count,
+    }
