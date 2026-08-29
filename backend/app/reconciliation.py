@@ -55,11 +55,14 @@ def _signed_position(position: dict) -> float:
     return quantity
 
 class ReconciliationEngine:
-    def __init__(self, submission_intent_store: SubmissionIntentStore | None = None):
+    def __init__(self, submission_intent_store: SubmissionIntentStore | None = None, state_store=None):
         self.trading_halted = False
         self.submission_intent_store = submission_intent_store
+        self.state_store = state_store
 
-    def check(self, internal_orders, broker_orders, internal_positions, broker_positions) -> ReconciliationCheckResult:
+    def check(self, internal_orders, broker_orders, internal_positions, broker_positions, *, broker_account_id: int | None = None, broker_route: str | None = None) -> ReconciliationCheckResult:
+        if self.state_store is not None and (broker_account_id is None or not str(broker_route or "").strip()):
+            raise ValueError("broker account identity and route are required for durable reconciliation")
         io_list, bo_list, ip_list, bp_list = validate_reconciliation_inputs(internal_orders, broker_orders, internal_positions, broker_positions)
         io = {_order_key(x): x for x in io_list}; bo = {_order_key(x): x for x in bo_list}
         po = {str(x.get("symbol")).upper(): _signed_position(x) for x in ip_list}; pb = {str(x.get("symbol")).upper(): _signed_position(x) for x in bp_list}
@@ -74,8 +77,16 @@ class ReconciliationEngine:
             if drift: order_drift.append({"id":key,"internal":internal,"broker":broker,"reason":drift,"internal_normalized_status":internal_status,"broker_normalized_status":broker_status,"internal_filled_quantity":internal_filled,"broker_filled_quantity":broker_filled,"requested_quantity":requested})
         position_drift=[{"symbol":s,"internal_signed_quantity":po.get(s,0),"broker_signed_quantity":pb.get(s,0),"reason":"POSITION_SIGNED_QUANTITY_MISMATCH"} for s in set(po)|set(pb) if abs(po.get(s,0)-pb.get(s,0))>1e-9]
         ok=not order_drift and not position_drift
-        if not ok: self.trading_halted=True
-        return ReconciliationCheckResult(ok=ok,trading_halted=self.trading_halted,order_drift=order_drift,position_drift=position_drift,checked_at=datetime.now(timezone.utc).isoformat(),_verification_token=_CHECK_TOKEN)
+        self.trading_halted=not ok
+        result = ReconciliationCheckResult(ok=ok,trading_halted=self.trading_halted,order_drift=order_drift,position_drift=position_drift,checked_at=datetime.now(timezone.utc).isoformat(),_verification_token=_CHECK_TOKEN)
+        if self.state_store is not None:
+            self.state_store.record_check(broker_account_id=broker_account_id, broker_route=broker_route, result=result)
+        return result
+
+    def trading_blocked(self, *, broker_account_id: int, broker_route: str) -> bool:
+        if self.state_store is None:
+            return self.trading_halted
+        return self.state_store.is_trading_blocked(broker_account_id=broker_account_id, broker_route=broker_route)
 
     def build_verified_result(self, check: ReconciliationCheckResult, *, context: BrokerExecutionContext, reconciled_at: datetime, open_orders_reconciled: bool, positions_reconciled: bool, submission_intents_resolved: int, broker_ready: bool) -> ReconciliationResult:
         if not isinstance(check, ReconciliationCheckResult) or not check.verified: raise ValueError("authenticated reconciliation check is required")
