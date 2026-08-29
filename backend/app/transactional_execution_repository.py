@@ -77,6 +77,16 @@ class TransactionalExecutionRepository:
             self._db.execute("INSERT INTO orders(order_id,symbol,side,quantity,status,broker_account_id,broker_route) VALUES(?,?,?,?,?,?,?)",(order_id,symbol.upper(),side.upper(),quantity,OrderStatus.CREATED.value,broker_account_id,broker_route)); self._db.commit()
         return order_id
 
+    def get_order(self, order_id: str) -> dict | None:
+        """Return the durable order projection used by submission/recovery boundaries."""
+        if not order_id:
+            return None
+        with self._lock:
+            row=self._db.execute("SELECT order_id,symbol,side,quantity,filled_quantity,status,broker_account_id,broker_route FROM orders WHERE order_id=?",(order_id,)).fetchone()
+        if row is None:
+            return None
+        return {"order_id":row[0],"symbol":row[1],"side":row[2],"quantity":float(row[3]),"filled_quantity":float(row[4]),"status":row[5],"broker_account_id":int(row[6]),"broker_route":row[7]}
+
     def register_submission(self,idempotency_key:str,client_order_id:str,broker_account_id:int,broker_route:str)->SubmissionRecord:
         if not idempotency_key or not client_order_id or broker_account_id<=0 or not broker_route: raise ValueError("submission identity is required")
         now=time.time()
@@ -123,6 +133,10 @@ class TransactionalExecutionRepository:
             try:
                 self._bind_identity_tx(identity); self._db.commit()
             except Exception: self._db.rollback(); raise
+
+    def bind_broker_identity(self, client_order_id: str, broker: str, broker_order_id: str, *, broker_account_id: int, broker_route: str) -> None:
+        """Compatibility facade for callers that provide the identity fields separately."""
+        self.bind_identity(OrderIdentity(client_order_id, broker, broker_order_id, broker_account_id, broker_route))
 
     def _bind_identity_tx(self,identity:OrderIdentity)->None:
         if not identity.client_order_id or not identity.broker or not identity.broker_order_id: raise ValueError("client_order_id, broker and broker_order_id are required")
