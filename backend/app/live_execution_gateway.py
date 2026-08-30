@@ -15,7 +15,7 @@ from app.execution_authorization_store import ExecutionAuthorizationStore
 from app.order_intent import OrderIntent
 from app.pre_trade_reconciliation_gate import PreTradeReconciliationGate, PreTradeReconciliationPolicy
 from app.reconciliation_state_store import ReconciliationStateStore
-from app.trading_incidents import IncidentReporter
+from app.trading_incidents import IncidentReporter, IncidentSeverity, IncidentType
 
 
 class ExecutionMode(str, Enum):
@@ -145,6 +145,19 @@ class LiveExecutionGateway:
             result = self.executor.execute(safe_order)
             self._apply_broker_result(lifecycle, result, expected_request=expected_request)
         except Exception as exc:
+            if expected_request is not None:
+                recovered = self._recover_ambiguous_submission(expected_request)
+                if recovered is not None:
+                    self._apply_broker_result(lifecycle, recovered, expected_request=expected_request)
+                    return TrackedExecution(result=recovered, lifecycle=lifecycle)
+                self.incident_reporter.report(
+                    IncidentType.UNKNOWN_BROKER_ORDER,
+                    IncidentSeverity.CRITICAL,
+                    f"broker submission outcome is unknown for client_order_id={expected_request.client_order_id}: {exc}",
+                )
+                raise ExecutionSafetyError(
+                    "execution blocked: broker submission outcome is unknown; reconcile by client order id before retry"
+                ) from exc
             if not lifecycle.terminal:
                 lifecycle.apply(OrderLifecycleEvent(status=OrderStatus.REJECTED, timestamp=_now(), reason=str(exc)))
             self.incident_reporter.report_order_rejection(str(exc))
@@ -167,6 +180,18 @@ class LiveExecutionGateway:
             context,
             expected_request=request,
         )
+
+    def _recover_ambiguous_submission(self, request: BrokerOrderRequest) -> BrokerOrderUpdate | None:
+        finder = getattr(self.executor, "find_order_by_client_id", None)
+        if not callable(finder):
+            return None
+        try:
+            recovered = finder(request.client_order_id)
+            if recovered is None:
+                return None
+            return normalize_broker_update(recovered, expected=request)
+        except (TypeError, ValueError, RuntimeError):
+            return None
 
     @staticmethod
     def _apply_broker_result(
