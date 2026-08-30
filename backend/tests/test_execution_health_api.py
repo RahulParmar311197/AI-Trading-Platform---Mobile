@@ -3,12 +3,16 @@ from fastapi.testclient import TestClient
 from app.app_factory import create_app, create_resources
 
 
-def make_client():
+HEALTH_TOKEN = "dev-execution-health-token"
+
+
+def make_client(*, token: str | None = HEALTH_TOKEN):
     resources = create_resources(
         execution_path=":memory:",
         idempotency_path=":memory:",
         safety_path=":memory:",
         audit_path=":memory:",
+        execution_health_token=token,
     )
     resources.execution_observability.increment("submissions", 3)
     resources.execution_observability.increment("submitted", 2)
@@ -21,7 +25,7 @@ def test_execution_health_endpoint_exposes_shared_metrics():
     client = make_client()
     response = client.get(
         "/execution/health",
-        headers={"X-Execution-Health-Token": "dev-execution-health-token"},
+        headers={"X-Execution-Health-Token": HEALTH_TOKEN},
     )
 
     assert response.status_code == 200
@@ -44,3 +48,11 @@ def test_execution_health_endpoint_rejects_wrong_token():
         headers={"X-Execution-Health-Token": "wrong-token"},
     )
     assert response.status_code == 401
+
+
+def test_execution_health_endpoint_fails_closed_when_token_is_unconfigured():
+    response = make_client(token=None).get(
+        "/execution/health",
+        headers={"X-Execution-Health-Token": HEALTH_TOKEN},
+    )
+    assert response.status_code == 503
