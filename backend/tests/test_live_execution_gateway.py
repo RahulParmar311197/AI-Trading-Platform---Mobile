@@ -190,3 +190,51 @@ def test_execute_request_rechecks_identity_after_authorization():
     auth = gateway.authorize_request(request, ctx)
     with pytest.raises(ExecutionSafetyError, match="account does not match"):
         gateway.execute_request(make_request(broker_account_id=2), auth, ctx)
+
+
+def test_live_execute_request_rejects_unverified_broker_response_before_lifecycle_projection():
+    update = BrokerOrderUpdate(
+        order_id="broker-1",
+        status="FILLED",
+        client_order_id="different-client",
+        symbol="NIFTY",
+        side="BUY",
+        quantity=1,
+        filled_quantity=1,
+        average_price=100,
+        broker_account_id="acct-1",
+        broker_route="paper-route",
+        broker_route_generation="route-gen-1",
+    )
+    executor = UpdateExecutor(update)
+    gateway = live_gateway(executor=executor)
+    context = make_context()
+    request = make_request(broker_account_id="acct-1")
+    authorization = gateway.authorize_request(request, context)
+    with pytest.raises(ExecutionSafetyError, match="unverified broker response"):
+        gateway.execute_request(request, authorization, context)
+    assert len(executor.orders) == 1
+
+
+def test_live_execute_request_rejects_wrong_route_response_without_fill_projection():
+    update = BrokerOrderUpdate(
+        order_id="broker-2",
+        status="FILLED",
+        client_order_id="client-1",
+        symbol="NIFTY",
+        side="BUY",
+        quantity=1,
+        filled_quantity=1,
+        average_price=100,
+        broker_account_id="acct-1",
+        broker_route="wrong-route",
+        broker_route_generation="route-gen-1",
+    )
+    executor = UpdateExecutor(update)
+    gateway = live_gateway(executor=executor)
+    context = make_context()
+    request = make_request(broker_account_id="acct-1")
+    authorization = gateway.authorize_request(request, context)
+    with pytest.raises(ExecutionSafetyError, match="unverified broker response"):
+        gateway.execute_request(request, authorization, context)
+    assert len(executor.orders) == 1
