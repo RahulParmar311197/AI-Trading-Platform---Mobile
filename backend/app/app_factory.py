@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from fastapi import FastAPI
-from app.db import init_db
+from app.db import init_db, SessionLocal
 from app.db_runtime import create_db_runtime
 from app.execution_persistence import ExecutionStateStore
 from app.execution_observability import ExecutionObservability
@@ -30,10 +30,12 @@ from app.live_execution_gateway import LiveExecutionGateway, ExecutionPolicy
 from app.reconciliation import ReconciliationEngine
 from app.reconciliation_coordinator import ReconciliationCoordinator
 from app.startup_execution_state import StartupExecutionStateMachine
+from app.submission_intent_store import SubmissionIntentStore
 from app.trading_audit import TradingAuditLog
 from app.emergency_halt import EmergencyHaltController
 from app.broker_connectivity_registry import BrokerConnectivityRegistry
 from app.broker_health_worker import BrokerHealthWorker
+from app.settings import settings
 
 
 _DEFAULT_ATTESTATION_SECRET = b"test-broker-context-attestation-secret-32+"
@@ -58,6 +60,7 @@ class AppResources:
     connectivity_registry: BrokerConnectivityRegistry
     broker_context_attestor: BrokerContextAttestor
     execution_authorization_store: ExecutionAuthorizationStore
+    submission_intent_store: SubmissionIntentStore
     authorization: ExecutionAuthorization | None = None
     session_local: object | None = None
     startup_execution_state: StartupExecutionStateMachine | None = None
@@ -92,7 +95,7 @@ class AppResources:
         local_positions_reader=None,
         incident_reporter=None,
     ) -> LiveExecutionGateway:
-        """Create the canonical live gateway with the same attestor and durable auth store."""
+        """Create the canonical live gateway with the same attestor and durable stores."""
         return LiveExecutionGateway(
             executor,
             policy=policy,
@@ -101,6 +104,7 @@ class AppResources:
             incident_reporter=incident_reporter,
             authorization_store=self.execution_authorization_store,
             context_attestor=self.broker_context_attestor,
+            submission_intent_store=self.submission_intent_store,
         )
 
 
@@ -114,12 +118,17 @@ def create_resources(
     alert_path="data/execution_alerts.sqlite3",
     alert_event_path="data/execution_alert_events.sqlite3",
     execution_authorization_path="data/execution_authorizations.sqlite3",
+    submission_intent_path="data/submission_intents.json",
     execution_health_token: str | None = None,
     broker_context_attestation_secret: bytes | str | None = None,
 ) -> AppResources:
     session_local = None
     if database_url:
         _, session_local = create_db_runtime(database_url)
+    elif not settings.database_url.lower().startswith("sqlite"):
+        # Reuse the application's server-database session factory. Migrations run at startup
+        # before trading initialization, so this path does not create schema implicitly.
+        session_local = SessionLocal
     safety_store = SafetyStateStore(safety_path)
     audit_log = TradingAuditLog(audit_path)
     startup_execution_state = StartupExecutionStateMachine(audit_log)
@@ -132,6 +141,7 @@ def create_resources(
         attestation_secret = attestation_secret.encode("utf-8")
     broker_context_attestor = BrokerContextAttestor(attestation_secret)
     execution_authorization_store = ExecutionAuthorizationStore(execution_authorization_path)
+    submission_intent_store = SubmissionIntentStore(submission_intent_path, session_factory=session_local)
     observability = ExecutionObservability()
     health = ExecutionHealth(observability)
     event_store = ExecutionAlertEventStore(alert_event_path)
@@ -163,6 +173,7 @@ def create_resources(
         connectivity_registry=BrokerConnectivityRegistry(),
         broker_context_attestor=broker_context_attestor,
         execution_authorization_store=execution_authorization_store,
+        submission_intent_store=submission_intent_store,
         authorization=authorization,
         session_local=session_local,
         startup_execution_state=startup_execution_state,
@@ -192,6 +203,7 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     )
     app.state.broker_context_attestor = resources.broker_context_attestor
     app.state.execution_authorization_store = resources.execution_authorization_store
+    app.state.submission_intent_store = resources.submission_intent_store
     app.state.broker_router = broker_router or build_broker_router(resources.safety_store, context_attestor=resources.broker_context_attestor)
     app.state.startup_execution_state = resources.startup_execution_state
     app.state.emergency_halt_controller = resources.emergency_halt_controller
