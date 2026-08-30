@@ -100,6 +100,33 @@ async def test_buy_reaches_authorized_gateway_exactly_once_after_risk_approval()
 
 
 @pytest.mark.asyncio
+async def test_opaque_account_identity_is_preserved_to_authorized_gateway():
+    submitter = FakeSubmitter()
+    context = broker_context(account_id="001")
+    result = await make_orchestrator(submitter).evaluate_and_execute(
+        object(), equity=100_000, client_order_id="ai-account-1",
+        broker_account_id="001", risk_snapshot=risk_snapshot(),
+        broker_execution_context=context,
+    )
+    assert result.order_request is not None
+    assert result.order_request.broker_account_id == "001"
+    assert submitter.authorized_requests[0][0].broker_account_id == "001"
+
+
+@pytest.mark.asyncio
+async def test_numeric_alias_account_cannot_cross_authorization_context():
+    submitter = FakeSubmitter()
+    with pytest.raises(RuntimeError, match="broker account identity"):
+        await make_orchestrator(submitter).evaluate_and_execute(
+            object(), equity=100_000, client_order_id="ai-account-alias",
+            broker_account_id="1", risk_snapshot=risk_snapshot(),
+            broker_execution_context=broker_context(account_id="001"),
+        )
+    assert submitter.authorized_requests == []
+    assert submitter.executions == []
+
+
+@pytest.mark.asyncio
 async def test_risk_rejection_never_reaches_authorized_gateway():
     submitter = FakeSubmitter()
     result = await make_orchestrator(submitter).evaluate_and_execute(
