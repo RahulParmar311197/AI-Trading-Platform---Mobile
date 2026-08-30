@@ -66,12 +66,7 @@ class RiskReservationStore:
         current_exposure: float,
         max_total_exposure: float,
     ) -> str:
-        """Atomically reserve exposure or fail closed.
-
-        ``current_exposure`` is the authoritative broker snapshot exposure;
-        active reservations represent approved orders not yet reflected there.
-        The combined amount may not exceed ``max_total_exposure``.
-        """
+        """Atomically reserve exposure or fail closed."""
         client_order_id = str(client_order_id).strip()
         if not client_order_id:
             raise ValueError("client_order_id is required")
@@ -149,12 +144,7 @@ class RiskReservationStore:
             session.close()
 
     def reconcile(self, *, reservation_id: str, broker_status: str, remaining_amount: float | None = None) -> str:
-        """Idempotently reconcile a reservation from authoritative broker state.
-
-        Terminal broker states release the reservation. A partial fill may only
-        shrink an active reservation; it can never increase the reserved amount.
-        Unknown/ambiguous states are rejected so the reservation remains active.
-        """
+        """Idempotently reconcile a reservation from authoritative broker state."""
         rid = str(reservation_id).strip()
         if not rid:
             raise ValueError("reservation_id is required")
@@ -189,6 +179,30 @@ class RiskReservationStore:
                 return self.ACTIVE
         finally:
             session.close()
+
+    def reconcile_client_order(self, *, client_order_id: str, broker_status: str, remaining_amount: float | None = None) -> str | None:
+        """Reconcile the reservation bound to a client order, if one exists.
+
+        Missing reservations are tolerated because older orders may predate the
+        durable reservation ledger. An existing reservation is reconciled
+        atomically through ``reconcile`` semantics in the same database.
+        """
+        client_id = str(client_order_id).strip()
+        if not client_id:
+            raise ValueError("client_order_id is required")
+        session = self._session_factory()
+        try:
+            record = session.query(RiskReservationRecord).filter_by(client_order_id=client_id).one_or_none()
+            if record is None:
+                return None
+            reservation_id = record.reservation_id
+        finally:
+            session.close()
+        return self.reconcile(
+            reservation_id=reservation_id,
+            broker_status=broker_status,
+            remaining_amount=remaining_amount,
+        )
 
     def active_amount(self, *, broker_account_id: str, broker_route: str) -> float:
         account = str(broker_account_id).strip()
