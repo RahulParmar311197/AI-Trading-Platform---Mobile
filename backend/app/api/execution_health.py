@@ -13,7 +13,9 @@ router = APIRouter(prefix="/execution", tags=["execution"])
 @router.get("/health")
 def execution_health(request: Request, x_execution_health_token: str | None = Header(default=None)) -> dict:
     expected = getattr(request.app.state, "execution_health_token", None)
-    if not expected or not x_execution_health_token:
+    if not expected:
+        raise HTTPException(status_code=503, detail="execution health authentication is not configured")
+    if not x_execution_health_token:
         raise HTTPException(status_code=401, detail="execution health authentication required")
     if not hmac.compare_digest(x_execution_health_token.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="execution health authentication required")
