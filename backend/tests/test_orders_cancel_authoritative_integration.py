@@ -1,6 +1,6 @@
 import pytest
 
-from app.api.orders import _authoritative_cancel_result
+from app.api.orders import _authoritative_cancel_result, _reconcile_risk_reservation
 from app.broker_adapter import BrokerOrderStatus
 
 
@@ -37,6 +37,20 @@ class Router:
         }
 
 
+class ReservationStore:
+    def __init__(self):
+        self.calls = []
+
+    def reconcile_client_order(self, **kwargs):
+        self.calls.append(kwargs)
+        return "RELEASED"
+
+
+class Resources:
+    def __init__(self, store):
+        self.risk_reservation_store = store
+
+
 def test_orders_cancel_uses_authoritative_post_cancel_read():
     router = Router(BrokerOrderStatus.FILLED.value)
 
@@ -47,6 +61,20 @@ def test_orders_cancel_uses_authoritative_post_cancel_read():
     assert result.update.average_price == 101.5
     assert router.cancel_calls == [("broker-1", "upstox:account:001", "001")]
     assert router.get_calls == [("broker-1", "upstox:account:001")]
+
+
+def test_orders_cancel_releases_reservation_from_authoritative_terminal_state():
+    store = ReservationStore()
+    resources = Resources(store)
+    result = _authoritative_cancel_result(Router(BrokerOrderStatus.FILLED.value), Order())
+
+    _reconcile_risk_reservation(resources, "client-1", result.update.status, remaining_amount=0.0)
+
+    assert store.calls == [{
+        "client_order_id": "client-1",
+        "broker_status": "FILLED",
+        "remaining_amount": 0.0,
+    }]
 
 
 def test_orders_cancel_fails_closed_when_authoritative_read_fails():
@@ -61,3 +89,13 @@ def test_orders_cancel_fails_closed_when_authoritative_read_fails():
 def test_orders_cancel_never_accepts_non_terminal_post_cancel_state():
     with pytest.raises(RuntimeError, match="not terminal"):
         _authoritative_cancel_result(Router("OPEN"), Order())
+
+
+def test_reservation_reconciliation_failure_is_fail_closed():
+    class FailingStore:
+        def reconcile_client_order(self, **kwargs):
+            raise RuntimeError("database unavailable")
+
+    with pytest.raises(Exception) as exc_info:
+        _reconcile_risk_reservation(Resources(FailingStore()), "client-1", "CANCELLED", remaining_amount=0.0)
+    assert getattr(exc_info.value, "status_code", None) == 503
