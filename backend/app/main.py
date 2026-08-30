@@ -26,7 +26,7 @@ from app.recovery_manager import StartupRecoveryManager
 from app.risk_circuit_observability import ObservableRiskCircuitBreaker
 from app.risk_circuit_api import create_risk_circuit_router
 from app.startup_execution_state import StartupExecutionState
-from app.startup_migrations import run_startup_migrations
+from app.startup_migrations import migrate_legacy_submission_intents, run_startup_migrations
 from app.startup_order_recovery import StartupOrderRecovery
 from app.startup_reconciliation_gate import StartupReconciliationGate
 from app.system_health import TradingSystemHealth
@@ -94,6 +94,31 @@ async def lifespan(app: FastAPI):
         return
     trading_health.record("database_migrations", True, "database is at Alembic head")
     init_db()
+
+    if resources.submission_intent_store.database_backed:
+        try:
+            migrated_count = migrate_legacy_submission_intents(
+                resources.session_local,
+                path=str(resources.submission_intent_store.path),
+            )
+        except Exception as exc:
+            reason = f"legacy submission intent migration failed: {exc}"
+            trading_health.record("submission_intent_migration", False, reason)
+            startup_state.fail(reason)
+            yield
+            return
+        trading_health.record(
+            "submission_intent_migration",
+            True,
+            f"legacy submission intents migrated: {migrated_count}",
+        )
+    else:
+        trading_health.record(
+            "submission_intent_migration",
+            True,
+            "database-backed migration not required for local SQLite fallback",
+        )
+
     lifecycle = OrderLifecycle(resources.audit_log)
     app.state.order_lifecycle = lifecycle
 
