@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from datetime import datetime, timezone
-from decimal import Decimal
-import hashlib
+from decimal import Decimal, InvalidOperation
+import math
 import uuid
-from typing import Callable, Iterator
+from typing import Callable
 
 from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
@@ -37,10 +36,23 @@ class RiskReservationStore:
         return f"{account}\x1f{broker_route}"
 
     @staticmethod
+    def _decimal(value: float, name: str) -> Decimal:
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, ValueError, TypeError) as exc:
+            raise ValueError(f"{name} must be finite and numeric") from exc
+        if not parsed.is_finite():
+            raise ValueError(f"{name} must be finite and numeric")
+        return parsed
+
+    @staticmethod
     def _lock_scope(session: object, scope: str) -> None:
         bind = session.get_bind()
         if bind.dialect.name == "postgresql":
-            session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"), {"scope": scope})
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
+                {"scope": scope},
+            )
 
     def reserve(
         self,
@@ -62,15 +74,19 @@ class RiskReservationStore:
         client_order_id = str(client_order_id).strip()
         if not client_order_id:
             raise ValueError("client_order_id is required")
-        amount_d = Decimal(str(amount))
-        current_d = Decimal(str(current_exposure))
-        limit_d = Decimal(str(max_total_exposure))
+        amount_d = self._decimal(amount, "amount")
+        current_d = self._decimal(current_exposure, "current_exposure")
+        limit_d = self._decimal(max_total_exposure, "max_total_exposure")
         if amount_d <= 0 or current_d < 0 or limit_d < 0:
             raise ValueError("risk reservation values must be non-negative and amount must be positive")
         if current_d + amount_d > limit_d:
             raise RuntimeError("risk reservation exceeds exposure limit")
         scope = self._scope(broker_account_id, broker_route)
-        rid = str(reservation_id or uuid.uuid4())
+        account = str(broker_account_id).strip()
+        route = str(broker_route).strip()
+        rid = str(reservation_id or uuid.uuid4()).strip()
+        if not rid:
+            raise ValueError("reservation_id is required")
         session = self._session_factory()
         try:
             with session.begin():
@@ -79,32 +95,34 @@ class RiskReservationStore:
                 if existing is not None and existing.status == self.ACTIVE:
                     raise RuntimeError("active risk reservation already exists for client order")
                 reserved = session.query(func.coalesce(func.sum(RiskReservationRecord.amount), 0)).filter(
-                    RiskReservationRecord.broker_account_id == str(broker_account_id).strip(),
-                    RiskReservationRecord.broker_route == str(broker_route).strip(),
+                    RiskReservationRecord.broker_account_id == account,
+                    RiskReservationRecord.broker_route == route,
                     RiskReservationRecord.status == self.ACTIVE,
                 ).scalar()
-                reserved_d = Decimal(str(reserved or 0))
+                reserved_d = self._decimal(reserved or 0, "active reservations")
                 if current_d + reserved_d + amount_d > limit_d:
                     raise RuntimeError("risk reservation exceeds concurrent exposure limit")
                 now = datetime.now(timezone.utc)
                 if existing is not None:
                     existing.reservation_id = rid
-                    existing.broker_account_id = str(broker_account_id).strip()
-                    existing.broker_route = str(broker_route).strip()
+                    existing.broker_account_id = account
+                    existing.broker_route = route
                     existing.amount = amount_d
                     existing.status = self.ACTIVE
                     existing.created_at = now
                     existing.released_at = None
                 else:
-                    session.add(RiskReservationRecord(
-                        reservation_id=rid,
-                        client_order_id=client_order_id,
-                        broker_account_id=str(broker_account_id).strip(),
-                        broker_route=str(broker_route).strip(),
-                        amount=amount_d,
-                        status=self.ACTIVE,
-                        created_at=now,
-                    ))
+                    session.add(
+                        RiskReservationRecord(
+                            reservation_id=rid,
+                            client_order_id=client_order_id,
+                            broker_account_id=account,
+                            broker_route=route,
+                            amount=amount_d,
+                            status=self.ACTIVE,
+                            created_at=now,
+                        )
+                    )
                 session.flush()
                 return rid
         except IntegrityError as exc:
@@ -113,10 +131,13 @@ class RiskReservationStore:
             session.close()
 
     def release(self, reservation_id: str) -> None:
+        reservation_id = str(reservation_id).strip()
+        if not reservation_id:
+            raise ValueError("reservation_id is required")
         session = self._session_factory()
         try:
             with session.begin():
-                record = session.get(RiskReservationRecord, str(reservation_id).strip())
+                record = session.get(RiskReservationRecord, reservation_id)
                 if record is None:
                     raise KeyError(reservation_id)
                 if record.status == self.ACTIVE:
@@ -126,11 +147,14 @@ class RiskReservationStore:
             session.close()
 
     def active_amount(self, *, broker_account_id: str, broker_route: str) -> float:
+        account = str(broker_account_id).strip()
+        route = str(broker_route).strip()
+        self._scope(account, route)
         session = self._session_factory()
         try:
             value = session.query(func.coalesce(func.sum(RiskReservationRecord.amount), 0)).filter(
-                RiskReservationRecord.broker_account_id == str(broker_account_id).strip(),
-                RiskReservationRecord.broker_route == str(broker_route).strip(),
+                RiskReservationRecord.broker_account_id == account,
+                RiskReservationRecord.broker_route == route,
                 RiskReservationRecord.status == self.ACTIVE,
             ).scalar()
             return float(value or 0)
