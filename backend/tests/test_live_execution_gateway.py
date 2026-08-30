@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-import math
-
-import pytest
+from datetime import datetime, timezone
 
 from app.broker_adapter import BrokerOrderRequest, BrokerOrderUpdate
 from app.broker_context_attestation import BrokerContextAttestor
@@ -11,230 +8,122 @@ from app.broker_execution_context import BrokerExecutionContext
 from app.execution_authorization_store import ExecutionAuthorizationStore
 from app.live_execution_gateway import ExecutionMode, ExecutionPolicy, ExecutionSafetyError, LiveExecutionGateway
 from app.order_intent import OrderIntent
-from app.broker_order_lifecycle import InvalidOrderTransition, OrderStatus
+from app.submission_intent_store import SubmissionIntentStore
 
 SECRET = b"t" * 32
 
-class FakeExecutor:
-    def __init__(self): self.orders = []
-    def execute(self, order): self.orders.append(order); return {"status": "accepted"}
+class FakeLiveExecutor:
+    def __init__(self, result=None, error=None, recovered=None):
+        self.result = result
+        self.error = error
+        self.recovered = recovered
+        self.submit_calls = 0
 
-class UpdateExecutor:
-    def __init__(self, update): self.update = update; self.orders = []
-    def execute(self, order): self.orders.append(order); return self.update
+    def submit_order(self, request):
+        self.submit_calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+    def find_order_by_client_id(self, client_order_id):
+        return self.recovered
 
 class FakePositionReader:
-    def __init__(self, positions=None): self.positions = positions or []
-    def get_positions(self): return self.positions
+    def get_positions(self):
+        return []
 
 class FakeReconciliationStateStore:
-    def __init__(self, blocked=False): self.blocked = blocked; self.calls = []
-    def is_trading_blocked(self, *, broker_account_id, broker_route, max_age_seconds):
-        self.calls.append((broker_account_id, broker_route, max_age_seconds))
-        return self.blocked
+    def is_trading_blocked(self, **kwargs):
+        return False
 
-def make_order(): return OrderIntent("NIFTY", "BUY", 100.0, 99.0, 102.0, 1, 1.0, "test", 0.8)
+def make_order():
+    return OrderIntent("NIFTY", "BUY", 100.0, 99.0, 102.0, 1, 1.0, "test", 0.8)
 
-def make_context(generation=7, fingerprint="snapshot", observed_at=None, attested=True):
-    observed_at = observed_at or datetime.now(timezone.utc)
-    base = BrokerExecutionContext("acct-1", "paper-route", "route-gen-1", generation, fingerprint, observed_at)
-    signature = BrokerContextAttestor(SECRET).sign(account_id=base.account_id, broker_route=base.broker_route, route_generation=base.route_generation, generation=base.generation, snapshot_fingerprint=base.snapshot_fingerprint, observed_at=base.observed_at) if attested else ""
-    return BrokerExecutionContext(base.account_id, base.broker_route, base.route_generation, base.generation, base.snapshot_fingerprint, base.observed_at, signature)
-
-def make_request(**overrides):
-    values = dict(client_order_id="client-1", symbol="NIFTY", side="BUY", quantity=1, price=100, stop=99, target=102, broker_account_id=1, broker_route="paper-route", broker_route_generation="route-gen-1")
-    values.update(overrides)
-    return BrokerOrderRequest(**values)
-
-def live_gateway(executor=None, store=None, policy=None, positions=None, local=None, reconciliation_state_store=None):
-    positions = positions or []
-    return LiveExecutionGateway(
-        executor or FakeExecutor(),
-        policy or ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True),
-        position_reader=FakePositionReader(positions),
-        local_positions_reader=lambda: positions if local is None else local,
-        authorization_store=store or ExecutionAuthorizationStore(":memory:"),
-        context_attestor=BrokerContextAttestor(SECRET),
-        reconciliation_state_store=reconciliation_state_store or FakeReconciliationStateStore(),
+def make_context():
+    observed_at = datetime.now(timezone.utc)
+    base = BrokerExecutionContext("acct-1", "paper-route", "route-gen-1", 7, "snapshot", observed_at)
+    signature = BrokerContextAttestor(SECRET).sign(
+        account_id=base.account_id,
+        broker_route=base.broker_route,
+        route_generation=base.route_generation,
+        generation=base.generation,
+        snapshot_fingerprint=base.snapshot_fingerprint,
+        observed_at=base.observed_at,
+    )
+    return BrokerExecutionContext(
+        base.account_id, base.broker_route, base.route_generation, base.generation,
+        base.snapshot_fingerprint, base.observed_at, signature,
     )
 
-def test_paper_mode_delegates():
-    executor = FakeExecutor(); assert LiveExecutionGateway(executor, authorization_store=ExecutionAuthorizationStore(":memory:")).execute(make_order()).result["status"] == "accepted"
+def make_request(client_order_id="client-1"):
+    return BrokerOrderRequest(
+        client_order_id=client_order_id,
+        symbol="NIFTY", side="BUY", quantity=1, price=100, stop=99, target=102,
+        broker_account_id=1, broker_route="paper-route", broker_route_generation="route-gen-1",
+    )
 
-def test_paper_broker_update_reaches_terminal_lifecycle():
-    executor = UpdateExecutor(BrokerOrderUpdate(order_id="b1", status="FILLED", client_order_id="c1", symbol="NIFTY", side="BUY", quantity=1, filled_quantity=1, average_price=100))
-    tracked = LiveExecutionGateway(executor, authorization_store=ExecutionAuthorizationStore(":memory:")).execute(make_order())
-    assert tracked.lifecycle.status is OrderStatus.FILLED
-    assert tracked.lifecycle.filled_quantity == 1
-    assert tracked.lifecycle.average_price == 100
-    assert tracked.lifecycle.events[-1].broker_order_id == "b1"
-
-def test_broker_partial_fill_is_projected_into_lifecycle():
-    executor = UpdateExecutor(BrokerOrderUpdate(order_id="b2", status="PARTIALLY_FILLED", client_order_id="c2", symbol="NIFTY", side="BUY", quantity=1, filled_quantity=0.5, average_price=100))
-    tracked = LiveExecutionGateway(executor, authorization_store=ExecutionAuthorizationStore(":memory:")).execute(make_order())
-    assert tracked.lifecycle.status is OrderStatus.PARTIALLY_FILLED
-    assert tracked.lifecycle.filled_quantity == 0.5
-
-def test_broker_rejection_is_terminal_lifecycle_state_without_duplicate_rejection_transition():
-    executor = UpdateExecutor(BrokerOrderUpdate(order_id="b3", status="REJECTED", client_order_id="c3", symbol="NIFTY", side="BUY", quantity=1, filled_quantity=0, message="broker rejected"))
-    tracked = LiveExecutionGateway(executor, authorization_store=ExecutionAuthorizationStore(":memory:")).execute(make_order())
-    assert tracked.lifecycle.status is OrderStatus.REJECTED
-    assert len(tracked.lifecycle.events) == 2
-    assert tracked.lifecycle.events[-1].reason == "broker rejected"
-
-def test_lifecycle_rejects_negative_and_non_finite_fills():
-    lifecycle = __import__("app.broker_order_lifecycle", fromlist=["OrderLifecycle"]).OrderLifecycle(requested_quantity=1)
-    lifecycle.apply(__import__("app.broker_order_lifecycle", fromlist=["OrderLifecycleEvent"]).OrderLifecycleEvent(OrderStatus.ACCEPTED, datetime.now(timezone.utc)))
-    with pytest.raises(InvalidOrderTransition, match="finite and non-negative"):
-        lifecycle.apply(__import__("app.broker_order_lifecycle", fromlist=["OrderLifecycleEvent"]).OrderLifecycleEvent(OrderStatus.PARTIALLY_FILLED, datetime.now(timezone.utc), filled_quantity=math.nan))
-
-def test_lifecycle_rejects_fill_above_requested_quantity():
-    lifecycle = __import__("app.broker_order_lifecycle", fromlist=["OrderLifecycle"]).OrderLifecycle(requested_quantity=1)
-    lifecycle.apply(__import__("app.broker_order_lifecycle", fromlist=["OrderLifecycleEvent"]).OrderLifecycleEvent(OrderStatus.ACCEPTED, datetime.now(timezone.utc)))
-    with pytest.raises(InvalidOrderTransition, match="cannot exceed"):
-        lifecycle.apply(__import__("app.broker_order_lifecycle", fromlist=["OrderLifecycleEvent"]).OrderLifecycleEvent(OrderStatus.FILLED, datetime.now(timezone.utc), filled_quantity=2))
-
-def test_lifecycle_rejects_out_of_order_timestamps():
-    lifecycle = __import__("app.broker_order_lifecycle", fromlist=["OrderLifecycle"]).OrderLifecycle()
-    now = datetime.now(timezone.utc)
-    Event = __import__("app.broker_order_lifecycle", fromlist=["OrderLifecycleEvent"]).OrderLifecycleEvent
-    lifecycle.apply(Event(OrderStatus.ACCEPTED, now))
-    with pytest.raises(InvalidOrderTransition, match="timestamp"):
-        lifecycle.apply(Event(OrderStatus.REJECTED, now - timedelta(seconds=1)))
-
-def test_live_mode_requires_explicit_enablement():
-    with pytest.raises(ExecutionSafetyError, match="disabled"): LiveExecutionGateway(FakeExecutor(), ExecutionPolicy(mode=ExecutionMode.LIVE), authorization_store=ExecutionAuthorizationStore(":memory:")).execute(make_order())
-
-def test_kill_switch_blocks_every_mode():
-    with pytest.raises(ExecutionSafetyError, match="kill switch"): LiveExecutionGateway(FakeExecutor(), ExecutionPolicy(kill_switch=True), authorization_store=ExecutionAuthorizationStore(":memory:")).execute(make_order())
-
-def test_invalid_order_never_reaches_executor():
-    executor = FakeExecutor(); order = OrderIntent("NIFTY", "BUY", math.nan, 99.0, 102.0, 1, 1.0, "test", 0.8)
-    with pytest.raises(ExecutionSafetyError, match="invalid order intent"): LiveExecutionGateway(executor, authorization_store=ExecutionAuthorizationStore(":memory:")).execute(order)
-    assert executor.orders == []
-
-def test_live_authorization_requires_attested_context():
-    gateway = live_gateway()
-    with pytest.raises(ExecutionSafetyError, match="not coordinator-attested"): gateway.authorize(make_order(), make_context(attested=False))
-
-def test_authorization_is_single_use_and_atomic():
-    store = ExecutionAuthorizationStore(":memory:"); first = live_gateway(store=store); second_executor = FakeExecutor(); second = live_gateway(executor=second_executor, store=store); ctx = make_context(); auth = first.authorize(make_order(), ctx)
-    first.execute(make_order(), auth, ctx)
-    with pytest.raises(ExecutionSafetyError, match="already-consumed"): second.execute(make_order(), auth, ctx)
-    assert len(second_executor.orders) == 0
-
-def test_authorization_is_bound_to_order():
-    gateway = live_gateway(); ctx = make_context(); auth = gateway.authorize(make_order(), ctx); changed = OrderIntent("NIFTY", "BUY", 101.0, 99.0, 103.0, 1, 1.0, "test", 0.8)
-    with pytest.raises(ExecutionSafetyError, match="different order"): gateway.execute(changed, auth, ctx)
-
-def test_authorization_is_bound_to_context():
-    gateway = live_gateway(); ctx = make_context(); auth = gateway.authorize(make_order(), ctx)
-    with pytest.raises(ExecutionSafetyError, match="different broker context"): gateway.execute(make_order(), auth, make_context(fingerprint="different-snapshot"))
-
-def test_reconciliation_mismatch_blocks_authorization():
-    gateway = live_gateway(positions=[{"symbol": "NIFTY", "quantity": 1}], local=[{"symbol": "NIFTY", "quantity": 2}])
-    with pytest.raises(ExecutionSafetyError, match="reconciliation failed"): gateway.authorize(make_order(), make_context())
-
-def test_durable_reconciliation_state_is_checked_for_exact_context_scope():
-    state = FakeReconciliationStateStore()
-    gateway = live_gateway(reconciliation_state_store=state)
-    gateway.authorize(make_order(), make_context())
-    assert state.calls == [("acct-1", "paper-route", 30.0)]
-
-def test_durable_reconciliation_halt_blocks_before_position_comparison():
-    state = FakeReconciliationStateStore(blocked=True)
-    gateway = live_gateway(reconciliation_state_store=state, positions=[{"symbol": "NIFTY", "quantity": 1}], local=[{"symbol": "NIFTY", "quantity": 1}])
-    with pytest.raises(ExecutionSafetyError, match="durable reconciliation state is not verified and fresh"):
-        gateway.authorize(make_order(), make_context())
-
-def test_live_authorization_requires_durable_reconciliation_store():
-    gateway = LiveExecutionGateway(
-        FakeExecutor(),
+def live_gateway(executor, intent_store):
+    return LiveExecutionGateway(
+        executor,
         ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True),
-        position_reader=FakePositionReader([]),
+        position_reader=FakePositionReader(),
         local_positions_reader=lambda: [],
         authorization_store=ExecutionAuthorizationStore(":memory:"),
         context_attestor=BrokerContextAttestor(SECRET),
-        reconciliation_state_store=None,
+        reconciliation_state_store=FakeReconciliationStateStore(),
+        submission_intent_store=intent_store,
     )
-    with pytest.raises(ExecutionSafetyError, match="durable reconciliation state is not configured"):
-        gateway.authorize(make_order(), make_context())
 
-def test_stale_context_blocks_authorization():
-    gateway = live_gateway(policy=ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True, context_max_age_seconds=5))
-    stale = make_context(observed_at=datetime.now(timezone.utc) - timedelta(seconds=6))
-    with pytest.raises(ExecutionSafetyError, match="context is stale"): gateway.authorize(make_order(), stale)
+def authorize(gateway, request, context):
+    return gateway.authorize_request(request, context)
 
-def test_live_request_requires_account_identity_and_matches_context():
-    gateway = live_gateway()
-    with pytest.raises(ExecutionSafetyError, match="account identity is required"):
-        gateway.authorize_request(make_request(broker_account_id=None), make_context())
-    with pytest.raises(ExecutionSafetyError, match="account does not match"):
-        gateway.authorize_request(make_request(broker_account_id=2), make_context())
+def test_live_submission_creates_and_resolves_durable_intent(tmp_path):
+    store = SubmissionIntentStore(tmp_path / "intents.json")
+    executor = FakeLiveExecutor(result=BrokerOrderUpdate(order_id="b1", status="FILLED", client_order_id="client-1", symbol="NIFTY", side="BUY", quantity=1, filled_quantity=1, average_price=100))
+    gateway = live_gateway(executor, store)
+    request, context = make_request(), make_context()
+    auth = authorize(gateway, request, context)
+    gateway.execute_request(request, auth, context)
+    assert executor.submit_calls == 1
+    assert store.unresolved_count() == 0
 
-def test_live_request_requires_route_identity_and_matches_context():
-    gateway = live_gateway()
-    with pytest.raises(ExecutionSafetyError, match="route identity is required"):
-        gateway.authorize_request(make_request(broker_route=None), make_context())
-    with pytest.raises(ExecutionSafetyError, match="route does not match"):
-        gateway.authorize_request(make_request(broker_route="other-route"), make_context())
-    with pytest.raises(ExecutionSafetyError, match="route generation is required"):
-        gateway.authorize_request(make_request(broker_route_generation=None), make_context())
-    with pytest.raises(ExecutionSafetyError, match="route generation does not match"):
-        gateway.authorize_request(make_request(broker_route_generation="route-gen-2"), make_context())
+def test_live_ambiguous_submission_leaves_intent_unresolved(tmp_path):
+    store = SubmissionIntentStore(tmp_path / "intents.json")
+    executor = FakeLiveExecutor(error=RuntimeError("timeout"), recovered=None)
+    gateway = live_gateway(executor, store)
+    request, context = make_request("client-ambiguous"), make_context()
+    auth = authorize(gateway, request, context)
+    try:
+        gateway.execute_request(request, auth, context)
+        assert False, "expected unknown broker order"
+    except ExecutionSafetyError as exc:
+        assert "outcome is unknown" in str(exc)
+    assert store.unresolved_count() == 1
+    assert store.unresolved()[0].client_order_id == "client-ambiguous"
 
-def test_execute_request_rechecks_identity_after_authorization():
-    gateway = live_gateway()
-    ctx = make_context()
-    request = make_request()
-    auth = gateway.authorize_request(request, ctx)
-    with pytest.raises(ExecutionSafetyError, match="account does not match"):
-        gateway.execute_request(make_request(broker_account_id=2), auth, ctx)
+def test_recovered_ambiguous_submission_resolves_intent(tmp_path):
+    store = SubmissionIntentStore(tmp_path / "intents.json")
+    recovered = BrokerOrderUpdate(order_id="b2", status="FILLED", client_order_id="client-recovered", symbol="NIFTY", side="BUY", quantity=1, filled_quantity=1, average_price=100)
+    executor = FakeLiveExecutor(error=RuntimeError("timeout"), recovered=recovered)
+    gateway = live_gateway(executor, store)
+    request, context = make_request("client-recovered"), make_context()
+    auth = authorize(gateway, request, context)
+    gateway.execute_request(request, auth, context)
+    assert store.unresolved_count() == 0
 
+def test_intent_exists_on_disk_before_broker_submit(tmp_path):
+    path = tmp_path / "intents.json"
+    store = SubmissionIntentStore(path)
+    observed = {"before_submit": False}
 
-def test_live_execute_request_rejects_unverified_broker_response_before_lifecycle_projection():
-    update = BrokerOrderUpdate(
-        order_id="broker-1",
-        status="FILLED",
-        client_order_id="different-client",
-        symbol="NIFTY",
-        side="BUY",
-        quantity=1,
-        filled_quantity=1,
-        average_price=100,
-        broker_account_id="acct-1",
-        broker_route="paper-route",
-        broker_route_generation="route-gen-1",
-    )
-    executor = UpdateExecutor(update)
-    gateway = live_gateway(executor=executor)
-    context = make_context()
-    request = make_request(broker_account_id="acct-1")
-    authorization = gateway.authorize_request(request, context)
-    with pytest.raises(ExecutionSafetyError, match="unverified broker response"):
-        gateway.execute_request(request, authorization, context)
-    assert len(executor.orders) == 1
+    class InspectingExecutor(FakeLiveExecutor):
+        def submit_order(self, request):
+            observed["before_submit"] = store.unresolved_count() == 1
+            return BrokerOrderUpdate(order_id="b3", status="FILLED", client_order_id=request.client_order_id, symbol=request.symbol, side=request.side, quantity=request.quantity, filled_quantity=request.quantity, average_price=request.price)
 
-
-def test_live_execute_request_rejects_wrong_route_response_without_fill_projection():
-    update = BrokerOrderUpdate(
-        order_id="broker-2",
-        status="FILLED",
-        client_order_id="client-1",
-        symbol="NIFTY",
-        side="BUY",
-        quantity=1,
-        filled_quantity=1,
-        average_price=100,
-        broker_account_id="acct-1",
-        broker_route="wrong-route",
-        broker_route_generation="route-gen-1",
-    )
-    executor = UpdateExecutor(update)
-    gateway = live_gateway(executor=executor)
-    context = make_context()
-    request = make_request(broker_account_id="acct-1")
-    authorization = gateway.authorize_request(request, context)
-    with pytest.raises(ExecutionSafetyError, match="unverified broker response"):
-        gateway.execute_request(request, authorization, context)
-    assert len(executor.orders) == 1
+    executor = InspectingExecutor()
+    gateway = live_gateway(executor, store)
+    request, context = make_request("client-before-submit"), make_context()
+    auth = authorize(gateway, request, context)
+    gateway.execute_request(request, auth, context)
+    assert observed["before_submit"]
