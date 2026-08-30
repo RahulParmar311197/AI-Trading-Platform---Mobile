@@ -1,3 +1,4 @@
+from multiprocessing import Barrier, Process, Queue
 from pathlib import Path
 
 import pytest
@@ -58,3 +59,33 @@ def test_corrupt_primary_recovers_from_backup(tmp_path: Path):
     restored = SubmissionIntentStore(str(path))
     unresolved = restored.unresolved()
     assert [item.client_order_id for item in unresolved] == ["cli-1"]
+
+
+def _concurrent_create(path: str, barrier: Barrier, results: Queue) -> None:
+    store = SubmissionIntentStore(path)
+    barrier.wait()
+    try:
+        _create(store)
+    except Exception as exc:
+        results.put(type(exc).__name__)
+    else:
+        results.put("created")
+
+
+def test_duplicate_unresolved_intent_is_rejected_across_processes(tmp_path: Path):
+    path = tmp_path / "intents.json"
+    barrier = Barrier(2)
+    results = Queue()
+    workers = [
+        Process(target=_concurrent_create, args=(str(path), barrier, results))
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=10)
+        assert worker.exitcode == 0
+
+    outcomes = sorted(results.get(timeout=2) for _ in workers)
+    assert outcomes == ["RuntimeError", "created"]
+    assert SubmissionIntentStore(str(path)).unresolved_count() == 1
