@@ -84,7 +84,6 @@ async def lifespan(app: FastAPI):
     app.state.trading_health = trading_health
     app.state.trading_metrics = trading_metrics
     app.state.risk_circuit_breaker = risk_circuit_breaker
-
     try:
         run_startup_migrations()
     except Exception as exc:
@@ -94,7 +93,6 @@ async def lifespan(app: FastAPI):
         yield
         return
     trading_health.record("database_migrations", True, "database is at Alembic head")
-
     init_db()
     lifecycle = OrderLifecycle(resources.audit_log)
     app.state.order_lifecycle = lifecycle
@@ -131,64 +129,84 @@ async def lifespan(app: FastAPI):
         startup_state.transition(
             StartupExecutionState.RECOVERING, "application startup recovery"
         )
-        recovery = broker_recovery.recover(route=recovery_route)
-        if not recovery.success:
-            startup_state.fail(recovery.reason)
-            trading_health.record("broker_recovery", False, recovery.reason)
+        result = broker_recovery.run(lifecycle, route=recovery_route)
+        app.state.recovery_result = result
+        trading_health.record("broker_recovery", result.ready, "ready" if result.ready else "failed")
+        if not result.ready:
+            startup_state.fail("broker startup recovery failed")
         else:
-            trading_health.record("broker_recovery", True, recovery.reason)
-            if recovery_route:
-                startup_order_recovery = StartupOrderRecovery(
-                    execution_broker_router,
-                    resources.execution_store,
-                    resources.idempotency_store,
+            order_recovery = StartupOrderRecovery(
+                OrderReconciliationService(execution_broker_router)
+            ).run(lifecycle)
+            app.state.order_recovery_result = order_recovery
+            trading_health.record(
+                "pending_order_recovery",
+                order_recovery.ready,
+                "ready" if order_recovery.ready else order_recovery.reason,
+            )
+            if not order_recovery.ready:
+                startup_state.fail("pending order reconciliation unresolved")
+            else:
+                startup_state.transition(
+                    StartupExecutionState.BROKER_RECONCILED, "broker orders reconciled"
                 )
-                order_recovery = startup_order_recovery.recover(route=recovery_route)
-                if not order_recovery.success:
-                    startup_state.fail(order_recovery.reason)
-                    trading_health.record("startup_order_recovery", False, order_recovery.reason)
-                else:
-                    trading_health.record("startup_order_recovery", True, order_recovery.reason)
-                reconciliation = OrderReconciliationService(
-                    execution_broker_router,
-                    resources.execution_store,
-                    resources.idempotency_store,
-                ).reconcile(route=recovery_route)
-                if not reconciliation.success:
-                    startup_state.fail(reconciliation.reason)
-                    trading_health.record("order_reconciliation", False, reconciliation.reason)
-                else:
-                    trading_health.record("order_reconciliation", True, reconciliation.reason)
-                api_projection = reconcile_api_order_projection(
-                    execution_broker_router,
-                    resources.execution_store,
-                    route=recovery_route,
-                )
-                if not api_projection.success:
-                    startup_state.fail(api_projection.reason)
-                    trading_health.record("api_order_projection", False, api_projection.reason)
-                else:
-                    trading_health.record("api_order_projection", True, api_projection.reason)
                 with SessionLocal() as db:
-                    portfolio_reconciliation = PortfolioReconciliationService().reconcile(
-                        db,
-                        execution_broker_router,
-                        route=recovery_route,
-                    )
-                if not portfolio_reconciliation.success:
-                    startup_state.fail(portfolio_reconciliation.reason)
-                    trading_health.record("portfolio_reconciliation", False, portfolio_reconciliation.reason)
+                    api_order_reconciliation = reconcile_api_order_projection(db, lifecycle)
+                app.state.api_order_reconciliation = api_order_reconciliation
+                reconciliation_ready = not api_order_reconciliation
+                trading_health.record(
+                    "api_order_reconciliation",
+                    reconciliation_ready,
+                    "reconciled" if reconciliation_ready else "unresolved",
+                )
+                if api_order_reconciliation:
+                    trading_metrics.increment("reconciliation_failures")
+                    startup_state.fail("API order projection reconciliation unresolved")
                 else:
-                    trading_health.record("portfolio_reconciliation", True, portfolio_reconciliation.reason)
+                    local_positions = _persisted_local_positions(lifecycle)
+                    try:
+                        broker_positions = execution_broker_router.get_positions(recovery_route)
+                        broker_error = None
+                    except Exception as exc:
+                        broker_positions = None
+                        broker_error = str(exc)
+                    positions_available = broker_positions is not None
+                    trading_health.record(
+                        "broker_position_snapshot",
+                        positions_available,
+                        "available" if positions_available else broker_error or "unavailable",
+                    )
+                    if broker_positions is None:
+                        startup_state.fail(
+                            f"broker position snapshot unavailable: {broker_error or 'unknown error'}"
+                        )
+                        app.state.startup_gate_result = None
+                    else:
+                        gate_result = startup_gate.evaluate(local_positions, broker_positions)
+                        app.state.startup_gate_result = gate_result
+                        trading_health.record(
+                            "portfolio_reconciliation",
+                            gate_result.ready,
+                            "reconciled" if gate_result.ready else "failed",
+                        )
+                        if not gate_result.ready:
+                            startup_state.fail("portfolio reconciliation failed")
+                        else:
+                            startup_state.transition(
+                                StartupExecutionState.PORTFOLIO_RECONCILED,
+                                "portfolio reconciled",
+                            )
+                            startup_state.transition(
+                                StartupExecutionState.RISK_READY,
+                                "risk readiness checks passed",
+                            )
+                            trading_health.record("risk_readiness", True, "ready")
+                            startup_state.transition(StartupExecutionState.READY)
 
-    if startup_state.state == StartupExecutionState.FAILED:
-        yield
-        return
-    startup_state.transition(StartupExecutionState.READY, "startup recovery and reconciliation complete")
     yield
 
 
-app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=lifespan)
+app = FastAPI(title="AI Trading Platform", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -196,12 +214,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.include_router(auth_router)
-app.include_router(broker_accounts_router)
-app.include_router(upstox_oauth_router)
-app.include_router(emergency_halt_router)
-app.include_router(orders_router)
-app.include_router(health_router)
-app.include_router(execution_health_router)
-app.include_router(create_operational_router(trading_health))
-app.include_router(create_risk_circuit_router(risk_circuit_breaker))
+for router in [
+    auth_router,
+    broker_accounts_router,
+    upstox_oauth_router,
+    emergency_halt_router,
+    health_router,
+    execution_health_router,
+    orders_router,
+    create_operational_router(trading_health, trading_metrics),
+    create_risk_circuit_router(risk_circuit_breaker),
+]:
+    app.include_router(router)
