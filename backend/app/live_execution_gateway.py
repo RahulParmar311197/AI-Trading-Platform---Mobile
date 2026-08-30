@@ -15,6 +15,7 @@ from app.execution_authorization_store import ExecutionAuthorizationStore
 from app.order_intent import OrderIntent
 from app.pre_trade_reconciliation_gate import PreTradeReconciliationGate, PreTradeReconciliationPolicy
 from app.reconciliation_state_store import ReconciliationStateStore
+from app.submission_intent_store import SubmissionIntentStore
 from app.trading_incidents import IncidentReporter, IncidentSeverity, IncidentType
 
 
@@ -76,6 +77,7 @@ class LiveExecutionGateway:
         authorization_store: ExecutionAuthorizationStore | None = None,
         context_attestor: BrokerContextAttestor | None = None,
         reconciliation_state_store: ReconciliationStateStore | None = None,
+        submission_intent_store: SubmissionIntentStore | None = None,
     ) -> None:
         self.executor = executor
         self.policy = policy or ExecutionPolicy()
@@ -85,6 +87,7 @@ class LiveExecutionGateway:
         self.authorization_store = authorization_store or ExecutionAuthorizationStore()
         self.context_attestor = context_attestor
         self.reconciliation_state_store = reconciliation_state_store
+        self.submission_intent_store = submission_intent_store or SubmissionIntentStore()
 
     def authorize(self, order: OrderIntent, context: BrokerExecutionContext) -> ExecutionAuthorization:
         """Validate a live order against current state and a coordinator-attested broker context."""
@@ -145,14 +148,38 @@ class LiveExecutionGateway:
 
         lifecycle = OrderLifecycle(requested_quantity=safe_order.quantity)
         lifecycle.apply(OrderLifecycleEvent(status=OrderStatus.ACCEPTED, timestamp=_now()))
+        intent_created = False
+        if self.policy.mode is ExecutionMode.LIVE and expected_request is not None:
+            try:
+                self.submission_intent_store.create(
+                    client_order_id=expected_request.client_order_id,
+                    route=str(expected_request.broker_route),
+                    account_id=str(expected_request.broker_account_id) if expected_request.broker_account_id is not None else None,
+                    symbol=expected_request.symbol,
+                    side=expected_request.side,
+                    quantity=expected_request.quantity,
+                    request_fingerprint=_fingerprint(safe_order),
+                )
+                intent_created = True
+            except Exception as exc:
+                self.incident_reporter.report(
+                    IncidentType.UNKNOWN_BROKER_ORDER,
+                    IncidentSeverity.CRITICAL,
+                    f"execution blocked: submission intent could not be persisted for client_order_id={expected_request.client_order_id}: {exc}",
+                )
+                raise ExecutionSafetyError("execution blocked: submission intent could not be persisted") from exc
         try:
             result = self._submit(safe_order, expected_request)
             self._apply_broker_result(lifecycle, result, expected_request=expected_request)
+            if intent_created and expected_request is not None:
+                self.submission_intent_store.resolve(expected_request.client_order_id)
         except Exception as exc:
             if expected_request is not None:
                 recovered = self._recover_ambiguous_submission(expected_request)
                 if recovered is not None:
                     self._apply_broker_result(lifecycle, recovered, expected_request=expected_request)
+                    if intent_created:
+                        self.submission_intent_store.resolve(expected_request.client_order_id)
                     return TrackedExecution(result=recovered, lifecycle=lifecycle)
                 self.incident_reporter.report(
                     IncidentType.UNKNOWN_BROKER_ORDER,
