@@ -74,7 +74,7 @@ class AIExecutionOrchestrator:
         ml_confidence: float = 0.0,
         confluence: SignalDecision | None = None,
         owner_user_id: int | None = None,
-        broker_account_id: int | None = None,
+        broker_account_id: str | None = None,
         broker_route: str | None = None,
         broker_route_generation: str | None = None,
         risk_snapshot: AIRiskSnapshot | None = None,
@@ -128,6 +128,13 @@ class AIExecutionOrchestrator:
                 execution=None,
                 risk_decision=risk_decision,
             )
+
+        if request.broker_account_id is not None and request.broker_account_id != broker_execution_context.account_id:
+            raise RuntimeError("broker account identity does not match execution context")
+        if request.broker_route is not None and request.broker_route != broker_execution_context.broker_route:
+            raise RuntimeError("broker route does not match execution context")
+        if request.broker_route_generation is not None and request.broker_route_generation != broker_execution_context.route_generation:
+            raise RuntimeError("broker route generation does not match execution context")
 
         authorize = getattr(self.order_submitter, "authorize_request", None)
         execute = getattr(self.order_submitter, "execute_request", None)
