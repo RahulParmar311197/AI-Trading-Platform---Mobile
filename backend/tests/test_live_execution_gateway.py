@@ -27,6 +27,12 @@ class FakePositionReader:
     def __init__(self, positions=None): self.positions = positions or []
     def get_positions(self): return self.positions
 
+class FakeReconciliationStateStore:
+    def __init__(self, blocked=False): self.blocked = blocked; self.calls = []
+    def is_trading_blocked(self, *, broker_account_id, broker_route, max_age_seconds):
+        self.calls.append((broker_account_id, broker_route, max_age_seconds))
+        return self.blocked
+
 def make_order(): return OrderIntent("NIFTY", "BUY", 100.0, 99.0, 102.0, 1, 1.0, "test", 0.8)
 
 def make_context(generation=7, fingerprint="snapshot", observed_at=None, attested=True):
@@ -40,9 +46,17 @@ def make_request(**overrides):
     values.update(overrides)
     return BrokerOrderRequest(**values)
 
-def live_gateway(executor=None, store=None, policy=None, positions=None, local=None):
+def live_gateway(executor=None, store=None, policy=None, positions=None, local=None, reconciliation_state_store=None):
     positions = positions or []
-    return LiveExecutionGateway(executor or FakeExecutor(), policy or ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True), position_reader=FakePositionReader(positions), local_positions_reader=lambda: positions if local is None else local, authorization_store=store or ExecutionAuthorizationStore(":memory:"), context_attestor=BrokerContextAttestor(SECRET))
+    return LiveExecutionGateway(
+        executor or FakeExecutor(),
+        policy or ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True),
+        position_reader=FakePositionReader(positions),
+        local_positions_reader=lambda: positions if local is None else local,
+        authorization_store=store or ExecutionAuthorizationStore(":memory:"),
+        context_attestor=BrokerContextAttestor(SECRET),
+        reconciliation_state_store=reconciliation_state_store or FakeReconciliationStateStore(),
+    )
 
 def test_paper_mode_delegates():
     executor = FakeExecutor(); assert LiveExecutionGateway(executor, authorization_store=ExecutionAuthorizationStore(":memory:")).execute(make_order()).result["status"] == "accepted"
@@ -120,6 +134,31 @@ def test_authorization_is_bound_to_context():
 def test_reconciliation_mismatch_blocks_authorization():
     gateway = live_gateway(positions=[{"symbol": "NIFTY", "quantity": 1}], local=[{"symbol": "NIFTY", "quantity": 2}])
     with pytest.raises(ExecutionSafetyError, match="reconciliation failed"): gateway.authorize(make_order(), make_context())
+
+def test_durable_reconciliation_state_is_checked_for_exact_context_scope():
+    state = FakeReconciliationStateStore()
+    gateway = live_gateway(reconciliation_state_store=state)
+    gateway.authorize(make_order(), make_context())
+    assert state.calls == [("acct-1", "paper-route", 30.0)]
+
+def test_durable_reconciliation_halt_blocks_before_position_comparison():
+    state = FakeReconciliationStateStore(blocked=True)
+    gateway = live_gateway(reconciliation_state_store=state, positions=[{"symbol": "NIFTY", "quantity": 1}], local=[{"symbol": "NIFTY", "quantity": 1}])
+    with pytest.raises(ExecutionSafetyError, match="durable reconciliation state is not verified and fresh"):
+        gateway.authorize(make_order(), make_context())
+
+def test_live_authorization_requires_durable_reconciliation_store():
+    gateway = LiveExecutionGateway(
+        FakeExecutor(),
+        ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True),
+        position_reader=FakePositionReader([]),
+        local_positions_reader=lambda: [],
+        authorization_store=ExecutionAuthorizationStore(":memory:"),
+        context_attestor=BrokerContextAttestor(SECRET),
+        reconciliation_state_store=None,
+    )
+    with pytest.raises(ExecutionSafetyError, match="durable reconciliation state is not configured"):
+        gateway.authorize(make_order(), make_context())
 
 def test_stale_context_blocks_authorization():
     gateway = live_gateway(policy=ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True, context_max_age_seconds=5))
