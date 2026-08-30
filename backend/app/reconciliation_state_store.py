@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, MetaData, String, Table, create_engine, select, update
+from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, String, Table, create_engine, select, update
 
 
 @dataclass(frozen=True)
@@ -40,8 +40,8 @@ class ReconciliationStateStore:
             Column("status", String(32), nullable=False),
             Column("trading_halted", Boolean, nullable=False),
             Column("checked_at", String(64), nullable=True),
-            Column("order_drift_count", String(32), nullable=False),
-            Column("position_drift_count", String(32), nullable=False),
+            Column("order_drift_count", Integer, nullable=False),
+            Column("position_drift_count", Integer, nullable=False),
             Column("updated_at", DateTime(timezone=True), nullable=False),
         )
         self.metadata.create_all(self.engine, tables=[self.table])
