@@ -5,7 +5,7 @@ import math
 
 import pytest
 
-from app.broker_adapter import BrokerOrderUpdate
+from app.broker_adapter import BrokerOrderRequest, BrokerOrderUpdate
 from app.broker_context_attestation import BrokerContextAttestor
 from app.broker_execution_context import BrokerExecutionContext
 from app.execution_authorization_store import ExecutionAuthorizationStore
@@ -35,6 +35,11 @@ def make_context(generation=7, fingerprint="snapshot", observed_at=None, atteste
     signature = BrokerContextAttestor(SECRET).sign(account_id=base.account_id, broker_route=base.broker_route, route_generation=base.route_generation, generation=base.generation, snapshot_fingerprint=base.snapshot_fingerprint, observed_at=base.observed_at) if attested else ""
     return BrokerExecutionContext(base.account_id, base.broker_route, base.route_generation, base.generation, base.snapshot_fingerprint, base.observed_at, signature)
 
+def make_request(**overrides):
+    values = dict(client_order_id="client-1", symbol="NIFTY", side="BUY", quantity=1, price=100, stop=99, target=102, broker_account_id=1, broker_route="paper-route", broker_route_generation="route-gen-1")
+    values.update(overrides)
+    return BrokerOrderRequest(**values)
+
 def live_gateway(executor=None, store=None, policy=None, positions=None, local=None):
     positions = positions or []
     return LiveExecutionGateway(executor or FakeExecutor(), policy or ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True), position_reader=FakePositionReader(positions), local_positions_reader=lambda: positions if local is None else local, authorization_store=store or ExecutionAuthorizationStore(":memory:"), context_attestor=BrokerContextAttestor(SECRET))
@@ -44,8 +49,7 @@ def test_paper_mode_delegates():
 
 def test_paper_broker_update_reaches_terminal_lifecycle():
     executor = UpdateExecutor(BrokerOrderUpdate(order_id="b1", status="FILLED", client_order_id="c1", symbol="NIFTY", side="BUY", quantity=1, filled_quantity=1, average_price=100))
-    gateway = LiveExecutionGateway(executor, authorization_store=ExecutionAuthorizationStore(":memory:"))
-    tracked = gateway.execute(make_order())
+    tracked = LiveExecutionGateway(executor, authorization_store=ExecutionAuthorizationStore(":memory:")).execute(make_order())
     assert tracked.lifecycle.status is OrderStatus.FILLED
     assert tracked.lifecycle.filled_quantity == 1
     assert tracked.lifecycle.average_price == 100
@@ -121,3 +125,29 @@ def test_stale_context_blocks_authorization():
     gateway = live_gateway(policy=ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True, context_max_age_seconds=5))
     stale = make_context(observed_at=datetime.now(timezone.utc) - timedelta(seconds=6))
     with pytest.raises(ExecutionSafetyError, match="context is stale"): gateway.authorize(make_order(), stale)
+
+def test_live_request_requires_account_identity_and_matches_context():
+    gateway = live_gateway()
+    with pytest.raises(ExecutionSafetyError, match="account identity is required"):
+        gateway.authorize_request(make_request(broker_account_id=None), make_context())
+    with pytest.raises(ExecutionSafetyError, match="account does not match"):
+        gateway.authorize_request(make_request(broker_account_id=2), make_context())
+
+def test_live_request_requires_route_identity_and_matches_context():
+    gateway = live_gateway()
+    with pytest.raises(ExecutionSafetyError, match="route identity is required"):
+        gateway.authorize_request(make_request(broker_route=None), make_context())
+    with pytest.raises(ExecutionSafetyError, match="route does not match"):
+        gateway.authorize_request(make_request(broker_route="other-route"), make_context())
+    with pytest.raises(ExecutionSafetyError, match="route generation is required"):
+        gateway.authorize_request(make_request(broker_route_generation=None), make_context())
+    with pytest.raises(ExecutionSafetyError, match="route generation does not match"):
+        gateway.authorize_request(make_request(broker_route_generation="route-gen-2"), make_context())
+
+def test_execute_request_rechecks_identity_after_authorization():
+    gateway = live_gateway()
+    ctx = make_context()
+    request = make_request()
+    auth = gateway.authorize_request(request, ctx)
+    with pytest.raises(ExecutionSafetyError, match="account does not match"):
+        gateway.execute_request(make_request(broker_account_id=2), auth, ctx)
