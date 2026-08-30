@@ -137,12 +137,16 @@ class LiveExecutionGateway:
 
         safe_order = self._validate_order(order)
         if self.policy.mode is ExecutionMode.LIVE:
+            if expected_request is None:
+                raise ExecutionSafetyError(
+                    "execution blocked: live execution requires the original broker order request"
+                )
             self._consume_authorization(safe_order, authorization, context)
 
         lifecycle = OrderLifecycle(requested_quantity=safe_order.quantity)
         lifecycle.apply(OrderLifecycleEvent(status=OrderStatus.ACCEPTED, timestamp=_now()))
         try:
-            result = self.executor.execute(safe_order)
+            result = self._submit(safe_order, expected_request)
             self._apply_broker_result(lifecycle, result, expected_request=expected_request)
         except Exception as exc:
             if expected_request is not None:
@@ -181,6 +185,17 @@ class LiveExecutionGateway:
             expected_request=request,
         )
 
+    def _submit(self, order: OrderIntent, request: BrokerOrderRequest | None) -> object:
+        if request is not None:
+            submitter = getattr(self.executor, "submit_order", None)
+            if callable(submitter):
+                return submitter(request)
+            if self.policy.mode is ExecutionMode.LIVE:
+                raise ExecutionSafetyError(
+                    "execution blocked: live broker executor must support request-aware submit_order"
+                )
+        return self.executor.execute(order)
+
     def _recover_ambiguous_submission(self, request: BrokerOrderRequest) -> BrokerOrderUpdate | None:
         finder = getattr(self.executor, "find_order_by_client_id", None)
         if not callable(finder):
@@ -200,7 +215,7 @@ class LiveExecutionGateway:
         *,
         expected_request: BrokerOrderRequest | None = None,
     ) -> None:
-        if not isinstance(result, BrokerOrderUpdate):
+        if not isinstance(result, (BrokerOrderUpdate, dict)):
             return
         try:
             verified_result = normalize_broker_update(result, expected=expected_request)
