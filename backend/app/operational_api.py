@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response, status
 
 from app.operational_metrics import TradingMetricsCollector
 from app.system_health import TradingSystemHealth
@@ -19,8 +19,10 @@ def create_operational_router(
         return {"status": "ok", "live": health.liveness()}
 
     @router.get("/health/ready")
-    def ready() -> dict:
+    def ready(response: Response) -> dict:
         is_ready = health.readiness()
+        if not is_ready:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
             "status": "ready" if is_ready else "not_ready",
             "ready": is_ready,
