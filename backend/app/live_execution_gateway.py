@@ -114,6 +114,7 @@ class LiveExecutionGateway:
         return token
 
     def authorize_request(self, request: BrokerOrderRequest, context: BrokerExecutionContext) -> ExecutionAuthorization:
+        self._validate_request_context_identity(request, context)
         return self.authorize(_order_intent_from_request(request), context)
 
     def execute(
@@ -150,6 +151,10 @@ class LiveExecutionGateway:
         authorization: ExecutionAuthorization | None = None,
         context: BrokerExecutionContext | None = None,
     ) -> TrackedExecution:
+        if self.policy.mode is ExecutionMode.LIVE:
+            if not isinstance(context, BrokerExecutionContext):
+                raise ExecutionSafetyError("execution blocked: broker execution context is required")
+            self._validate_request_context_identity(request, context)
         return self.execute(_order_intent_from_request(request), authorization, context)
 
     @staticmethod
@@ -199,6 +204,26 @@ class LiveExecutionGateway:
             raise ExecutionSafetyError("execution blocked: broker execution context timestamp is in the future")
         if age > max_age:
             raise ExecutionSafetyError("execution blocked: broker execution context is stale")
+
+    @staticmethod
+    def _validate_request_context_identity(
+        request: BrokerOrderRequest,
+        context: BrokerExecutionContext,
+    ) -> None:
+        if not isinstance(request, BrokerOrderRequest):
+            raise ExecutionSafetyError("execution blocked: broker order request is required")
+        if request.broker_account_id is None:
+            raise ExecutionSafetyError("execution blocked: broker order request account identity is required")
+        if request.broker_route is None or not str(request.broker_route).strip():
+            raise ExecutionSafetyError("execution blocked: broker order request route identity is required")
+        if request.broker_route_generation is None or not str(request.broker_route_generation).strip():
+            raise ExecutionSafetyError("execution blocked: broker order request route generation is required")
+        if str(request.broker_account_id).strip() != context.account_id:
+            raise ExecutionSafetyError("execution blocked: broker order request account does not match execution context")
+        if str(request.broker_route).strip() != context.broker_route:
+            raise ExecutionSafetyError("execution blocked: broker order request route does not match execution context")
+        if str(request.broker_route_generation).strip() != context.route_generation:
+            raise ExecutionSafetyError("execution blocked: broker order request route generation does not match execution context")
 
     def _check_reconciliation(self) -> None:
         if not self.policy.reconciliation_enabled:
