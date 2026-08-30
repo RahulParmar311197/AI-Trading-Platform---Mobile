@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 from threading import RLock
+from typing import Iterator
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - production deployments are Linux containers
+    fcntl = None
 
 
 @dataclass(frozen=True)
@@ -27,7 +34,22 @@ class SubmissionIntentStore:
     def __init__(self, path: str = "data/submission_intents.json") -> None:
         self.path = Path(path)
         self.backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+        self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         self._lock = RLock()
+
+    @contextmanager
+    def _process_lock(self, *, exclusive: bool) -> Iterator[None]:
+        """Serialize writers/readers across worker processes, not just threads."""
+        if fcntl is None:
+            raise RuntimeError("submission intent store requires POSIX file locking")
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock_path.open("a+") as handle:
+            operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+            fcntl.flock(handle.fileno(), operation)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _load_unlocked(self) -> dict[str, dict]:
         if not self.path.exists():
@@ -84,7 +106,7 @@ class SubmissionIntentStore:
             raise ValueError("submission intent quantity must be positive")
         if not request_fingerprint.strip():
             raise ValueError("request fingerprint is required")
-        with self._lock:
+        with self._lock, self._process_lock(exclusive=True):
             data = self._load_unlocked()
             existing = data.get(client_order_id)
             if existing is not None and existing.get("resolved_at") is None:
@@ -104,7 +126,7 @@ class SubmissionIntentStore:
             return intent
 
     def resolve(self, client_order_id: str) -> None:
-        with self._lock:
+        with self._lock, self._process_lock(exclusive=True):
             data = self._load_unlocked()
             if client_order_id not in data:
                 raise KeyError(client_order_id)
@@ -112,7 +134,7 @@ class SubmissionIntentStore:
             self._save_unlocked(data)
 
     def unresolved(self) -> list[SubmissionIntent]:
-        with self._lock:
+        with self._lock, self._process_lock(exclusive=False):
             data = self._load_unlocked()
             return [SubmissionIntent(**value) for value in data.values() if value.get("resolved_at") is None]
 
