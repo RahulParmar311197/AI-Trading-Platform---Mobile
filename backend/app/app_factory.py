@@ -224,7 +224,7 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
             await task
         app.state.broker_health_task = None
         app.state.broker_health_stop_event = None
-        app.state.broker_health_task = None
+        app.state.broker_health_worker = None
 
     from app.api.orders import router as orders_router
     from app.api.ensemble import router as decision_router
