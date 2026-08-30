@@ -42,6 +42,37 @@ def test_builds_sized_buy_request():
     assert request.target == 120.0
 
 
+def test_builds_request_with_opaque_broker_account_identity():
+    request = build_ai_order_request(
+        decision(), equity=100_000, client_order_id="ai-account",
+        instrument_provider=provider(), broker_account_id="001",
+    )
+    assert request is not None
+    assert request.broker_account_id == "001"
+
+
+def test_distinct_broker_account_identities_do_not_numeric_alias():
+    first = build_ai_order_request(
+        decision(), equity=100_000, client_order_id="ai-account-1",
+        instrument_provider=provider(), broker_account_id="001",
+    )
+    second = build_ai_order_request(
+        decision(), equity=100_000, client_order_id="ai-account-2",
+        instrument_provider=provider(), broker_account_id="1",
+    )
+    assert first.broker_account_id == "001"
+    assert second.broker_account_id == "1"
+    assert first.broker_account_id != second.broker_account_id
+
+
+def test_rejects_blank_broker_account_identity():
+    with pytest.raises(ValueError, match="broker_account_id must be a non-empty string"):
+        build_ai_order_request(
+            decision(), equity=100_000, client_order_id="ai-account-empty",
+            instrument_provider=provider(), broker_account_id="   ",
+        )
+
+
 def test_hold_is_not_executable():
     hold = TradingDecision(symbol="NIFTY", decision="HOLD", confidence=0.9, entry=None, stop_loss=None, target=None, reasons=("hold",))
     assert build_ai_order_request(hold, equity=100_000, client_order_id="ai-2", instrument_provider=provider()) is None
