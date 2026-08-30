@@ -108,6 +108,17 @@ class SubmissionIntentStore:
         finally:
             session.close()
 
+    def _get_database(self, client_order_id: str) -> SubmissionIntent | None:
+        assert self._session_factory is not None
+        session = self._session_factory()
+        try:
+            record = session.get(SubmissionIntentRecord, client_order_id)
+            if record is None or record.resolved_at is not None:
+                return None
+            return self._to_intent(record)
+        finally:
+            session.close()
+
     def _record_broker_database(self, client_order_id: str, broker_order_id: str, broker_status: str) -> None:
         assert self._session_factory is not None
         broker_order_id = str(broker_order_id).strip()
@@ -151,6 +162,20 @@ class SubmissionIntentStore:
             return [self._to_intent(row) for row in rows]
         finally:
             session.close()
+
+    def get_unresolved(self, client_order_id: str) -> SubmissionIntent | None:
+        """Return one unresolved intent without treating resolved state as recoverable."""
+        client_order_id = str(client_order_id).strip()
+        if not client_order_id:
+            raise ValueError("client_order_id is required")
+        if self._session_factory is not None:
+            return self._get_database(client_order_id)
+        with self._lock, self._process_lock(exclusive=False):
+            data = self._load_unlocked()
+            record = data.get(client_order_id)
+            if record is None or record.get("resolved_at") is not None:
+                return None
+            return SubmissionIntent(**record)
 
     def record_broker_order(self, client_order_id: str, broker_order_id: str, broker_status: str) -> None:
         """Durably bind a submission to the authoritative broker order before resolving it."""
