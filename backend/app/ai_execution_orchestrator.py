@@ -14,30 +14,20 @@ from app.signal_confluence import SignalDecision
 
 
 class AuthorizedOrderSubmitter(Protocol):
-    def authorize_request(
-        self,
-        request: BrokerOrderRequest,
-        context: BrokerExecutionContext,
-    ) -> ExecutionAuthorization: ...
-
-    def execute_request(
-        self,
-        request: BrokerOrderRequest,
-        authorization: ExecutionAuthorization,
-        context: BrokerExecutionContext,
-    ) -> TrackedExecution: ...
+    def authorize_request(self, request: BrokerOrderRequest, context: BrokerExecutionContext) -> ExecutionAuthorization: ...
+    def execute_request(self, request: BrokerOrderRequest, authorization: ExecutionAuthorization, context: BrokerExecutionContext) -> TrackedExecution: ...
 
 
 @dataclass(frozen=True)
 class AIRiskSnapshot:
     """Authoritative portfolio state required before an AI order may execute."""
-
     daily_pnl: float
     open_positions: int
     recent_losses: int = 0
     current_exposure: float = 0.0
     unrealized_pnl: float = 0.0
     limits: RiskLimits | None = None
+    snapshot_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -50,101 +40,49 @@ class AIExecutionResult:
 
 class AIExecutionOrchestrator:
     """Canonical boundary from an AI decision through risk and live execution authorization."""
-
-    def __init__(
-        self,
-        *,
-        decision_engine: AIDecisionEngine,
-        instrument_provider: InstrumentProvider,
-        order_submitter: AuthorizedOrderSubmitter,
-        intent_config: AITradeIntentConfig | None = None,
-    ) -> None:
+    def __init__(self, *, decision_engine: AIDecisionEngine, instrument_provider: InstrumentProvider, order_submitter: AuthorizedOrderSubmitter, intent_config: AITradeIntentConfig | None = None) -> None:
         self.decision_engine = decision_engine
         self.instrument_provider = instrument_provider
         self.order_submitter = order_submitter
         self.intent_config = intent_config or AITradeIntentConfig()
 
-    async def evaluate_and_execute(
-        self,
-        context,
-        *,
-        equity: float,
-        client_order_id: str,
-        prediction=None,
-        ml_confidence: float = 0.0,
-        confluence: SignalDecision | None = None,
-        owner_user_id: int | None = None,
-        broker_account_id: str | None = None,
-        broker_route: str | None = None,
-        broker_route_generation: str | None = None,
-        risk_snapshot: AIRiskSnapshot | None = None,
-        broker_execution_context: BrokerExecutionContext | None = None,
-    ) -> AIExecutionResult:
-        decision = self.decision_engine.decide(
-            context,
-            prediction=prediction,
-            ml_confidence=ml_confidence,
-            confluence=confluence,
-        )
-        request = build_ai_order_request(
-            decision,
-            equity=equity,
-            client_order_id=client_order_id,
-            instrument_provider=self.instrument_provider,
-            config=self.intent_config,
-            owner_user_id=owner_user_id,
-            broker_account_id=broker_account_id,
-            broker_route=broker_route,
-            broker_route_generation=broker_route_generation,
-        )
+    async def evaluate_and_execute(self, context, *, equity: float, client_order_id: str, prediction=None, ml_confidence: float = 0.0, confluence: SignalDecision | None = None, owner_user_id: int | None = None, broker_account_id: str | None = None, broker_route: str | None = None, broker_route_generation: str | None = None, risk_snapshot: AIRiskSnapshot | None = None, broker_execution_context: BrokerExecutionContext | None = None) -> AIExecutionResult:
+        decision = self.decision_engine.decide(context, prediction=prediction, ml_confidence=ml_confidence, confluence=confluence)
+        request = build_ai_order_request(decision, equity=equity, client_order_id=client_order_id, instrument_provider=self.instrument_provider, config=self.intent_config, owner_user_id=owner_user_id, broker_account_id=broker_account_id, broker_route=broker_route, broker_route_generation=broker_route_generation)
         if request is None:
             return AIExecutionResult(decision=decision, order_request=None, execution=None)
         if risk_snapshot is None:
             raise RuntimeError("authoritative risk snapshot is required before AI execution")
         if broker_execution_context is None:
             raise RuntimeError("broker execution context is required before AI execution")
-
+        self._validate_risk_snapshot_binding(risk_snapshot, broker_execution_context)
         instrument = self.instrument_provider.resolve(request.symbol)
         if instrument is None:
             raise RuntimeError(f"instrument metadata unavailable for {request.symbol}")
         multiplier = float(instrument.multiplier)
         proposed_risk = abs(float(request.price) - float(request.stop)) * float(request.quantity) * multiplier
         proposed_exposure = abs(float(request.price)) * float(request.quantity) * multiplier
-        risk_decision = evaluate_risk(
-            equity=equity,
-            daily_pnl=risk_snapshot.daily_pnl,
-            proposed_risk=proposed_risk,
-            proposed_exposure=proposed_exposure,
-            open_positions=risk_snapshot.open_positions,
-            recent_losses=risk_snapshot.recent_losses,
-            limits=risk_snapshot.limits,
-            current_exposure=risk_snapshot.current_exposure,
-            unrealized_pnl=risk_snapshot.unrealized_pnl,
-        )
+        risk_decision = evaluate_risk(equity=equity, daily_pnl=risk_snapshot.daily_pnl, proposed_risk=proposed_risk, proposed_exposure=proposed_exposure, open_positions=risk_snapshot.open_positions, recent_losses=risk_snapshot.recent_losses, limits=risk_snapshot.limits, current_exposure=risk_snapshot.current_exposure, unrealized_pnl=risk_snapshot.unrealized_pnl)
         if not risk_decision.allowed:
-            return AIExecutionResult(
-                decision=decision,
-                order_request=request,
-                execution=None,
-                risk_decision=risk_decision,
-            )
-
+            return AIExecutionResult(decision=decision, order_request=request, execution=None, risk_decision=risk_decision)
         if request.broker_account_id is not None and request.broker_account_id != broker_execution_context.account_id:
             raise RuntimeError("broker account identity does not match execution context")
         if request.broker_route is not None and request.broker_route != broker_execution_context.broker_route:
             raise RuntimeError("broker route does not match execution context")
         if request.broker_route_generation is not None and request.broker_route_generation != broker_execution_context.route_generation:
             raise RuntimeError("broker route generation does not match execution context")
-
         authorize = getattr(self.order_submitter, "authorize_request", None)
         execute = getattr(self.order_submitter, "execute_request", None)
         if not callable(authorize) or not callable(execute):
             raise RuntimeError("authorized execution gateway is required after AI risk approval")
         authorization = authorize(request, broker_execution_context)
         execution = execute(request, authorization, broker_execution_context)
-        return AIExecutionResult(
-            decision=decision,
-            order_request=request,
-            execution=execution,
-            risk_decision=risk_decision,
-        )
+        return AIExecutionResult(decision=decision, order_request=request, execution=execution, risk_decision=risk_decision)
+
+    @staticmethod
+    def _validate_risk_snapshot_binding(risk_snapshot: AIRiskSnapshot, broker_execution_context: BrokerExecutionContext) -> None:
+        fingerprint = (risk_snapshot.snapshot_fingerprint or "").strip()
+        if not fingerprint:
+            raise RuntimeError("authoritative risk snapshot fingerprint is required before AI execution")
+        if fingerprint != broker_execution_context.snapshot_fingerprint:
+            raise RuntimeError("risk snapshot does not match broker execution context")
