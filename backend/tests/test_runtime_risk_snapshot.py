@@ -39,17 +39,17 @@ class Broker:
     def get_snapshot(self):
         if self.snapshot is not None:
             return self.snapshot
-        return BrokerSnapshot(orders=[], positions=self.positions)
+        return BrokerSnapshot(orders=[], positions=self.positions, broker_route="test", broker_account_id=1)
 
 
-def request(symbol="NIFTY", side="BUY", quantity=5, security_id="NIFTY-SEC"):
-    return BrokerOrderRequest(client_order_id="risk-runtime-1", symbol=symbol, side=side, quantity=quantity, security_id=security_id, price=100, stop=95)
+def request(symbol="NIFTY", side="BUY", quantity=5, security_id="NIFTY-SEC", broker_account_id="1", broker_route="test"):
+    return BrokerOrderRequest(client_order_id="risk-runtime-1", symbol=symbol, side=side, quantity=quantity, security_id=security_id, price=100, stop=95, broker_account_id=broker_account_id, broker_route=broker_route, broker_route_generation="generation-1")
 
 
-def provider(tmp_path, positions=None, account=None, loss=10.0, snapshot=None, max_age=2.0):
+def provider(tmp_path, positions=None, account=None, snapshot=None, max_age=2.0):
     safety = SafetyStateStore(str(tmp_path / "safety.json"))
     safety.clear()
-    broker = Broker(positions=positions, account=account, snapshot=snapshot)
+    broker = Broker(positions=positions, account=account, snapshot=snapshot or BrokerSnapshot(orders=[], positions=positions or [], broker_route="test", broker_account_id=1))
     router = BrokerRouter([BrokerRoute("test", broker)], "test", safety_store=safety)
     lifecycle = OrderLifecycle()
     return RuntimeRiskSnapshotProvider(router, lifecycle, trading_day_timezone="Asia/Kolkata", max_snapshot_age_seconds=max_age)
@@ -73,12 +73,12 @@ def test_snapshot_rejects_blocked_broker(tmp_path):
 def test_snapshot_fails_closed_without_valid_entry_stop(tmp_path):
     p = provider(tmp_path)
     with pytest.raises(RuntimeError, match="entry price"):
-        p(BrokerOrderRequest(client_order_id="risk-runtime-2", symbol="NIFTY", side="BUY", quantity=5))
+        p(BrokerOrderRequest(client_order_id="risk-runtime-2", symbol="NIFTY", side="BUY", quantity=5, broker_account_id="1", broker_route="test", broker_route_generation="generation-1"))
 
 
 def test_snapshot_rejects_stale_broker_snapshot(tmp_path):
     import time
-    stale = BrokerSnapshot(orders=[], positions=[], fetched_at=time.time() - 10)
+    stale = BrokerSnapshot(orders=[], positions=[], fetched_at=time.time() - 10, broker_route="test", broker_account_id=1)
     p = provider(tmp_path, snapshot=stale, max_age=2)
     with pytest.raises(RuntimeError, match="stale"):
         p(request())
@@ -86,7 +86,7 @@ def test_snapshot_rejects_stale_broker_snapshot(tmp_path):
 
 def test_snapshot_rejects_future_broker_snapshot(tmp_path):
     import time
-    future = BrokerSnapshot(orders=[], positions=[], fetched_at=time.time() + 10)
+    future = BrokerSnapshot(orders=[], positions=[], fetched_at=time.time() + 10, broker_route="test", broker_account_id=1)
     p = provider(tmp_path, snapshot=future, max_age=2)
     with pytest.raises(RuntimeError, match="stale"):
         p(request())
@@ -96,6 +96,19 @@ def test_snapshot_rejects_invalid_freshness_configuration(tmp_path):
     p = provider(tmp_path, max_age=0)
     with pytest.raises(RuntimeError, match="freshness configuration"):
         p(request())
+
+
+def test_snapshot_rejects_opaque_account_mismatch_without_integer_coercion(tmp_path):
+    p = provider(tmp_path)
+    with pytest.raises(RuntimeError, match="account binding mismatch"):
+        p(request(broker_account_id="001"))
+
+
+def test_snapshot_accepts_exact_string_account_identity(tmp_path):
+    snapshot = BrokerSnapshot(orders=[], positions=[], broker_route="test", broker_account_id="001")
+    p = provider(tmp_path, snapshot=snapshot)
+    result = p(request(broker_account_id="001"))
+    assert result.broker_ready is True
 
 
 def test_snapshot_fingerprint_changes_when_position_changes():
@@ -132,8 +145,8 @@ def test_service_blocks_when_broker_state_changes_after_reservation(tmp_path):
         def __init__(self):
             super().__init__(account={"status": "READY"})
             self.snapshots = [
-                BrokerSnapshot(orders=[], positions=[{"symbol": "NIFTY", "quantity": 0}]),
-                BrokerSnapshot(orders=[], positions=[{"symbol": "NIFTY", "quantity": 8}]),
+                BrokerSnapshot(orders=[], positions=[{"symbol": "NIFTY", "quantity": 0}], broker_route="test", broker_account_id=1),
+                BrokerSnapshot(orders=[], positions=[{"symbol": "NIFTY", "quantity": 8}], broker_route="test", broker_account_id=1),
             ]
             self.submit_calls = 0
 
