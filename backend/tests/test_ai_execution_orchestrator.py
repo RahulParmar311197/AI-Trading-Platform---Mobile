@@ -56,7 +56,7 @@ def make_decision(side="BUY"):
 
 
 def risk_snapshot(**overrides):
-    values = dict(daily_pnl=0.0, open_positions=0, recent_losses=0)
+    values = dict(daily_pnl=0.0, open_positions=0, recent_losses=0, snapshot_fingerprint="snapshot-1")
     values.update(overrides)
     return AIRiskSnapshot(**values)
 
@@ -121,6 +121,32 @@ async def test_numeric_alias_account_cannot_cross_authorization_context():
             object(), equity=100_000, client_order_id="ai-account-alias",
             broker_account_id="1", risk_snapshot=risk_snapshot(),
             broker_execution_context=broker_context(account_id="001"),
+        )
+    assert submitter.authorized_requests == []
+    assert submitter.executions == []
+
+
+@pytest.mark.asyncio
+async def test_mismatched_risk_snapshot_fingerprint_blocks_before_gateway():
+    submitter = FakeSubmitter()
+    with pytest.raises(RuntimeError, match="risk snapshot does not match broker execution context"):
+        await make_orchestrator(submitter).evaluate_and_execute(
+            object(), equity=100_000, client_order_id="ai-snapshot-mismatch",
+            risk_snapshot=risk_snapshot(snapshot_fingerprint="snapshot-old"),
+            broker_execution_context=broker_context(snapshot_fingerprint="snapshot-new"),
+        )
+    assert submitter.authorized_requests == []
+    assert submitter.executions == []
+
+
+@pytest.mark.asyncio
+async def test_missing_risk_snapshot_fingerprint_blocks_before_gateway():
+    submitter = FakeSubmitter()
+    with pytest.raises(RuntimeError, match="risk snapshot fingerprint"):
+        await make_orchestrator(submitter).evaluate_and_execute(
+            object(), equity=100_000, client_order_id="ai-snapshot-missing",
+            risk_snapshot=risk_snapshot(snapshot_fingerprint=""),
+            broker_execution_context=broker_context(),
         )
     assert submitter.authorized_requests == []
     assert submitter.executions == []
