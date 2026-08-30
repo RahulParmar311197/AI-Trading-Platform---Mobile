@@ -7,6 +7,7 @@ from app.ai_decision_engine import AIDecisionEngine, TradingDecision
 from app.ai_trade_intent import AITradeIntentConfig, build_ai_order_request
 from app.broker_adapter import BrokerOrderRequest
 from app.broker_execution_context import BrokerExecutionContext
+from app.broker_order_lifecycle import OrderStatus
 from app.instruments import InstrumentProvider
 from app.live_execution_gateway import ExecutionAuthorization, TrackedExecution
 from app.risk_engine import RiskDecision, RiskLimits, evaluate as evaluate_risk
@@ -16,6 +17,21 @@ from app.signal_confluence import SignalDecision
 class AuthorizedOrderSubmitter(Protocol):
     def authorize_request(self, request: BrokerOrderRequest, context: BrokerExecutionContext) -> ExecutionAuthorization: ...
     def execute_request(self, request: BrokerOrderRequest, authorization: ExecutionAuthorization, context: BrokerExecutionContext) -> TrackedExecution: ...
+
+
+class RiskReservationProvider(Protocol):
+    def reserve(
+        self,
+        *,
+        reservation_id: str | None,
+        client_order_id: str,
+        broker_account_id: str,
+        broker_route: str,
+        amount: float,
+        current_exposure: float,
+        max_total_exposure: float,
+    ) -> str: ...
+    def release(self, reservation_id: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -36,15 +52,17 @@ class AIExecutionResult:
     order_request: BrokerOrderRequest | None
     execution: object | None
     risk_decision: RiskDecision | None = None
+    risk_reservation_id: str | None = None
 
 
 class AIExecutionOrchestrator:
     """Canonical boundary from an AI decision through risk and live execution authorization."""
-    def __init__(self, *, decision_engine: AIDecisionEngine, instrument_provider: InstrumentProvider, order_submitter: AuthorizedOrderSubmitter, intent_config: AITradeIntentConfig | None = None) -> None:
+    def __init__(self, *, decision_engine: AIDecisionEngine, instrument_provider: InstrumentProvider, order_submitter: AuthorizedOrderSubmitter, intent_config: AITradeIntentConfig | None = None, risk_reservation_store: RiskReservationProvider | None = None) -> None:
         self.decision_engine = decision_engine
         self.instrument_provider = instrument_provider
         self.order_submitter = order_submitter
         self.intent_config = intent_config or AITradeIntentConfig()
+        self.risk_reservation_store = risk_reservation_store
 
     async def evaluate_and_execute(self, context, *, equity: float, client_order_id: str, prediction=None, ml_confidence: float = 0.0, confluence: SignalDecision | None = None, owner_user_id: int | None = None, broker_account_id: str | None = None, broker_route: str | None = None, broker_route_generation: str | None = None, risk_snapshot: AIRiskSnapshot | None = None, broker_execution_context: BrokerExecutionContext | None = None) -> AIExecutionResult:
         decision = self.decision_engine.decide(context, prediction=prediction, ml_confidence=ml_confidence, confluence=confluence)
@@ -71,13 +89,49 @@ class AIExecutionOrchestrator:
             raise RuntimeError("broker route does not match execution context")
         if request.broker_route_generation is not None and request.broker_route_generation != broker_execution_context.route_generation:
             raise RuntimeError("broker route generation does not match execution context")
+        reservation_id = None
+        if self.risk_reservation_store is not None:
+            limits = risk_snapshot.limits or RiskLimits()
+            account_id = broker_execution_context.account_id.strip()
+            route = broker_execution_context.broker_route.strip()
+            if not account_id or not route:
+                raise RuntimeError("broker account and route are required for risk reservation")
+            max_total_exposure = float(equity) * float(limits.max_exposure_percent) / 100.0
+            try:
+                reservation_id = self.risk_reservation_store.reserve(
+                    reservation_id=None,
+                    client_order_id=client_order_id,
+                    broker_account_id=account_id,
+                    broker_route=route,
+                    amount=proposed_exposure,
+                    current_exposure=risk_snapshot.current_exposure,
+                    max_total_exposure=max_total_exposure,
+                )
+            except Exception as exc:
+                raise RuntimeError("risk reservation could not be acquired; execution blocked") from exc
         authorize = getattr(self.order_submitter, "authorize_request", None)
         execute = getattr(self.order_submitter, "execute_request", None)
         if not callable(authorize) or not callable(execute):
+            if reservation_id is not None:
+                self.risk_reservation_store.release(reservation_id)
             raise RuntimeError("authorized execution gateway is required after AI risk approval")
-        authorization = authorize(request, broker_execution_context)
-        execution = execute(request, authorization, broker_execution_context)
-        return AIExecutionResult(decision=decision, order_request=request, execution=execution, risk_decision=risk_decision)
+        try:
+            authorization = authorize(request, broker_execution_context)
+        except Exception:
+            if reservation_id is not None:
+                self.risk_reservation_store.release(reservation_id)
+            raise
+        try:
+            execution = execute(request, authorization, broker_execution_context)
+        except Exception:
+            # Keep the reservation on ambiguous broker outcomes so another
+            # worker cannot reuse the same exposure before reconciliation.
+            raise
+        lifecycle = getattr(execution, "lifecycle", None)
+        if reservation_id is not None and lifecycle is not None and getattr(lifecycle, "status", None) in {OrderStatus.REJECTED, OrderStatus.CANCELLED}:
+            self.risk_reservation_store.release(reservation_id)
+            reservation_id = None
+        return AIExecutionResult(decision=decision, order_request=request, execution=execution, risk_decision=risk_decision, risk_reservation_id=reservation_id)
 
     @staticmethod
     def _validate_risk_snapshot_binding(risk_snapshot: AIRiskSnapshot, broker_execution_context: BrokerExecutionContext) -> None:
