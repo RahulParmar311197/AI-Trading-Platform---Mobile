@@ -35,7 +35,7 @@ class RuntimeRiskSnapshotProvider:
     def _broker_ready(account):
         if not isinstance(account,dict) or not account: return False
         status=str(account.get("status",account.get("account_status",account.get("state","")))).strip().upper()
-        return status not in {"DISABLED","BLOCKED","SUSPENDED","ERROR","NOT_READY"} and status in {"READY","ACTIVE","CONNECTED","OK",""}
+        return status in {"READY","ACTIVE","CONNECTED","OK"}
     def _validate_freshness(self,snapshot):
         if not isfinite(float(self.max_snapshot_age_seconds)) or self.max_snapshot_age_seconds<=0: raise RuntimeError("invalid broker snapshot freshness configuration")
         fetched_at=getattr(snapshot,"fetched_at",None)
