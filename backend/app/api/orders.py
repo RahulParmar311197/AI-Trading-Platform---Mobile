@@ -115,6 +115,15 @@ def _authoritative_cancel_result(broker_router,order):
     from app.authoritative_cancel import AuthoritativeCancelReconciler
     return AuthoritativeCancelReconciler().cancel_and_reconcile(broker_router, order)
 
+def _reconcile_risk_reservation(resources, client_order_id:str, broker_status:str, remaining_amount:float|None=None)->None:
+    store=getattr(resources,"risk_reservation_store",None)
+    if store is None:
+        return
+    try:
+        store.reconcile_client_order(client_order_id=client_order_id, broker_status=broker_status, remaining_amount=remaining_amount)
+    except Exception as exc:
+        raise HTTPException(status_code=503,detail={"code":"RISK_RESERVATION_RECONCILIATION_FAILED","reason":type(exc).__name__,"client_order_id":client_order_id,"reconciliation_required":True}) from exc
+
 @router.post("")
 def create_order(payload:OrderRequest,request:Request,response:Response,db:Session=Depends(get_order_db),_:None=Depends(require_trading_ready),current_user:User=Depends(get_current_user),idempotency_key:str|None=Header(default=None,alias="Idempotency-Key")):
     from app.startup_recovery import StartupRecoveryCoordinator
@@ -159,14 +168,19 @@ def cancel_order(client_order_id:str,request:Request,response:Response,db:Sessio
         return _order_response(order,"CANCEL_IDEMPOTENT_NOOP")
     broker_router=getattr(request.app.state,"broker_router",None)
     if broker_router is None: raise HTTPException(status_code=503,detail="BROKER_ROUTER_UNAVAILABLE")
+    resources=getattr(request.app.state,"resources",None)
+    if resources is None: raise HTTPException(status_code=503,detail="EXECUTION_RESOURCES_UNAVAILABLE")
     try:
         reconciliation=_authoritative_cancel_result(broker_router,order)
         result=reconciliation.update
         _project_authoritative_broker_update(order,result)
+        _reconcile_risk_reservation(resources,order.client_order_id,result.status,remaining_amount=0.0 if result.status in {BrokerOrderStatus.CANCELLED.value,BrokerOrderStatus.FILLED.value,BrokerOrderStatus.REJECTED.value} else None)
     except ValueError as exc:
         raise HTTPException(status_code=409,detail={"code":"BROKER_CANCEL_RESPONSE_INVALID","reason":str(exc),"reconciliation_required":True}) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409,detail={"code":"BROKER_CANCEL_RECONCILIATION_REQUIRED","reason":str(exc),"reconciliation_required":True}) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502,detail={"code":"BROKER_CANCEL_FAILED","reason":type(exc).__name__,"reconciliation_required":True}) from exc
     order.status=result.status
