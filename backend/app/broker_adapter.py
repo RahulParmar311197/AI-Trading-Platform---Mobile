@@ -41,9 +41,21 @@ class BrokerOrderRequest:
     validity: str = "DAY"
     trigger_price: float | None = None
     owner_user_id: int | None = None
-    broker_account_id: int | None = None
+    broker_account_id: str | None = None
     broker_route: str | None = None
     broker_route_generation: str | None = None
+
+    def __post_init__(self):
+        if self.broker_account_id is None:
+            return
+        if isinstance(self.broker_account_id, bool):
+            raise ValueError("broker_account_id must be a non-empty string")
+        value = str(self.broker_account_id).strip()
+        if not value:
+            raise ValueError("broker_account_id must be a non-empty string")
+        if len(value) > 128:
+            raise ValueError("broker_account_id exceeds 128 characters")
+        object.__setattr__(self, "broker_account_id", value)
 
 @dataclass(frozen=True)
 class BrokerOrderUpdate:
@@ -56,7 +68,7 @@ class BrokerOrderUpdate:
     filled_quantity: float | None = None
     price: float | None = None
     average_price: float | None = None
-    broker_account_id: int | None = None
+    broker_account_id: str | None = None
     broker_route: str | None = None
     broker_route_generation: str | None = None
     message: str | None = None
@@ -104,11 +116,7 @@ def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected
     client_id = str(data.get("client_order_id")).strip() if data.get("client_order_id") is not None else None
     symbol = str(data.get("symbol")).strip().upper() if data.get("symbol") else None; side = str(data.get("side")).strip().upper() if data.get("side") else None
     broker_account_id_raw = data.get("broker_account_id") if data.get("broker_account_id") is not None else data.get("account_id")
-    broker_account_id = None
-    if broker_account_id_raw not in (None, ""):
-        try: broker_account_id = int(broker_account_id_raw)
-        except (TypeError, ValueError): raise ValueError("invalid broker account identity")
-        if broker_account_id <= 0: raise ValueError("invalid broker account identity")
+    broker_account_id = _optional_identity(broker_account_id_raw, "account identity")
     broker_route = _optional_identity(data.get("broker_route") if data.get("broker_route") is not None else data.get("route"), "route identity")
     broker_route_generation = _optional_identity(data.get("broker_route_generation") if data.get("broker_route_generation") is not None else data.get("route_generation"), "route generation")
     if expected is not None:
