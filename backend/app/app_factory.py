@@ -62,6 +62,7 @@ class AppResources:
     session_local: object | None = None
     startup_execution_state: StartupExecutionStateMachine | None = None
     emergency_halt_controller: EmergencyHaltController | None = None
+    execution_health_token: str | None = None
 
     def create_reconciliation_coordinator(
         self,
@@ -113,7 +114,7 @@ def create_resources(
     alert_path="data/execution_alerts.sqlite3",
     alert_event_path="data/execution_alert_events.sqlite3",
     execution_authorization_path="data/execution_authorizations.sqlite3",
-    execution_health_token="test-token",
+    execution_health_token: str | None = None,
     broker_context_attestation_secret: bytes | str | None = None,
 ) -> AppResources:
     session_local = None
@@ -145,34 +146,36 @@ def create_resources(
     observability.add_hook(alert_service.evaluate, priority=100)
     observability.add_hook(recovery.evaluate, priority=200)
     return AppResources(
-        ExecutionStateStore(execution_path),
-        IdempotencyStore(idempotency_path),
-        safety_store,
-        audit_log,
-        observability,
-        alert_store,
-        alert_service,
-        recovery,
-        event_store,
-        event_publisher,
-        dispatcher,
-        worker,
-        worker_health,
-        dead_letter_store,
-        BrokerConnectivityRegistry(),
-        broker_context_attestor,
-        execution_authorization_store,
-        authorization,
-        session_local,
-        startup_execution_state,
-        emergency_halt_controller,
+        execution_store=ExecutionStateStore(execution_path),
+        idempotency_store=IdempotencyStore(idempotency_path),
+        safety_store=safety_store,
+        audit_log=audit_log,
+        execution_observability=observability,
+        execution_alert_store=alert_store,
+        execution_alert_service=alert_service,
+        execution_alert_recovery=recovery,
+        execution_alert_event_store=event_store,
+        execution_alert_event_publisher=event_publisher,
+        execution_alert_dispatcher=dispatcher,
+        execution_alert_worker=worker,
+        execution_alert_worker_health=worker_health,
+        execution_alert_dead_letter_store=dead_letter_store,
+        connectivity_registry=BrokerConnectivityRegistry(),
+        broker_context_attestor=broker_context_attestor,
+        execution_authorization_store=execution_authorization_store,
+        authorization=authorization,
+        session_local=session_local,
+        startup_execution_state=startup_execution_state,
+        emergency_halt_controller=emergency_halt_controller,
+        execution_health_token=execution_health_token,
     )
 
 
 def create_app(resources: AppResources | None = None, broker_router: BrokerRouter | None = None, execution_health_token: str | None = None) -> FastAPI:
-    resources = resources or create_resources(execution_health_token=execution_health_token or "test-token")
+    resources = resources or create_resources(execution_health_token=execution_health_token)
     app = FastAPI(title="AI Trading Platform", version="1.0.0")
     app.state.resources = resources
+    app.state.execution_observability = resources.execution_observability
     app.state.execution_alert_store = resources.execution_alert_store
     app.state.execution_alert_service = resources.execution_alert_service
     app.state.execution_alert_recovery = resources.execution_alert_recovery
@@ -182,7 +185,11 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
     app.state.execution_alert_worker = resources.execution_alert_worker
     app.state.execution_alert_worker_health = resources.execution_alert_worker_health
     app.state.execution_alert_dead_letter_store = resources.execution_alert_dead_letter_store
-    app.state.execution_health_token = execution_health_token if execution_health_token is not None else "test-token"
+    app.state.execution_health_token = (
+        execution_health_token
+        if execution_health_token is not None
+        else resources.execution_health_token
+    )
     app.state.broker_context_attestor = resources.broker_context_attestor
     app.state.execution_authorization_store = resources.execution_authorization_store
     app.state.broker_router = broker_router or build_broker_router(resources.safety_store, context_attestor=resources.broker_context_attestor)
@@ -217,7 +224,7 @@ def create_app(resources: AppResources | None = None, broker_router: BrokerRoute
             await task
         app.state.broker_health_task = None
         app.state.broker_health_stop_event = None
-        app.state.broker_health_worker = None
+        app.state.broker_health_task = None
 
     from app.api.orders import router as orders_router
     from app.api.ensemble import router as decision_router
