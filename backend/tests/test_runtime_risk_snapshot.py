@@ -70,6 +70,18 @@ def test_snapshot_rejects_blocked_broker(tmp_path):
     assert snapshot.broker_ready is False
 
 
+def test_snapshot_rejects_unknown_broker_readiness(tmp_path):
+    p = provider(tmp_path, account={"status": "UNKNOWN"})
+    snapshot = p(request())
+    assert snapshot.broker_ready is False
+
+
+def test_snapshot_rejects_missing_broker_readiness_status(tmp_path):
+    p = provider(tmp_path, account={})
+    snapshot = p(request())
+    assert snapshot.broker_ready is False
+
+
 def test_snapshot_fails_closed_without_valid_entry_stop(tmp_path):
     p = provider(tmp_path)
     with pytest.raises(RuntimeError, match="entry price"):
