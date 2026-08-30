@@ -118,7 +118,7 @@ def test_normalize_broker_update_accepts_valid_partial_fill():
 def test_normalize_broker_update_rejects_missing_account_identity_when_request_is_scoped():
     request = BrokerOrderRequest(
         client_order_id='c1', symbol='NIFTY', side='BUY', quantity=10,
-        broker_account_id=42,
+        broker_account_id='acct-42',
     )
     with pytest.raises(ValueError, match='missing account identity'):
         normalize_broker_update({
@@ -127,44 +127,57 @@ def test_normalize_broker_update_rejects_missing_account_identity_when_request_i
         }, expected=request)
 
 
-def test_normalize_broker_update_accepts_matching_account_identity():
+def test_normalize_broker_update_accepts_matching_opaque_account_identity():
     request = BrokerOrderRequest(
         client_order_id='c1', symbol='NIFTY', side='BUY', quantity=10,
-        broker_account_id=42,
+        broker_account_id='001',
     )
     result = normalize_broker_update({
         'order_id': 'b1', 'status': 'NEW', 'quantity': 10,
         'client_order_id': 'c1', 'symbol': 'NIFTY', 'side': 'BUY',
-        'broker_account_id': '42',
+        'broker_account_id': '001',
     }, expected=request)
-    assert result.broker_account_id == 42
+    assert result.broker_account_id == '001'
+
+
+def test_normalize_broker_update_keeps_distinct_opaque_accounts_distinct():
+    request = BrokerOrderRequest(
+        client_order_id='c1', symbol='NIFTY', side='BUY', quantity=10,
+        broker_account_id='001',
+    )
+    with pytest.raises(ValueError, match='broker account does not match request'):
+        normalize_broker_update({
+            'order_id': 'b1', 'status': 'NEW', 'quantity': 10,
+            'client_order_id': 'c1', 'symbol': 'NIFTY', 'side': 'BUY',
+            'broker_account_id': '1',
+        }, expected=request)
 
 
 def test_normalize_broker_update_rejects_missing_route_identity_when_request_is_scoped():
     request = BrokerOrderRequest(
         client_order_id='c1', symbol='NIFTY', side='BUY', quantity=10,
-        broker_account_id=42, broker_route='upstox-primary',
+        broker_account_id='acct-42', broker_route='upstox-primary',
         broker_route_generation='7',
     )
     with pytest.raises(ValueError, match='missing route identity'):
         normalize_broker_update({
             'order_id': 'b1', 'status': 'NEW', 'quantity': 10,
             'client_order_id': 'c1', 'symbol': 'NIFTY', 'side': 'BUY',
-            'broker_account_id': '42', 'broker_route_generation': '7',
+            'broker_account_id': 'acct-42', 'broker_route_generation': '7',
         }, expected=request)
 
 
 def test_normalize_broker_update_rejects_mismatched_route_identity():
     request = BrokerOrderRequest(
         client_order_id='c1', symbol='NIFTY', side='BUY', quantity=10,
-        broker_account_id=42, broker_route='upstox-primary',
+        broker_account_id='acct-42', broker_route='upstox-primary',
         broker_route_generation='7',
     )
     with pytest.raises(ValueError, match='broker route does not match request'):
         normalize_broker_update({
             'order_id': 'b1', 'status': 'NEW', 'quantity': 10,
             'client_order_id': 'c1', 'symbol': 'NIFTY', 'side': 'BUY',
-            'broker_account_id': '42', 'broker_route': 'upstox-backup',
+            'broker_account_id': 'acct-42', 'broker_route': 'upstox-backup',
             'broker_route_generation': '7',
         }, expected=request)
 
@@ -172,14 +185,14 @@ def test_normalize_broker_update_rejects_mismatched_route_identity():
 def test_normalize_broker_update_rejects_mismatched_route_generation():
     request = BrokerOrderRequest(
         client_order_id='c1', symbol='NIFTY', side='BUY', quantity=10,
-        broker_account_id=42, broker_route='upstox-primary',
+        broker_account_id='acct-42', broker_route='upstox-primary',
         broker_route_generation='7',
     )
     with pytest.raises(ValueError, match='broker route generation does not match request'):
         normalize_broker_update({
             'order_id': 'b1', 'status': 'NEW', 'quantity': 10,
             'client_order_id': 'c1', 'symbol': 'NIFTY', 'side': 'BUY',
-            'broker_account_id': '42', 'broker_route': 'upstox-primary',
+            'broker_account_id': 'acct-42', 'broker_route': 'upstox-primary',
             'broker_route_generation': '8',
         }, expected=request)
 
@@ -187,15 +200,15 @@ def test_normalize_broker_update_rejects_mismatched_route_generation():
 def test_normalize_broker_update_accepts_matching_route_identity():
     request = BrokerOrderRequest(
         client_order_id='c1', symbol='NIFTY', side='BUY', quantity=10,
-        broker_account_id=42, broker_route='upstox-primary',
+        broker_account_id='acct-42', broker_route='upstox-primary',
         broker_route_generation='7',
     )
     result = normalize_broker_update({
         'order_id': 'b1', 'status': 'NEW', 'quantity': 10,
         'client_order_id': 'c1', 'symbol': 'NIFTY', 'side': 'BUY',
-        'broker_account_id': '42', 'broker_route': 'upstox-primary',
+        'broker_account_id': 'acct-42', 'broker_route': 'upstox-primary',
         'broker_route_generation': '7',
     }, expected=request)
-    assert result.broker_account_id == 42
+    assert result.broker_account_id == 'acct-42'
     assert result.broker_route == 'upstox-primary'
     assert result.broker_route_generation == '7'
