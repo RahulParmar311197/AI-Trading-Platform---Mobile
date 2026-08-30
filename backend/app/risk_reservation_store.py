@@ -22,6 +22,8 @@ class RiskReservationStore:
 
     ACTIVE = "ACTIVE"
     RELEASED = "RELEASED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    TERMINAL = {"FILLED", "CANCELLED", "REJECTED"}
 
     def __init__(self, session_factory: Callable[[], object]) -> None:
         self._session_factory = session_factory
@@ -120,6 +122,7 @@ class RiskReservationStore:
                             amount=amount_d,
                             status=self.ACTIVE,
                             created_at=now,
+                            released_at=None,
                         )
                     )
                 session.flush()
@@ -142,6 +145,48 @@ class RiskReservationStore:
                 if record.status == self.ACTIVE:
                     record.status = self.RELEASED
                     record.released_at = datetime.now(timezone.utc)
+        finally:
+            session.close()
+
+    def reconcile(self, *, reservation_id: str, broker_status: str, remaining_amount: float | None = None) -> str:
+        """Idempotently reconcile a reservation from authoritative broker state.
+
+        Terminal broker states release the reservation. A partial fill may only
+        shrink an active reservation; it can never increase the reserved amount.
+        Unknown/ambiguous states are rejected so the reservation remains active.
+        """
+        rid = str(reservation_id).strip()
+        if not rid:
+            raise ValueError("reservation_id is required")
+        status = str(broker_status or "").strip().upper().replace("-", "_").replace(" ", "_")
+        session = self._session_factory()
+        try:
+            with session.begin():
+                record = session.get(RiskReservationRecord, rid)
+                if record is None:
+                    raise KeyError(rid)
+                if record.status == self.RELEASED:
+                    return self.RELEASED
+                if status in self.TERMINAL:
+                    record.status = self.RELEASED
+                    record.released_at = datetime.now(timezone.utc)
+                    return self.RELEASED
+                if status != self.PARTIALLY_FILLED:
+                    raise RuntimeError("ambiguous broker state cannot release risk reservation")
+                if remaining_amount is None:
+                    raise ValueError("remaining_amount is required for partial fill reconciliation")
+                remaining = self._decimal(remaining_amount, "remaining_amount")
+                if remaining < 0:
+                    raise ValueError("remaining_amount cannot be negative")
+                current = self._decimal(record.amount, "reservation amount")
+                if remaining > current:
+                    raise RuntimeError("partial fill reconciliation cannot increase risk reservation")
+                if remaining == 0:
+                    record.status = self.RELEASED
+                    record.released_at = datetime.now(timezone.utc)
+                    return self.RELEASED
+                record.amount = remaining
+                return self.ACTIVE
         finally:
             session.close()
 
