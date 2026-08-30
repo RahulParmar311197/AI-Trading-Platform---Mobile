@@ -12,13 +12,7 @@ from app.models.risk_reservation import RiskReservationRecord
 
 
 class RiskReservationStore:
-    """Cross-worker durable exposure reservations.
-
-    PostgreSQL uses a transaction-scoped advisory lock per account/route so the
-    active-reservation sum and insert are one serialized decision. SQLite is
-    supported for unit tests only; production configuration must use a server
-    database, where the advisory lock provides the cross-process guarantee.
-    """
+    """Cross-worker durable exposure reservations."""
 
     ACTIVE = "ACTIVE"
     RELEASED = "RELEASED"
@@ -66,7 +60,6 @@ class RiskReservationStore:
         current_exposure: float,
         max_total_exposure: float,
     ) -> str:
-        """Atomically reserve exposure or fail closed."""
         client_order_id = str(client_order_id).strip()
         if not client_order_id:
             raise ValueError("client_order_id is required")
@@ -157,6 +150,10 @@ class RiskReservationStore:
                     raise KeyError(rid)
                 if record.status == self.RELEASED:
                     return self.RELEASED
+                # Reserve and partial-fill updates must serialize on the same
+                # account/route scope; otherwise a stale partial-fill worker
+                # could overwrite a newer, smaller reservation.
+                self._lock_scope(session, self._scope(record.broker_account_id, record.broker_route))
                 if status in self.TERMINAL:
                     record.status = self.RELEASED
                     record.released_at = datetime.now(timezone.utc)
@@ -181,12 +178,7 @@ class RiskReservationStore:
             session.close()
 
     def reconcile_client_order(self, *, client_order_id: str, broker_status: str, remaining_amount: float | None = None) -> str | None:
-        """Reconcile the reservation bound to a client order, if one exists.
-
-        Missing reservations are tolerated because older orders may predate the
-        durable reservation ledger. An existing reservation is reconciled
-        atomically through ``reconcile`` semantics in the same database.
-        """
+        """Reconcile the reservation bound to a client order, if one exists."""
         client_id = str(client_order_id).strip()
         if not client_id:
             raise ValueError("client_order_id is required")
