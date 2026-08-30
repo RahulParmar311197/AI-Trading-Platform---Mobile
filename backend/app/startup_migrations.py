@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 import os
-import shutil
 
 from alembic import command
 from alembic.config import Config
@@ -58,52 +57,38 @@ def migrate_legacy_submission_intents(
         return 0
 
     with store._lock, store._process_lock(exclusive=True):
-        try:
-            raw = store._load_unlocked()
-        except RuntimeError:
-            raise
-
-        intents = []
+        raw = store._load_unlocked()
+        intents: list[tuple[str, dict]] = []
         for client_order_id, value in raw.items():
             if not isinstance(value, dict):
                 raise RuntimeError(f"invalid legacy submission intent: {client_order_id}")
+            if value.get("resolved_at") is not None:
+                continue
+            required = (
+                "route", "symbol", "side", "quantity", "request_fingerprint", "created_at"
+            )
+            if not all(key in value for key in required):
+                raise RuntimeError(f"incomplete legacy submission intent: {client_order_id}")
             try:
-                if value.get("resolved_at") is not None:
-                    continue
-                intent = store.create
-                required = (
-                    "route", "symbol", "side", "quantity", "request_fingerprint", "created_at"
-                )
-                if not all(key in value for key in required):
-                    raise RuntimeError(f"incomplete legacy submission intent: {client_order_id}")
-                intents.append((client_order_id, value))
-            except (TypeError, ValueError) as exc:
+                quantity = float(value["quantity"])
+                if quantity <= 0:
+                    raise ValueError("quantity must be positive")
+                created_at = datetime.fromisoformat(str(value["created_at"]))
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                if not str(value["route"]).strip() or not str(value["symbol"]).strip():
+                    raise ValueError("route and symbol are required")
+                if not str(value["side"]).strip() or not str(value["request_fingerprint"]).strip():
+                    raise ValueError("side and fingerprint are required")
+            except (TypeError, ValueError, OverflowError) as exc:
                 raise RuntimeError(f"invalid legacy submission intent: {client_order_id}") from exc
+            intents.append((client_order_id, value))
 
         session = session_factory()
         try:
             with session.begin():
                 for client_order_id, value in intents:
                     existing = session.get(SubmissionIntentRecord, client_order_id)
-                    if existing is None:
-                        session.add(
-                            SubmissionIntentRecord(
-                                client_order_id=client_order_id,
-                                route=str(value["route"]),
-                                account_id=(
-                                    None if value.get("account_id") is None
-                                    else str(value["account_id"])
-                                ),
-                                symbol=str(value["symbol"]).strip().upper(),
-                                side=str(value["side"]).strip().upper(),
-                                quantity=float(value["quantity"]),
-                                request_fingerprint=str(value["request_fingerprint"]),
-                                created_at=datetime.fromisoformat(str(value["created_at"])),
-                                resolved_at=None,
-                            )
-                        )
-                        continue
-
                     legacy_tuple = (
                         str(value["route"]),
                         None if value.get("account_id") is None else str(value["account_id"]),
@@ -112,6 +97,25 @@ def migrate_legacy_submission_intents(
                         float(value["quantity"]),
                         str(value["request_fingerprint"]),
                     )
+                    if existing is None:
+                        created_at = datetime.fromisoformat(str(value["created_at"]))
+                        if created_at.tzinfo is None:
+                            created_at = created_at.replace(tzinfo=timezone.utc)
+                        session.add(
+                            SubmissionIntentRecord(
+                                client_order_id=client_order_id,
+                                route=legacy_tuple[0],
+                                account_id=legacy_tuple[1],
+                                symbol=legacy_tuple[2],
+                                side=legacy_tuple[3],
+                                quantity=legacy_tuple[4],
+                                request_fingerprint=legacy_tuple[5],
+                                created_at=created_at,
+                                resolved_at=None,
+                            )
+                        )
+                        continue
+
                     db_tuple = (
                         existing.route,
                         existing.account_id,
@@ -124,7 +128,6 @@ def migrate_legacy_submission_intents(
                         raise RuntimeError(
                             f"conflicting durable submission intent: {client_order_id}"
                         )
-
                 try:
                     session.flush()
                 except IntegrityError as exc:
