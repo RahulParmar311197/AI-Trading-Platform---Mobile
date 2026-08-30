@@ -26,7 +26,7 @@ def build_ai_order_request(
     instrument_provider: InstrumentProvider,
     config: AITradeIntentConfig | None = None,
     owner_user_id: int | None = None,
-    broker_account_id: int | None = None,
+    broker_account_id: str | None = None,
     broker_route: str | None = None,
     broker_route_generation: str | None = None,
 ) -> BrokerOrderRequest | None:
@@ -38,6 +38,12 @@ def build_ai_order_request(
     cfg = config or AITradeIntentConfig()
     if not client_order_id.strip():
         raise ValueError("client_order_id is required")
+    if broker_account_id is not None:
+        if isinstance(broker_account_id, bool) or not str(broker_account_id).strip():
+            raise ValueError("broker_account_id must be a non-empty string")
+        if len(str(broker_account_id).strip()) > 128:
+            raise ValueError("broker_account_id exceeds 128 characters")
+        broker_account_id = str(broker_account_id).strip()
     if not math.isfinite(float(equity)) or equity <= 0:
         raise ValueError("equity must be positive and finite")
     if not 0 < cfg.risk_fraction <= 1:
