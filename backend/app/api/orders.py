@@ -110,6 +110,11 @@ def _matches_order_broker_identity(order:Order,result)->bool:
         return False
     return True
 
+def _authoritative_cancel_result(broker_router,order):
+    """Cancel through the exact broker order binding and reconcile final state."""
+    from app.authoritative_cancel import AuthoritativeCancelReconciler
+    return AuthoritativeCancelReconciler().cancel_and_reconcile(broker_router, order)
+
 @router.post("")
 def create_order(payload:OrderRequest,request:Request,response:Response,db:Session=Depends(get_order_db),_:None=Depends(require_trading_ready),current_user:User=Depends(get_current_user),idempotency_key:str|None=Header(default=None,alias="Idempotency-Key")):
     from app.startup_recovery import StartupRecoveryCoordinator
@@ -140,7 +145,7 @@ def create_order(payload:OrderRequest,request:Request,response:Response,db:Sessi
 
 @router.delete("/{client_order_id}")
 def cancel_order(client_order_id:str,request:Request,response:Response,db:Session=Depends(get_order_db),current_user:User=Depends(get_current_user)):
-    """Cancel an owned live order without requiring the normal new-order READY gate."""
+    """Cancel an owned live order and require an authoritative post-cancel broker read."""
     normalized=client_order_id.strip()
     if not normalized or len(normalized)>128: raise HTTPException(status_code=422,detail="client_order_id is required")
     order=db.query(Order).filter(Order.client_order_id==normalized).first()
@@ -155,23 +160,15 @@ def cancel_order(client_order_id:str,request:Request,response:Response,db:Sessio
     broker_router=getattr(request.app.state,"broker_router",None)
     if broker_router is None: raise HTTPException(status_code=503,detail="BROKER_ROUTER_UNAVAILABLE")
     try:
-        raw_result=broker_router.cancel(order.broker_order_id,route=order.broker_route,broker_account_id=order.broker_account_id)
-        result=normalize_broker_update(raw_result)
-        if result.order_id != str(order.broker_order_id):
-            raise ValueError("broker cancellation response order identity mismatch")
-        if result.client_order_id is not None and result.client_order_id != order.client_order_id:
-            raise ValueError("broker cancellation response client identity mismatch")
-        if not _matches_order_broker_identity(order,result):
-            raise ValueError("broker cancellation response broker identity mismatch")
-        if result.status not in {BrokerOrderStatus.CANCELLED.value,BrokerOrderStatus.FILLED.value,BrokerOrderStatus.REJECTED.value}:
-            raise ValueError("broker cancellation response is not terminal")
+        reconciliation=_authoritative_cancel_result(broker_router,order)
+        result=reconciliation.update
         _project_authoritative_broker_update(order,result)
     except ValueError as exc:
         raise HTTPException(status_code=409,detail={"code":"BROKER_CANCEL_RESPONSE_INVALID","reason":str(exc),"reconciliation_required":True}) from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=409,detail=str(exc)) from exc
+        raise HTTPException(status_code=409,detail={"code":"BROKER_CANCEL_RECONCILIATION_REQUIRED","reason":str(exc),"reconciliation_required":True}) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502,detail={"code":"BROKER_CANCEL_FAILED","reason":type(exc).__name__}) from exc
+        raise HTTPException(status_code=502,detail={"code":"BROKER_CANCEL_FAILED","reason":type(exc).__name__,"reconciliation_required":True}) from exc
     order.status=result.status
     order.note="BROKER_CANCEL_CONFIRMED" if result.status==BrokerOrderStatus.CANCELLED.value else f"BROKER_CANCEL_RACE_{result.status}"
     if result.order_id:
