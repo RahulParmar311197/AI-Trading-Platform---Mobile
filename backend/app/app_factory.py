@@ -27,6 +27,7 @@ from app.broker_execution_context import BrokerExecutionContext
 from app.execution_authorization import ExecutionAuthorization
 from app.execution_authorization_store import ExecutionAuthorizationStore
 from app.live_execution_gateway import LiveExecutionGateway, ExecutionPolicy
+from app.authoritative_live_execution_gateway import AuthoritativeLiveExecutionGateway
 from app.reconciliation import ReconciliationEngine
 from app.reconciliation_coordinator import ReconciliationCoordinator
 from app.startup_execution_state import StartupExecutionStateMachine
@@ -96,7 +97,7 @@ class AppResources:
         incident_reporter=None,
     ) -> LiveExecutionGateway:
         """Create the canonical live gateway with the same attestor and durable stores."""
-        return LiveExecutionGateway(
+        return AuthoritativeLiveExecutionGateway(
             executor,
             policy=policy,
             position_reader=position_reader,
