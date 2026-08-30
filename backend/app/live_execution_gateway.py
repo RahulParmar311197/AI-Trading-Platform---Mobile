@@ -7,7 +7,7 @@ import hashlib
 import secrets
 from typing import Any, Callable, Protocol
 
-from app.broker_adapter import BrokerOrderRequest, BrokerOrderUpdate
+from app.broker_adapter import BrokerOrderRequest, BrokerOrderUpdate, normalize_broker_update
 from app.broker_context_attestation import BrokerContextAttestor
 from app.broker_execution_context import BrokerExecutionContext
 from app.broker_order_lifecycle import OrderLifecycle, OrderLifecycleEvent, OrderStatus
@@ -126,6 +126,8 @@ class LiveExecutionGateway:
         order: OrderIntent,
         authorization: ExecutionAuthorization | None = None,
         context: BrokerExecutionContext | None = None,
+        *,
+        expected_request: BrokerOrderRequest | None = None,
     ) -> TrackedExecution:
         if self.policy.kill_switch:
             self.incident_reporter.report_kill_switch("execution blocked: kill switch is active")
@@ -141,7 +143,7 @@ class LiveExecutionGateway:
         lifecycle.apply(OrderLifecycleEvent(status=OrderStatus.ACCEPTED, timestamp=_now()))
         try:
             result = self.executor.execute(safe_order)
-            self._apply_broker_result(lifecycle, result)
+            self._apply_broker_result(lifecycle, result, expected_request=expected_request)
         except Exception as exc:
             if not lifecycle.terminal:
                 lifecycle.apply(OrderLifecycleEvent(status=OrderStatus.REJECTED, timestamp=_now(), reason=str(exc)))
@@ -159,12 +161,26 @@ class LiveExecutionGateway:
             if not isinstance(context, BrokerExecutionContext):
                 raise ExecutionSafetyError("execution blocked: broker execution context is required")
             self._validate_request_context_identity(request, context)
-        return self.execute(_order_intent_from_request(request), authorization, context)
+        return self.execute(
+            _order_intent_from_request(request),
+            authorization,
+            context,
+            expected_request=request,
+        )
 
     @staticmethod
-    def _apply_broker_result(lifecycle: OrderLifecycle, result: object) -> None:
+    def _apply_broker_result(
+        lifecycle: OrderLifecycle,
+        result: object,
+        *,
+        expected_request: BrokerOrderRequest | None = None,
+    ) -> None:
         if not isinstance(result, BrokerOrderUpdate):
             return
+        try:
+            verified_result = normalize_broker_update(result, expected=expected_request)
+        except (TypeError, ValueError) as exc:
+            raise ExecutionSafetyError(f"execution blocked: unverified broker response: {exc}") from exc
         status_map = {
             "NEW": OrderStatus.ACCEPTED,
             "PARTIALLY_FILLED": OrderStatus.PARTIALLY_FILLED,
@@ -173,18 +189,18 @@ class LiveExecutionGateway:
             "CANCELLED": OrderStatus.CANCELLED,
         }
         try:
-            status = status_map[result.status.upper()]
+            status = status_map[verified_result.status.upper()]
         except (AttributeError, KeyError) as exc:
             raise ExecutionSafetyError("execution blocked: broker returned unsupported lifecycle status") from exc
-        filled = result.filled_quantity if result.filled_quantity is not None else 0
+        filled = verified_result.filled_quantity if verified_result.filled_quantity is not None else 0
         lifecycle.apply(
             OrderLifecycleEvent(
                 status=status,
                 timestamp=_now(),
-                broker_order_id=result.order_id,
+                broker_order_id=verified_result.order_id,
                 filled_quantity=filled,
-                average_price=result.average_price,
-                reason=result.message if status in {OrderStatus.REJECTED, OrderStatus.CANCELLED} else None,
+                average_price=verified_result.average_price,
+                reason=verified_result.message if status in {OrderStatus.REJECTED, OrderStatus.CANCELLED} else None,
             )
         )
 
