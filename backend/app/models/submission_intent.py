@@ -22,3 +22,6 @@ class SubmissionIntentRecord(Base):
     request_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    broker_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    broker_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    recovered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
