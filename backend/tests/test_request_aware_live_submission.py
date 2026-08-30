@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.broker_adapter import BrokerOrderRequest
-from app.live_execution_gateway import ExecutionMode, ExecutionPolicy, ExecutionSafetyError, LiveExecutionGateway
+from app.live_execution_gateway import ExecutionMode, ExecutionPolicy, ExecutionSafetyError, LiveExecutionGateway, _order_intent_from_request
 
 
 class RequestAwareExecutor:
@@ -18,7 +18,7 @@ class RequestAwareExecutor:
 
     def execute(self, order):
         self.legacy_calls += 1
-        raise AssertionError("legacy execute() must not be used for live request execution")
+        raise AssertionError("legacy execute() must not be used when a broker request is available")
 
 
 class LegacyOnlyExecutor:
@@ -45,7 +45,7 @@ def request():
     )
 
 
-def test_live_submission_passes_original_broker_request_to_request_aware_executor():
+def test_request_aware_submission_passes_original_broker_request_to_executor():
     executor = RequestAwareExecutor(
         {
             "order_id": "broker-1",
@@ -60,10 +60,7 @@ def test_live_submission_passes_original_broker_request_to_request_aware_executo
             "broker_route_generation": "gen-1",
         }
     )
-    gateway = LiveExecutionGateway(
-        executor,
-        ExecutionPolicy(mode=ExecutionMode.PAPER),
-    )
+    gateway = LiveExecutionGateway(executor, ExecutionPolicy(mode=ExecutionMode.PAPER))
 
     tracked = gateway.execute_request(request())
 
@@ -76,14 +73,14 @@ def test_live_submission_passes_original_broker_request_to_request_aware_executo
     assert tracked.result["order_id"] == "broker-1"
 
 
-def test_live_execution_rejects_legacy_executor_without_request_aware_submission():
+def test_live_submission_rejects_legacy_executor_without_request_aware_capability():
     executor = LegacyOnlyExecutor()
-    policy = ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True)
-    gateway = LiveExecutionGateway(executor, policy)
+    gateway = LiveExecutionGateway(
+        executor,
+        ExecutionPolicy(mode=ExecutionMode.LIVE, live_trading_enabled=True),
+    )
 
-    # Live execution must fail before consuming an authorization when the
-    # executor cannot receive the broker-scoped request that must be bound to it.
     with pytest.raises(ExecutionSafetyError, match="request-aware submit_order"):
-        gateway.execute_request(request())
+        gateway._submit(_order_intent_from_request(request()), request())
 
     assert executor.calls == 0
