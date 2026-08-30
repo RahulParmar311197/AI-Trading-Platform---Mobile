@@ -100,6 +100,16 @@ def _project_authoritative_broker_update(order:Order,result)->None:
             raise ValueError("broker cancellation average price is invalid")
         order.average_fill_price=average
 
+def _matches_order_broker_identity(order:Order,result)->bool:
+    """Compare broker identities without coercing opaque external identifiers to integers."""
+    if result.broker_account_id is not None and str(result.broker_account_id).strip() != str(order.broker_account_id).strip():
+        return False
+    if result.broker_route is not None and result.broker_route != order.broker_route:
+        return False
+    if result.broker_route_generation is not None and result.broker_route_generation != order.broker_route_generation:
+        return False
+    return True
+
 @router.post("")
 def create_order(payload:OrderRequest,request:Request,response:Response,db:Session=Depends(get_order_db),_:None=Depends(require_trading_ready),current_user:User=Depends(get_current_user),idempotency_key:str|None=Header(default=None,alias="Idempotency-Key")):
     from app.startup_recovery import StartupRecoveryCoordinator
@@ -151,8 +161,8 @@ def cancel_order(client_order_id:str,request:Request,response:Response,db:Sessio
             raise ValueError("broker cancellation response order identity mismatch")
         if result.client_order_id is not None and result.client_order_id != order.client_order_id:
             raise ValueError("broker cancellation response client identity mismatch")
-        if result.broker_account_id is not None and result.broker_account_id != int(order.broker_account_id):
-            raise ValueError("broker cancellation response account identity mismatch")
+        if not _matches_order_broker_identity(order,result):
+            raise ValueError("broker cancellation response broker identity mismatch")
         if result.status not in {BrokerOrderStatus.CANCELLED.value,BrokerOrderStatus.FILLED.value,BrokerOrderStatus.REJECTED.value}:
             raise ValueError("broker cancellation response is not terminal")
         _project_authoritative_broker_update(order,result)
