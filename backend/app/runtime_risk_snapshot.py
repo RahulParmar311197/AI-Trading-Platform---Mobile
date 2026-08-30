@@ -50,7 +50,11 @@ class RuntimeRiskSnapshotProvider:
         try:
             snapshot=self.router.get_snapshot(request.broker_route); self._validate_freshness(snapshot); account=self.router.get_account(request.broker_route)
         except Exception as exc: raise RuntimeError("live broker risk snapshot unavailable") from exc
-        if snapshot.broker_route != request.broker_route or snapshot.broker_account_id is None or int(snapshot.broker_account_id) != int(request.broker_account_id):
+        snapshot_route = str(snapshot.broker_route).strip() if snapshot.broker_route is not None else ""
+        snapshot_account = str(snapshot.broker_account_id).strip() if snapshot.broker_account_id is not None else ""
+        request_route = str(request.broker_route).strip()
+        request_account = str(request.broker_account_id).strip()
+        if not snapshot_route or snapshot_route != request_route or not snapshot_account or snapshot_account != request_account:
             raise RuntimeError("broker risk snapshot account binding mismatch")
         position=self._position_for_request(request,snapshot.positions)
         if request.stop is None: raise RuntimeError("protective stop is required for live risk authorization")
