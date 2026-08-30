@@ -14,6 +14,7 @@ from app.broker_order_lifecycle import OrderLifecycle, OrderLifecycleEvent, Orde
 from app.execution_authorization_store import ExecutionAuthorizationStore
 from app.order_intent import OrderIntent
 from app.pre_trade_reconciliation_gate import PreTradeReconciliationGate, PreTradeReconciliationPolicy
+from app.reconciliation_state_store import ReconciliationStateStore
 from app.trading_incidents import IncidentReporter
 
 
@@ -34,6 +35,7 @@ class ExecutionPolicy:
     reconciliation_enabled: bool = True
     authorization_ttl_seconds: int = 10
     context_max_age_seconds: int = 5
+    reconciliation_max_age_seconds: float = 30.0
 
 
 class BrokerExecutor(Protocol):
@@ -73,6 +75,7 @@ class LiveExecutionGateway:
         incident_reporter: IncidentReporter | None = None,
         authorization_store: ExecutionAuthorizationStore | None = None,
         context_attestor: BrokerContextAttestor | None = None,
+        reconciliation_state_store: ReconciliationStateStore | None = None,
     ) -> None:
         self.executor = executor
         self.policy = policy or ExecutionPolicy()
@@ -81,6 +84,7 @@ class LiveExecutionGateway:
         self.incident_reporter = incident_reporter or IncidentReporter()
         self.authorization_store = authorization_store or ExecutionAuthorizationStore()
         self.context_attestor = context_attestor
+        self.reconciliation_state_store = reconciliation_state_store
 
     def authorize(self, order: OrderIntent, context: BrokerExecutionContext) -> ExecutionAuthorization:
         """Validate a live order against current state and a coordinator-attested broker context."""
@@ -97,7 +101,7 @@ class LiveExecutionGateway:
             raise ExecutionSafetyError("execution blocked: broker execution context is not coordinator-attested")
         self._validate_context_freshness(context)
         safe_order = self._validate_order(order)
-        self._check_reconciliation()
+        self._check_reconciliation(context)
         ttl = int(self.policy.authorization_ttl_seconds)
         if ttl <= 0:
             raise ExecutionSafetyError("execution authorization TTL must be positive")
@@ -225,16 +229,36 @@ class LiveExecutionGateway:
         if str(request.broker_route_generation).strip() != context.route_generation:
             raise ExecutionSafetyError("execution blocked: broker order request route generation does not match execution context")
 
-    def _check_reconciliation(self) -> None:
+    def _check_reconciliation(self, context: BrokerExecutionContext) -> None:
         if not self.policy.reconciliation_enabled:
             return
-        if self.position_reader is None or self.local_positions_reader is None:
-            self.incident_reporter.report_reconciliation_failure("execution blocked: position reconciliation is not configured")
-            raise ExecutionSafetyError("execution blocked: position reconciliation is not configured")
+        if self.reconciliation_state_store is None:
+            self.incident_reporter.report_reconciliation_failure(
+                "execution blocked: durable reconciliation state is not configured"
+            )
+            raise ExecutionSafetyError("execution blocked: durable reconciliation state is not configured")
         try:
+            if self.reconciliation_state_store.is_trading_blocked(
+                broker_account_id=context.account_id,
+                broker_route=context.broker_route,
+                max_age_seconds=self.policy.reconciliation_max_age_seconds,
+            ):
+                self.incident_reporter.report_reconciliation_failure(
+                    "execution blocked: durable reconciliation state is not verified and fresh"
+                )
+                raise ExecutionSafetyError(
+                    "execution blocked: durable reconciliation state is not verified and fresh"
+                )
+            if self.position_reader is None or self.local_positions_reader is None:
+                self.incident_reporter.report_reconciliation_failure(
+                    "execution blocked: position reconciliation is not configured"
+                )
+                raise ExecutionSafetyError("execution blocked: position reconciliation is not configured")
             PreTradeReconciliationGate(
                 PreTradeReconciliationPolicy(enabled=True, block_on_mismatch=True)
             ).check(self.local_positions_reader(), self.position_reader.get_positions())
+        except ExecutionSafetyError:
+            raise
         except Exception as exc:
             self.incident_reporter.report_reconciliation_failure(str(exc))
             raise ExecutionSafetyError(f"execution blocked: pre-trade reconciliation failed: {exc}") from exc
