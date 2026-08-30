@@ -10,6 +10,7 @@ from app.risk_reservation_store import RiskReservationStore
 
 
 def _store(tmp_path: Path) -> RiskReservationStore:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     engine = create_engine(f"sqlite:///{tmp_path / 'risk.sqlite'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine, tables=[RiskReservationRecord.__table__])
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -105,3 +106,13 @@ def test_partial_fill_zero_releases_and_unknown_state_keeps_reservation(tmp_path
     assert store.active_amount(broker_account_id="001", broker_route="upstox") == 20
     assert store.reconcile(reservation_id="r1", broker_status="PARTIALLY_FILLED", remaining_amount=0) == store.RELEASED
     assert store.active_amount(broker_account_id="001", broker_route="upstox") == 0
+
+
+def test_client_order_binding_reconciles_idempotently(tmp_path: Path):
+    store = _store(tmp_path)
+    _reserve(store, reservation_id="r-client", client_order_id="client-42", amount=20)
+    assert store.reconcile_client_order(client_order_id="client-42", broker_status="PARTIALLY_FILLED", remaining_amount=6) == store.ACTIVE
+    assert store.active_amount(broker_account_id="001", broker_route="upstox") == 6
+    assert store.reconcile_client_order(client_order_id="client-42", broker_status="FILLED") == store.RELEASED
+    assert store.reconcile_client_order(client_order_id="client-42", broker_status="FILLED") == store.RELEASED
+    assert store.reconcile_client_order(client_order_id="missing", broker_status="FILLED") is None
