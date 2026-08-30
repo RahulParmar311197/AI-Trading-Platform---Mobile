@@ -38,6 +38,8 @@ class Settings(BaseSettings):
                 raise ValueError("JWT_SECRET must be changed in production")
             if len(self.broker_context_attestation_secret.encode("utf-8")) < 32:
                 raise ValueError("BROKER_CONTEXT_ATTESTATION_SECRET must be set to at least 32 characters in production")
+            if self.database_url.lower().startswith("sqlite"):
+                raise ValueError("DATABASE_URL must use a server database in production")
         return self
 
     @property
