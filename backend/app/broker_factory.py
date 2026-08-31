@@ -93,7 +93,7 @@ def build_account_route(account: BrokerAccount) -> BrokerRoute:
         if not access_token:
             raise ValueError(f"account:{account.id}:upstox_access_token_missing")
         base_url = str(credentials.get("base_url", "https://api-hft.upstox.com")).rstrip("/")
-        adapter = UpstoxAdapter(UpstoxConfig(access_token=access_token, base_url=base_url, live_enabled=True, timeout_seconds=float(credentials.get("timeout_seconds", 10.0)), slice_orders=bool(credentials.get("slice_orders", False)), market_protection=int(credentials.get("market_protection", -1))))
+        adapter = UpstoxAdapter(UpstoxConfig(access_token=access_token, base_url=base_url, live_enabled=True, timeout_seconds=float(credentials.get("timeout_seconds", 10.0)), slice_orders=bool(credentials.get("slice_orders", False)), market_protection=int(credentials.get("market_protection", -1)), broker_account_id=str(account.id), broker_route=route_name, broker_route_generation=generation))
     elif broker == "dhan":
         client_id = str(credentials.get("client_id", "")).strip()
         access_token = str(credentials.get("access_token", "")).strip()
@@ -101,6 +101,7 @@ def build_account_route(account: BrokerAccount) -> BrokerRoute:
             raise ValueError(f"account:{account.id}:dhan_credentials_missing")
         base_url = str(credentials.get("base_url", "https://api.dhan.co/v2")).rstrip("/")
         adapter = DhanAdapter(DhanConfig(client_id=client_id, access_token=access_token, base_url=base_url, live_enabled=True, timeout_seconds=float(credentials.get("timeout_seconds", 10.0))))
+
     else:
         raise ValueError(f"account:{account.id}:unsupported_broker:{broker}")
 
