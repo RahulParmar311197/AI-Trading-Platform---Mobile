@@ -8,7 +8,7 @@ from datetime import datetime
 
 from app.order_lifecycle import OrderLifecycle, OrderStatus, PositionStatus
 
-EXECUTION_STATE_SCHEMA_VERSION = 2
+EXECUTION_STATE_SCHEMA_VERSION = 3
 
 
 class ExecutionStateStore:
@@ -61,6 +61,15 @@ class ExecutionStateStore:
             for raw in migrated.get("orders", {}).values():
                 if not isinstance(raw, dict): raise ValueError("invalid order record")
                 raw.setdefault("execution_id", None)
+            version = 2
+        if version == 2:
+            migrated["schema_version"] = 3
+            for raw in migrated.get("positions", {}).values():
+                if not isinstance(raw, dict): raise ValueError("invalid position record")
+                # Legacy positions were not broker-account scoped. Preserve them explicitly
+                # as unscoped so multi-account recovery can fail closed rather than guess.
+                raw.setdefault("broker_account_id", None)
+                raw.setdefault("broker_route", None)
         return migrated
 
     def _deserialize_into(self, lifecycle: OrderLifecycle, data: dict) -> None:
@@ -75,7 +84,7 @@ class ExecutionStateStore:
             lifecycle.orders[oid] = OrderRecord(**value)
         for symbol, raw in positions.items():
             if not isinstance(raw, dict): raise ValueError("invalid position record")
-            value = dict(raw); value["status"] = PositionStatus(value["status"]); lifecycle.positions[symbol] = PositionRecord(**value)
+            value = dict(raw); value["status"] = PositionStatus(value["status"]); value.setdefault("broker_account_id", None); value.setdefault("broker_route", None); lifecycle.positions[symbol] = PositionRecord(**value)
         raw_pnl = data.get("realized_pnl_by_symbol", {})
         if not isinstance(raw_pnl, dict): raise ValueError("realized_pnl_by_symbol must be an object")
         for symbol, value in raw_pnl.items():
