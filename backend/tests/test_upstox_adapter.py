@@ -1,6 +1,6 @@
 import pytest
 
-from app.broker_adapter import BrokerOrderRequest
+from app.broker_adapter import BrokerOrderRequest, normalize_broker_update
 from app.upstox_adapter import UpstoxAdapter, UpstoxConfig, UpstoxHttpTransport
 
 
@@ -27,8 +27,8 @@ class Transport:
         return self.next_response
 
 
-def req(tag="client-1", order_type="MARKET"):
-    return BrokerOrderRequest(client_order_id=tag, symbol="NIFTY", side="BUY", quantity=10, order_type=order_type, price=100, security_id="NSE_EQ|TEST", product_type="INTRADAY")
+def req(tag="client-1", order_type="MARKET", **identity):
+    return BrokerOrderRequest(client_order_id=tag, symbol="NIFTY", side="BUY", quantity=10, order_type=order_type, price=100, security_id="NSE_EQ|TEST", product_type="INTRADAY", **identity)
 
 
 def test_live_disabled_by_default():
@@ -47,6 +47,36 @@ def test_submit_uses_v3_tag_and_safe_market_protection():
     assert kwargs["json"]["tag"] == "client-1"
     assert kwargs["json"]["slice"] is False
     assert kwargs["json"]["market_protection"] == -1
+
+
+def test_account_bound_submit_preserves_route_identity():
+    transport = Transport()
+    config = UpstoxConfig("token", live_enabled=True, broker_account_id="42", broker_route="upstox:account:42", broker_route_generation="account:42:v1")
+    adapter = UpstoxAdapter(config, transport)
+    request = req(broker_account_id="42", broker_route="upstox:account:42", broker_route_generation="account:42:v1")
+    result = adapter.submit_order(request)
+    assert result.broker_account_id == "42"
+    assert result.broker_route == "upstox:account:42"
+    assert result.broker_route_generation == "account:42:v1"
+    assert normalize_broker_update(result, expected=request) == result
+
+
+def test_account_bound_submit_rejects_route_mismatch():
+    adapter = UpstoxAdapter(UpstoxConfig("token", live_enabled=True, broker_account_id="42", broker_route="upstox:account:42", broker_route_generation="account:42:v1"), Transport())
+    request = req(broker_account_id="43", broker_route="upstox:account:42", broker_route_generation="account:42:v1")
+    with pytest.raises(ValueError, match="broker_account_id"):
+        adapter.submit_order(request)
+
+
+def test_cancel_preserves_configured_account_route_identity():
+    transport = Transport()
+    transport.next_response = Response({"data": {"order_id": "U1", "message": "cancelled"}})
+    adapter = UpstoxAdapter(UpstoxConfig("token", live_enabled=True, broker_account_id="42", broker_route="upstox:account:42", broker_route_generation="account:42:v1"), transport)
+    result = adapter.cancel_order("U1")
+    assert result.status == "CANCELLED"
+    assert result.broker_account_id == "42"
+    assert result.broker_route == "upstox:account:42"
+    assert result.broker_route_generation == "account:42:v1"
 
 
 def test_tag_limit_is_enforced():
