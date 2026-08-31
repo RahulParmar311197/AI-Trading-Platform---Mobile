@@ -1,3 +1,5 @@
+import pytest
+
 from app.broker_adapter import BrokerOrderRequest, normalize_broker_update
 from app.dhan_adapter import DhanAdapter, DhanConfig
 
@@ -38,12 +40,15 @@ def _request():
     )
 
 
-def test_dhan_submission_result_is_canonical_and_identity_complete():
-    transport = FakeTransport({"orderId": "D-42", "orderStatus": "TRANSIT"})
-    adapter = DhanAdapter(
+def _adapter(payload):
+    return DhanAdapter(
         DhanConfig(client_id="acct-1", access_token="token", live_enabled=True),
-        transport=transport,
+        transport=FakeTransport(payload),
     )
+
+
+def test_dhan_submission_result_is_canonical_and_identity_complete():
+    adapter = _adapter({"orderId": "D-42", "orderStatus": "TRANSIT"})
 
     update = adapter.submit_order(_request())
 
@@ -64,14 +69,35 @@ def test_dhan_submission_result_is_canonical_and_identity_complete():
 
 
 def test_dhan_rejection_is_preserved_as_terminal_submission_result():
-    transport = FakeTransport({"orderId": "D-43", "orderStatus": "REJECTED"})
-    adapter = DhanAdapter(
-        DhanConfig(client_id="acct-1", access_token="token", live_enabled=True),
-        transport=transport,
-    )
+    adapter = _adapter({"orderId": "D-43", "orderStatus": "REJECTED"})
 
     update = adapter.submit_order(_request())
 
     assert update.status == "REJECTED"
     assert update.filled_quantity is None
     normalize_broker_update(update, expected=_request())
+
+
+def test_dhan_filled_submission_requires_authoritative_fill_details():
+    adapter = _adapter(
+        {
+            "orderId": "D-44",
+            "orderStatus": "TRADED",
+            "filledQty": 2,
+            "averageTradedPrice": 225.5,
+        }
+    )
+
+    update = adapter.submit_order(_request())
+
+    assert update.status == "FILLED"
+    assert update.filled_quantity == 2
+    assert update.average_price == 225.5
+    normalize_broker_update(update, expected=_request())
+
+
+def test_dhan_filled_submission_fails_closed_without_fill_price():
+    adapter = _adapter({"orderId": "D-45", "orderStatus": "TRADED", "filledQty": 2})
+
+    with pytest.raises(ValueError, match="non-zero broker fill requires average_price"):
+        adapter.submit_order(_request())
