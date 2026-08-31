@@ -34,6 +34,15 @@ def test_average_fill_price_reconciliation_applies_only_new_quantity():
     assert book.positions["NIFTY"].entry_price == pytest.approx(104.0)
 
 
+def test_equal_fill_quantity_with_different_price_is_rejected_as_stale():
+    book = OrderLifecycle(); book.create("o1", "NIFTY", "BUY", 10); book.transition("o1", OrderStatus.PARTIALLY_FILLED, 4, 100.0)
+    with pytest.raises(ValueError, match="fill price cannot change"):
+        book.transition("o1", OrderStatus.PARTIALLY_FILLED, 4, 99.0)
+    assert book.orders["o1"].filled_quantity == 4
+    assert book.orders["o1"].average_fill_price == pytest.approx(100.0)
+    assert book.positions["NIFTY"].quantity == 4
+
+
 def test_invalid_fill_rejected():
     book = OrderLifecycle(); book.create("o1", "NIFTY", "BUY", 10)
     with pytest.raises(ValueError): book.transition("o1", OrderStatus.FILLED, 11, 100.0)
