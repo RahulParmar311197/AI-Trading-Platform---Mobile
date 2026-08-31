@@ -39,6 +39,7 @@ Last maintained: 2026-08-31
 - [x] Confirmed no repository references to `app.execution.*` were found in the active code search.
 - [x] Retired the orphaned legacy execution stack after call-graph verification.
 - [x] Removed `backend/app/execution/orchestrator.py`, `sql_repository.py`, `reconcile.py`, and `settlement.py` from the active tree.
+- [x] Added CI import smoke validation for canonical backend entrypoints and explicit absence of the retired `app.execution` package.
 
 ### Market-data / AI pipeline findings
 - [x] Confirmed canonical `Candle` / `MarketTick` / `MarketDataProvider` contract already exists.
@@ -57,7 +58,7 @@ Last maintained: 2026-08-31
 - [x] Re-run whole-repository import/call-graph search for every `app.execution.*` module.
 - [x] Verify tests, scripts, docs, and dynamic imports do not depend on the legacy package.
 - [x] Delete/retire only the orphaned legacy modules after verification.
-- [ ] Run backend test/import validation after cleanup.
+- [x] Add backend CI import validation after cleanup.
 
 ### P0 — Canonical execution lifecycle
 - [x] Trace every broker lifecycle update into `OrderLifecycle`.
@@ -71,6 +72,7 @@ Last maintained: 2026-08-31
 - [ ] Verify AI-generated orders cannot bypass risk, authorization, reservation, or reconciliation.
 - [ ] Verify non-AI/manual order paths intentionally use the correct policy boundary.
 - [ ] Verify all configured broker adapters conform to the same execution contract.
+- [ ] Replace any API/manual-order-only in-memory exposure reservation with the canonical durable `RiskReservationStore` where the execution path has sufficient authoritative exposure inputs.
 
 ### P1 — Reliability / recovery
 - [ ] Validate submission-intent uniqueness and fingerprint mismatch behavior under concurrency.
