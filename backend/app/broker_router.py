@@ -20,8 +20,15 @@ class BrokerRoute:
     name: str
     adapter: BrokerAdapter
     enabled: bool = True
-    broker_account_id: int | None = None
+    broker_account_id: str | None = None
     generation: str | None = None
+    def __post_init__(self):
+        if self.broker_account_id is None: return
+        if isinstance(self.broker_account_id, bool): raise ValueError("broker_account_id must be a non-empty string")
+        value=str(self.broker_account_id).strip()
+        if not value: raise ValueError("broker_account_id must be a non-empty string")
+        if len(value)>128: raise ValueError("broker_account_id exceeds 128 characters")
+        object.__setattr__(self,"broker_account_id",value)
 
 class BrokerRouter:
     def __init__(self,routes:list[BrokerRoute],default_route:str,safety_store:SafetyStateStore|None=None,trading_gate:TradingGate|None=None,max_reconciliation_age_seconds:float=2.0,submission_intent_store:SubmissionIntentStore|None=None,reconciliation_engine:ReconciliationEngine|None=None,context_attestor:BrokerContextAttestor|None=None):
@@ -142,7 +149,7 @@ class BrokerRouter:
     def _require_account_binding(self,request:BrokerOrderRequest,route:BrokerRoute)->None:
         if request.broker_account_id is None:return
         if route.broker_account_id is None:raise RuntimeError("broker route is not bound to a broker account")
-        if int(route.broker_account_id)!=int(request.broker_account_id):raise RuntimeError("broker account does not match broker route")
+        if str(route.broker_account_id)!=str(request.broker_account_id):raise RuntimeError("broker account does not match broker route")
         if request.broker_route_generation is None:raise RuntimeError("broker account route generation is required")
         if route.generation is None or str(route.generation)!=str(request.broker_route_generation):raise RuntimeError("broker account route generation is stale")
     def _recover_after_submit_failure(self,request:BrokerOrderRequest,selected:BrokerRoute,original:Exception)->BrokerOrderUpdate:
@@ -190,7 +197,7 @@ class BrokerRouter:
             selected=self.get(route)
             if broker_account_id is not None:
                 if selected.broker_account_id is None:raise RuntimeError("broker route is not bound to a broker account")
-                if int(selected.broker_account_id)!=int(broker_account_id):raise RuntimeError("broker account does not match broker route")
+                if str(selected.broker_account_id)!=str(broker_account_id):raise RuntimeError("broker account does not match broker route")
             return selected.adapter.cancel_order(order_id)
     def get_order(self,order_id,route=None):
         with self._route_lifecycle_lock:return self.get(route).adapter.get_order(order_id)
