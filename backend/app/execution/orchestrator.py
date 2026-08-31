@@ -6,6 +6,7 @@ from hashlib import sha256
 from typing import Any
 
 from app.brokers.base import BrokerAdapter
+from .sql_repository import ExecutionRepository
 
 
 @dataclass(frozen=True)
@@ -22,16 +23,11 @@ class ExecutionRequest:
 
 
 class ExecutionOrchestrator:
-    """Provider-neutral submission boundary.
+    """Provider-neutral, fail-closed broker submission boundary."""
 
-    Durable intent/reservation records are owned by the caller's transaction
-    boundary. This service never retries an ambiguous broker submission.
-    """
-
-    def __init__(self, broker: BrokerAdapter, intent_store: Any, reservation_store: Any, clock=None):
+    def __init__(self, broker: BrokerAdapter, repository: ExecutionRepository, clock=None):
         self._broker = broker
-        self._intents = intent_store
-        self._reservations = reservation_store
+        self._repository = repository
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     @staticmethod
@@ -40,8 +36,8 @@ class ExecutionOrchestrator:
         return sha256(raw.encode()).hexdigest()
 
     def submit(self, request: ExecutionRequest) -> dict[str, Any]:
-        existing = self._intents.get(request.client_order_id)
         fingerprint = self.fingerprint(request)
+        existing = self._repository.get_intent(request.client_order_id)
         if existing is not None:
             if existing.request_fingerprint != fingerprint:
                 raise ValueError("client_order_id is already bound to a different order")
@@ -49,36 +45,25 @@ class ExecutionOrchestrator:
                 return {"status": existing.broker_status or "SUBMITTED", "broker_order_id": existing.broker_order_id, "idempotent": True}
             raise RuntimeError("ambiguous prior broker submission; reconcile before retrying")
 
-        self._intents.create(
-            client_order_id=request.client_order_id,
-            route=request.route,
-            account_id=request.account_id,
-            symbol=request.symbol,
-            side=request.side,
-            quantity=request.quantity,
-            request_fingerprint=fingerprint,
-            created_at=self._clock(),
+        self._repository.create_intent(
+            client_order_id=request.client_order_id, route=request.route,
+            account_id=request.account_id, symbol=request.symbol, side=request.side,
+            quantity=request.quantity, request_fingerprint=fingerprint, created_at=self._clock(),
         )
-        self._reservations.reserve(
-            client_order_id=request.client_order_id,
-            broker_account_id=request.account_id,
-            broker_route=request.route,
-            amount=request.quantity * (request.price or 0),
-            created_at=self._clock(),
+        self._repository.reserve(
+            client_order_id=request.client_order_id, broker_account_id=request.account_id,
+            broker_route=request.route, amount=request.quantity * (request.price or 0), created_at=self._clock(),
         )
+        self._repository.session.commit()
 
-        payload = {
-            "client_order_id": request.client_order_id,
-            "symbol": request.symbol,
-            "side": request.side,
-            "quantity": request.quantity,
-            "order_type": request.order_type,
-            "price": request.price,
-            "stop": request.stop,
-        }
-        result = self._broker.place_order(payload)
+        result = self._broker.place_order({
+            "client_order_id": request.client_order_id, "symbol": request.symbol,
+            "side": request.side, "quantity": request.quantity,
+            "order_type": request.order_type, "price": request.price, "stop": request.stop,
+        })
         broker_order_id = result.get("broker_order_id") or result.get("order_id")
         if not broker_order_id:
-            raise RuntimeError("broker accepted no durable order identifier")
-        self._intents.resolve(request.client_order_id, broker_order_id, result.get("status"))
+            raise RuntimeError("broker returned no durable order identifier")
+        self._repository.resolve_intent(request.client_order_id, broker_order_id, result.get("status"))
+        self._repository.session.commit()
         return {**result, "broker_order_id": broker_order_id, "idempotent": False}
