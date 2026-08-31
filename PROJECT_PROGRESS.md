@@ -2,7 +2,7 @@
 
 > Persistent execution tracker. **Rule: before every next implementation step, re-check this file and the repository call graph to avoid duplicate/loop work.**
 
-Last maintained: 2026-08-31
+Last maintained: 2026-09-01
 
 ## Working Rules
 
@@ -73,6 +73,10 @@ Last maintained: 2026-08-31
 - [x] Dhan immediate `TRADED` placement results now carry authoritative filled quantity and average price when supplied by the broker.
 - [x] Dhan immediate `TRADED` results fail closed when fill price is missing rather than fabricating a canonical `FILLED` event.
 - [x] Added regression coverage for Dhan canonical fill normalization and fail-closed behavior.
+- [x] Upstox account-bound submission results now preserve persisted broker account, route, and route-generation identity through canonical normalization.
+- [x] Upstox account-bound route construction now injects the canonical persisted account/route/generation identity into `UpstoxConfig`.
+- [x] Upstox cancellation results preserve configured route identity when available.
+- [x] Added regression coverage for Upstox account-route identity and route mismatch rejection.
 
 ## Pending — ordered by priority
 
@@ -93,7 +97,7 @@ Last maintained: 2026-08-31
 - [ ] Trace all API/order entrypoints to the actual broker gateway.
 - [ ] Verify AI-generated orders cannot bypass risk, authorization, reservation, or reconciliation.
 - [x] Verify non-AI/manual order paths now use the same durable reservation authority as the canonical AI path.
-- [ ] Verify all configured broker adapters conform to the same execution contract.
+- [x] Verify all configured broker adapters conform to the same execution contract.
 - [x] Replace API/manual-order-only in-memory exposure reservation with the canonical durable `RiskReservationStore` where the execution path has sufficient authoritative exposure inputs.
 
 ### P1 — Reliability / recovery
@@ -117,7 +121,7 @@ Last maintained: 2026-08-31
 ### P1 — Broker coverage
 - [ ] Audit broker adapters and capability declarations.
 - [ ] Validate broker-specific order types, status mappings, precision, lot sizes, and rejection handling.
-- [ ] Validate account identity and route binding.
+- [x] Validate account identity and route binding for Dhan and Upstox submission paths.
 
 ### P2 — Platform / operations
 - [ ] Authentication/authorization audit.
