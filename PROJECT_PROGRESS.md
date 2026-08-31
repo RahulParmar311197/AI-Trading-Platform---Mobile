@@ -40,6 +40,17 @@ Last maintained: 2026-08-31
 - [x] Retired the orphaned legacy execution stack after call-graph verification.
 - [x] Removed `backend/app/execution/orchestrator.py`, `sql_repository.py`, `reconcile.py`, and `settlement.py` from the active tree.
 
+### Market-data / AI pipeline findings
+- [x] Confirmed canonical `Candle` / `MarketTick` / `MarketDataProvider` contract already exists.
+- [x] Confirmed AI feature and SMC/technical signal layers consume canonical `Candle[]` directly.
+- [x] Confirmed AI market analyst is grounded on deterministic signal snapshots and cannot place orders.
+- [x] Confirmed deterministic position sizing already exists and is used by `AITradeIntent`.
+- [x] Confirmed canonical AI execution bridge already reaches the existing execution authorization/gateway stack.
+- [x] Verified Upstox has quote support but previously had no historical-candle capability.
+- [x] Added provider-neutral optional historical-candle capability to `BrokerAdapter` without breaking brokers that do not support it.
+- [x] Added Upstox Historical Candle V3 client support using the official V3 endpoint and native OHLCV rows.
+- [x] Exposed Upstox historical candles through `UpstoxAdapter` without creating a second candle model or market-data subsystem.
+
 ## Pending — ordered by priority
 
 ### P0 — Remove/retire duplicate execution stack safely
@@ -76,6 +87,8 @@ Last maintained: 2026-08-31
 - [ ] Backtesting engine audit.
 - [ ] Portfolio/position/P&L accounting audit.
 - [ ] Paper/sandbox/live mode separation audit.
+- [ ] Connect broker historical candles to the existing canonical `MarketDataProvider` / validated `Candle[]` pipeline.
+- [ ] Add live/intraday candle ingestion or stream integration using the same canonical candle contract.
 
 ### P1 — Broker coverage
 - [ ] Audit broker adapters and capability declarations.
@@ -119,6 +132,9 @@ OrderLifecycle / Reconciliation
 - `LiveExecutionGateway`
 - `OrderLifecycle`
 - submission-intent persistence/recovery
+- `Candle` / `MarketTick` / `MarketDataProvider`
+- existing AI/SMC/technical signal engines
+- existing deterministic `position_sizing`
 
 If an apparent gap is found, first search for an existing implementation and wire/extend it rather than creating a parallel class.
 
