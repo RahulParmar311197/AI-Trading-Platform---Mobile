@@ -154,21 +154,21 @@ class InMemoryMarketData:
         timeframe: str,
         rows: list[dict[str, Any]],
     ) -> int:
-        """Normalize provider-neutral broker candle rows into the canonical Candle store."""
+        """Normalize broker rows as an atomic batch before mutating the canonical store."""
         if not symbol.strip() or not timeframe.strip():
             raise ValueError("symbol and timeframe are required")
         normalized: list[Candle] = []
-        for row in rows:
+        for index, row in enumerate(rows):
             if not isinstance(row, dict):
-                continue
+                raise ValueError(f"invalid broker candle row at index {index}")
             timestamp = row.get("timestamp")
             if isinstance(timestamp, str):
                 try:
                     timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                except ValueError:
-                    continue
+                except ValueError as exc:
+                    raise ValueError(f"invalid broker candle timestamp at index {index}") from exc
             if not isinstance(timestamp, datetime):
-                continue
+                raise ValueError(f"invalid broker candle timestamp at index {index}")
             try:
                 normalized.append(
                     Candle(
@@ -182,12 +182,15 @@ class InMemoryMarketData:
                         volume=float(row.get("volume", 0.0)),
                     )
                 )
-            except (KeyError, TypeError, ValueError):
-                continue
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"invalid broker candle row at index {index}") from exc
         normalized.sort(key=lambda candle: candle.timestamp)
-        if not validate_candle_sequence(normalized):
+        if not normalized:
             return 0
-        return sum(1 for candle in normalized if self.put(candle))
+        if not validate_candle_sequence(normalized):
+            raise ValueError("broker candle batch failed canonical validation")
+        accepted = sum(1 for candle in normalized if self.put(candle))
+        return accepted
 
     def candles(self, symbol: str, timeframe: str, limit: int = 200) -> list[Candle]:
         if limit <= 0:
