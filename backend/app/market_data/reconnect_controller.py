@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import random
 from dataclasses import dataclass
+from typing import Awaitable, Callable
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,7 @@ class BackoffPolicy:
 
 
 class ReconnectController:
-    """Bounded exponential reconnect loop; recovery callback owns resync."""
+    """Bounded reconnect loop. A successful connect is not strategy-ready."""
 
     def __init__(self, connect, *, policy: BackoffPolicy | None = None, sleep=asyncio.sleep):
         self._connect = connect
@@ -56,3 +57,19 @@ class ReconnectController:
                 pass
             await self._sleep(self._policy.delay(self._attempt))
         return False
+
+
+class ReconnectRecovery:
+    """Connect, resync, then expose READY only after successful recovery."""
+
+    def __init__(self, reconnect: ReconnectController, resync: Callable[[], Awaitable[bool]]):
+        self._reconnect = reconnect
+        self._resync = resync
+
+    async def recover(self) -> bool:
+        if not await self._reconnect.run():
+            return False
+        try:
+            return bool(await self._resync())
+        except Exception:
+            return False
