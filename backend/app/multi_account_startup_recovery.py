@@ -7,7 +7,7 @@ from app.broker_context_attestation import BrokerContextAttestor
 from app.broker_execution_context import BrokerExecutionContext
 from app.broker_router import BrokerRouter
 from app.broker_snapshot import BrokerSnapshot
-from app.broker_account import BrokerAccount
+from app.models.broker_account import BrokerAccount
 from app.execution_persistence import ExecutionStateStore
 from app.order_lifecycle import OrderLifecycle
 from app.reconciliation_coordinator import ReconciliationCoordinator
