@@ -37,13 +37,15 @@ Last maintained: 2026-08-31
 - [x] Confirmed the legacy orchestrator imports the removed `risk_gate`, so it is stale/broken as a standalone path.
 - [x] Confirmed no active repository callers were found for the legacy execution orchestrator during the audit.
 - [x] Confirmed no repository references to `app.execution.*` were found in the active code search.
+- [x] Retired the orphaned legacy execution stack after call-graph verification.
+- [x] Removed `backend/app/execution/orchestrator.py`, `sql_repository.py`, `reconcile.py`, and `settlement.py` from the active tree.
 
 ## Pending — ordered by priority
 
 ### P0 — Remove/retire duplicate execution stack safely
 - [x] Re-run whole-repository import/call-graph search for every `app.execution.*` module.
 - [x] Verify tests, scripts, docs, and dynamic imports do not depend on the legacy package.
-- [ ] Delete/retire only the orphaned legacy modules after verification.
+- [x] Delete/retire only the orphaned legacy modules after verification.
 - [ ] Run backend test/import validation after cleanup.
 
 ### P0 — Canonical execution lifecycle
