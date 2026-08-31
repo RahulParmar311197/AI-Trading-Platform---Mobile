@@ -6,7 +6,7 @@ import pytest
 from app.submission_intent_store import SubmissionIntentStore
 
 
-def _create(store: SubmissionIntentStore, client_id: str = "cli-1"):
+def _create(store: SubmissionIntentStore, client_id: str = "cli-1", fingerprint: str = "fp-123"):
     return store.create(
         client_order_id=client_id,
         route="live",
@@ -14,7 +14,7 @@ def _create(store: SubmissionIntentStore, client_id: str = "cli-1"):
         symbol="NIFTY",
         side="BUY",
         quantity=10,
-        request_fingerprint="fp-123",
+        request_fingerprint=fingerprint,
     )
 
 
@@ -34,6 +34,7 @@ def test_resolved_intent_is_not_unresolved_after_restart(tmp_path: Path):
     path = tmp_path / "intents.json"
     first = SubmissionIntentStore(str(path))
     _create(first)
+    first.record_broker_order("cli-1", "broker-1", "FILLED")
     first.resolve("cli-1")
 
     second = SubmissionIntentStore(str(path))
@@ -72,24 +73,33 @@ def test_resolved_client_order_id_reopens_clean_lifecycle(tmp_path: Path):
     assert store.get_unresolved("cli-1") == reopened
 
 
-def test_duplicate_unresolved_intent_is_rejected(tmp_path: Path):
+def test_same_unresolved_intent_is_idempotent_for_same_fingerprint(tmp_path: Path):
+    store = SubmissionIntentStore(str(tmp_path / "intents.json"))
+    first = _create(store)
+    replay = _create(store)
+    assert replay == first
+    assert store.unresolved_count() == 1
+
+
+def test_unresolved_intent_fingerprint_mismatch_is_rejected(tmp_path: Path):
     store = SubmissionIntentStore(str(tmp_path / "intents.json"))
     _create(store)
-    with pytest.raises(RuntimeError, match="unresolved submission intent"):
-        _create(store)
+    with pytest.raises(RuntimeError, match="fingerprint mismatch"):
+        _create(store, fingerprint="different-request")
 
 
 def test_corrupt_primary_recovers_from_backup(tmp_path: Path):
     path = tmp_path / "intents.json"
     store = SubmissionIntentStore(str(path))
     _create(store, "cli-1")
+    store.record_broker_order("cli-1", "broker-1", "FILLED")
     store.resolve("cli-1")
     _create(store, "cli-2")
     path.write_text("{corrupt", encoding="utf-8")
 
     restored = SubmissionIntentStore(str(path))
     unresolved = restored.unresolved()
-    assert [item.client_order_id for item in unresolved] == ["cli-1"]
+    assert [item.client_order_id for item in unresolved] == ["cli-2"]
 
 
 def _concurrent_create(path: str, barrier: Barrier, results: Queue) -> None:
@@ -103,7 +113,7 @@ def _concurrent_create(path: str, barrier: Barrier, results: Queue) -> None:
         results.put("created")
 
 
-def test_duplicate_unresolved_intent_is_rejected_across_processes(tmp_path: Path):
+def test_same_unresolved_intent_is_idempotent_across_processes(tmp_path: Path):
     path = tmp_path / "intents.json"
     barrier = Barrier(2)
     results = Queue()
@@ -118,5 +128,5 @@ def test_duplicate_unresolved_intent_is_rejected_across_processes(tmp_path: Path
         assert worker.exitcode == 0
 
     outcomes = sorted(results.get(timeout=2) for _ in workers)
-    assert outcomes == ["RuntimeError", "created"]
+    assert outcomes == ["created", "created"]
     assert SubmissionIntentStore(str(path)).unresolved_count() == 1
