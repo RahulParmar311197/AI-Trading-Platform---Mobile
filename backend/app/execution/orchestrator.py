@@ -6,6 +6,7 @@ from hashlib import sha256
 from typing import Any
 
 from app.brokers.base import BrokerAdapter
+from .risk_gate import RiskGate
 from .sql_repository import ExecutionRepository
 
 
@@ -25,9 +26,10 @@ class ExecutionRequest:
 class ExecutionOrchestrator:
     """Provider-neutral, fail-closed broker submission boundary."""
 
-    def __init__(self, broker: BrokerAdapter, repository: ExecutionRepository, clock=None):
+    def __init__(self, broker: BrokerAdapter, repository: ExecutionRepository, risk_gate: RiskGate, clock=None):
         self._broker = broker
         self._repository = repository
+        self._risk_gate = risk_gate
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     @staticmethod
@@ -36,6 +38,10 @@ class ExecutionOrchestrator:
         return sha256(raw.encode()).hexdigest()
 
     def submit(self, request: ExecutionRequest) -> dict[str, Any]:
+        decision = self._risk_gate.authorize(quantity=request.quantity, price=request.price, order_type=request.order_type)
+        if not decision.approved:
+            return {"status": "REJECTED", "reason": decision.reason, "idempotent": False}
+
         fingerprint = self.fingerprint(request)
         existing = self._repository.get_intent(request.client_order_id)
         if existing is not None:
