@@ -68,6 +68,12 @@ Last maintained: 2026-08-31
 - [x] Verified canonical `OrderLifecycle` remains the order-state transition owner; reconciliation does not introduce a competing lifecycle.
 - [x] Verified submission-intent lifecycle regression coverage exists for restart/reuse of a resolved client order ID.
 
+### Broker adapter hardening
+- [x] Dhan submission results now pass the canonical broker-update normalization contract with request/account/route identity preserved.
+- [x] Dhan immediate `TRADED` placement results now carry authoritative filled quantity and average price when supplied by the broker.
+- [x] Dhan immediate `TRADED` results fail closed when fill price is missing rather than fabricating a canonical `FILLED` event.
+- [x] Added regression coverage for Dhan canonical fill normalization and fail-closed behavior.
+
 ## Pending — ordered by priority
 
 ### P0 — Remove/retire duplicate execution stack safely
