@@ -29,10 +29,11 @@ class MultiAccountRecoveryResult:
     ready: bool
     accounts: tuple[AccountRecoveryResult, ...]
     reason: str
+    verified_reconciliations: tuple[tuple[ReconciliationResult, BrokerExecutionContext], ...] = ()
 
 
 class MultiAccountStartupRecovery:
-    """Reconcile every active broker account independently, then release the global safety gate."""
+    """Reconcile every active broker account independently; safety is released by the final startup gate."""
 
     def __init__(self, router: BrokerRouter, execution_store: ExecutionStateStore, safety_store: SafetyStateStore, context_attestor: BrokerContextAttestor | None) -> None:
         self.router = router
@@ -83,9 +84,4 @@ class MultiAccountStartupRecovery:
         if len(results) != len(accounts) or not all(item.ready for item in results):
             self.safety_store.halt("MULTI_ACCOUNT_RECONCILIATION_FAILED")
             return MultiAccountRecoveryResult(False, tuple(results), "MULTI_ACCOUNT_RECONCILIATION_FAILED")
-        try:
-            self.safety_store.clear_all(verified)
-        except Exception as exc:
-            self.safety_store.halt(f"MULTI_ACCOUNT_SAFETY_CLEAR_FAILED: {type(exc).__name__}")
-            return MultiAccountRecoveryResult(False, tuple(results), "MULTI_ACCOUNT_SAFETY_CLEAR_FAILED")
-        return MultiAccountRecoveryResult(True, tuple(results), "RECOVERY_OK")
+        return MultiAccountRecoveryResult(True, tuple(results), "RECOVERY_OK", tuple(verified))
