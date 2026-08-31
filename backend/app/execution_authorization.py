@@ -17,9 +17,7 @@ class AuthorizationResult:
 class ExecutionAuthorization:
     """Single deterministic pre-trade safety gate shared by all execution callers."""
 
-    def __init__(self, safety_store: SafetyStateStore, risk_gate: Any = None,
-                 risk_snapshot_provider: Any = None, session_risk_gate: SessionRiskGate | None = None,
-                 session_clock: Any = None, audit_log: TradingAuditLog | None = None):
+    def __init__(self, safety_store: SafetyStateStore, risk_gate: Any = None, risk_snapshot_provider: Any = None, session_risk_gate: SessionRiskGate | None = None, session_clock: Any = None, audit_log: TradingAuditLog | None = None):
         self.safety_store = safety_store
         self.risk_gate = risk_gate
         self.risk_snapshot_provider = risk_snapshot_provider
@@ -29,18 +27,13 @@ class ExecutionAuthorization:
 
     def _result(self, result: AuthorizationResult, request: Any = None, metadata: dict | None = None) -> AuthorizationResult:
         order_id = getattr(request, "client_order_id", None)
-        self.audit_log.record(
-            "EXECUTION_AUTHORIZATION",
-            reason=result.reason,
-            metadata={"client_order_id": order_id, "allowed": result.allowed, "code": result.code, **(metadata or {})},
-        )
+        self.audit_log.record("EXECUTION_AUTHORIZATION", reason=result.reason, metadata={"client_order_id": order_id, "allowed": result.allowed, "code": result.code, **(metadata or {})})
         return result
 
     def check_safety(self, request: Any = None) -> AuthorizationResult:
         state = self.safety_store.load()
         if state.trading_halted:
             return AuthorizationResult(False, "TRADING_HALTED", state.halt_reason or "safety state active")
-
         account_id = getattr(request, "broker_account_id", None)
         if account_id is not None:
             account_state = self.safety_store.account_reconciliation(str(account_id))
@@ -64,6 +57,13 @@ class ExecutionAuthorization:
                 return self._result(AuthorizationResult(False, "SESSION_RISK_GATE_ERROR", str(exc)), request)
         if self.risk_gate is None:
             return self._result(AuthorizationResult(True), request)
+        reservations = getattr(self.risk_gate, "reservations", None)
+        bind_request = getattr(reservations, "bind_request", None)
+        if bind_request is not None:
+            try:
+                bind_request(request)
+            except Exception as exc:
+                return self._result(AuthorizationResult(False, "RISK_RESERVATION_BINDING_ERROR", str(exc)), request)
         if self.risk_snapshot_provider is None:
             return self._result(AuthorizationResult(False, "RISK_SNAPSHOT_UNAVAILABLE", "risk snapshot provider unavailable"), request)
         try:
@@ -72,14 +72,12 @@ class ExecutionAuthorization:
             first_decision = self.risk_gate.authorize(request, first_snapshot) if hasattr(self.risk_gate, "authorize") else self.risk_gate.evaluate(request, first_snapshot)
             if not first_decision.allowed:
                 return self._result(AuthorizationResult(False, "RISK_REJECTED", first_decision.reason), request, {"broker_snapshot_fingerprint": first_fingerprint})
-
             second_snapshot = self.risk_snapshot_provider(request)
             second_fingerprint = getattr(second_snapshot, "broker_snapshot_fingerprint", None)
             if first_fingerprint is None or second_fingerprint is None:
                 return self._result(AuthorizationResult(False, "RISK_BROKER_SNAPSHOT_UNVERIFIABLE", "broker snapshot fingerprint unavailable"), request)
             if str(first_fingerprint) != str(second_fingerprint):
                 return self._result(AuthorizationResult(False, "RISK_BROKER_SNAPSHOT_CHANGED", "broker state changed during authorization"), request, {"first_broker_snapshot_fingerprint": first_fingerprint, "second_broker_snapshot_fingerprint": second_fingerprint})
-
             account_id = getattr(request, "broker_account_id", None)
             reconciled = self.safety_store.account_reconciliation(str(account_id)) if account_id is not None else None
             if account_id is not None and reconciled is None:
@@ -89,7 +87,6 @@ class ExecutionAuthorization:
                 return self._result(AuthorizationResult(False, "RECONCILIATION_CONTEXT_UNAVAILABLE", "safety state has no authoritative broker snapshot fingerprint"), request)
             if str(second_fingerprint) != str(reconciled_fingerprint):
                 return self._result(AuthorizationResult(False, "RECONCILIATION_SNAPSHOT_MISMATCH", "broker state no longer matches the reconciled safety context"), request, {"reconciled_broker_snapshot_fingerprint": reconciled_fingerprint, "broker_snapshot_fingerprint": second_fingerprint})
-
             second_decision = self.risk_gate.authorize(request, second_snapshot) if hasattr(self.risk_gate, "authorize") else self.risk_gate.evaluate(request, second_snapshot)
             if not second_decision.allowed:
                 return self._result(AuthorizationResult(False, "RISK_REJECTED", second_decision.reason), request, {"broker_snapshot_fingerprint": second_fingerprint})
