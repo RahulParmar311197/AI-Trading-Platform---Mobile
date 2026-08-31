@@ -5,6 +5,7 @@ pydantic-settings==2.10.1
 sqlalchemy==2.0.43
 alembic==1.16.4
 asyncpg==0.30.0
+psycopg[binary]==3.2.9
 redis==6.4.0
 python-jose[cryptography]==3.5.0
 cryptography==45.0.6
