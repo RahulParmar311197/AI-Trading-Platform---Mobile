@@ -54,8 +54,9 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
+      - name: Import smoke test
+        run: |
+          python -c "import importlib.util; assert importlib.util.find_spec('app.execution') is None; import app.app_factory; import app.api.orders; import app.api.ensemble"
+
       - name: Run tests
         run: pytest -q
-
-      # CI trigger marker: keeps this workflow changeable through the repository API
-      # so a fresh push event can validate the current main revision.
