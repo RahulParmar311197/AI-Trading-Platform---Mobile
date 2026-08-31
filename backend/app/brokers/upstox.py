@@ -35,6 +35,30 @@ class UpstoxAdapter(BrokerAdapter):
     def get_quote(self, symbol: str) -> dict[str, Any]:
         return self.client.get_quote(symbol)
 
+    def get_historical_candles(
+        self,
+        instrument_key: str,
+        unit: str,
+        interval: int,
+        to_date: str,
+        from_date: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "timestamp": row[0],
+                "open": row[1],
+                "high": row[2],
+                "low": row[3],
+                "close": row[4],
+                "volume": row[5],
+                "open_interest": row[6] if len(row) > 6 else 0,
+            }
+            for row in self.client.get_historical_candles(
+                instrument_key, unit, interval, to_date, from_date
+            )
+            if isinstance(row, list) and len(row) >= 6
+        ]
+
     def get_positions(self) -> list[dict[str, Any]]:
         return self.client.get_positions()
 
