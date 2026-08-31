@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import Any, Protocol
 import math
 
 
@@ -97,8 +97,6 @@ def validate_candle_sequence(candles: list[Candle], *, now: datetime | None = No
         timestamp = _utc(candle.timestamp)
         if timestamp > current:
             return False
-        if previous is not None and timestamp <= previous:
-            return False
         try:
             values = (float(candle.open), float(candle.high), float(candle.low), float(candle.close), float(candle.volume))
         except (TypeError, ValueError):
@@ -109,6 +107,8 @@ def validate_candle_sequence(candles: list[Candle], *, now: datetime | None = No
         if min(open_price, high, low, close) <= 0 or volume < 0:
             return False
         if high < max(open_price, close) or low > min(open_price, close):
+            return False
+        if previous is not None and timestamp <= previous:
             return False
         previous = timestamp
     return True
@@ -147,6 +147,47 @@ class InMemoryMarketData:
             return False
         self._last_tick[symbol] = tick.timestamp
         return True
+
+    def ingest_broker_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        rows: list[dict[str, Any]],
+    ) -> int:
+        """Normalize provider-neutral broker candle rows into the canonical Candle store."""
+        if not symbol.strip() or not timeframe.strip():
+            raise ValueError("symbol and timeframe are required")
+        normalized: list[Candle] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            timestamp = row.get("timestamp")
+            if isinstance(timestamp, str):
+                try:
+                    timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+            if not isinstance(timestamp, datetime):
+                continue
+            try:
+                normalized.append(
+                    Candle(
+                        timestamp=_utc(timestamp),
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        open=float(row["open"]),
+                        high=float(row["high"]),
+                        low=float(row["low"]),
+                        close=float(row["close"]),
+                        volume=float(row.get("volume", 0.0)),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        normalized.sort(key=lambda candle: candle.timestamp)
+        if not validate_candle_sequence(normalized):
+            return 0
+        return sum(1 for candle in normalized if self.put(candle))
 
     def candles(self, symbol: str, timeframe: str, limit: int = 200) -> list[Candle]:
         if limit <= 0:
