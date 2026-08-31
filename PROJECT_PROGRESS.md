@@ -69,6 +69,8 @@ Last maintained: 2026-09-01
 - [x] Verified submission-intent lifecycle regression coverage exists for restart/reuse of a resolved client order ID.
 - [x] Hardened unresolved submission-intent creation so identical request fingerprints are idempotent while fingerprint mismatches fail closed.
 - [x] Added file-store and cross-process regression coverage for same-fingerprint replay and fingerprint mismatch.
+- [x] Hardened broker submission/recovery so an authoritative broker order is durably bound to the submission intent before the intent is resolved.
+- [x] Added regression coverage proving both normal acceptance and timeout-after-acceptance recovery persist the broker order binding before resolution.
 
 ### Broker adapter hardening
 - [x] Dhan submission results now pass the canonical broker-update normalization contract with request/account/route identity preserved.
