@@ -64,7 +64,8 @@ def test_all_accounts_are_reconciled_independently(tmp_path):
     assert result.ready is True
     assert [item.account_id for item in result.accounts] == ["101", "202"]
     assert all(item.ready for item in result.accounts)
-    assert safety.load().trading_halted is False
+    # Recovery is phase one only; the outer startup gate owns the final release.
+    assert safety.load().trading_halted is True
 
 
 def test_wrong_account_snapshot_fails_closed(tmp_path):
