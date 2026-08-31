@@ -35,6 +35,8 @@ Last maintained: 2026-09-01
 - [x] Added durable reservation adapter binding to the authoritative broker account/route on every execution authorization.
 - [x] Made active reservation replay idempotent for the same client order, account/route, and amount.
 - [x] Added regression tests for durable reservation reserve/partial-fill/terminal-release behavior.
+- [x] Hardened authoritative broker reconciliation so every active durable reservation must have exactly one client-order match before any reservation mutation is applied.
+- [x] Added regression coverage proving missing/ambiguous broker matches and incomplete partial-fill facts fail closed without partial reservation mutation.
 
 ### Repository cleanup findings
 - [x] Audited `backend/app/execution/` for duplicate execution infrastructure.
@@ -73,6 +75,8 @@ Last maintained: 2026-09-01
 - [x] Added regression coverage proving both normal acceptance and timeout-after-acceptance recovery persist the broker order binding before resolution.
 - [x] Hardened ambiguous submission recovery to require broker account/route/route-generation identity whenever the original request is account-bound.
 - [x] Added regression coverage proving account-bound timeout-after-acceptance recovery preserves canonical broker route identity.
+- [x] Hardened durable reservation reconciliation to validate all active reservation-to-broker matches before applying any reservation mutation.
+- [x] Added regression coverage for orphaned reservations, ambiguous matches, and incomplete partial-fill facts.
 
 ### Broker adapter hardening
 - [x] Dhan submission results now pass the canonical broker-update normalization contract with request/account/route identity preserved.
