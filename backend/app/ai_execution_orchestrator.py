@@ -20,18 +20,9 @@ class AuthorizedOrderSubmitter(Protocol):
 
 
 class RiskReservationProvider(Protocol):
-    def reserve(
-        self,
-        *,
-        reservation_id: str | None,
-        client_order_id: str,
-        broker_account_id: str,
-        broker_route: str,
-        amount: float,
-        current_exposure: float,
-        max_total_exposure: float,
-    ) -> str: ...
+    def reserve(self, *, reservation_id: str | None, client_order_id: str, broker_account_id: str, broker_route: str, amount: float, current_exposure: float, max_total_exposure: float) -> str: ...
     def release(self, reservation_id: str) -> None: ...
+    def reconcile_client_order(self, *, client_order_id: str, broker_status: str, remaining_amount: float | None = None) -> str | None: ...
 
 
 @dataclass(frozen=True)
@@ -98,15 +89,7 @@ class AIExecutionOrchestrator:
                 raise RuntimeError("broker account and route are required for risk reservation")
             max_total_exposure = float(equity) * float(limits.max_exposure_percent) / 100.0
             try:
-                reservation_id = self.risk_reservation_store.reserve(
-                    reservation_id=None,
-                    client_order_id=client_order_id,
-                    broker_account_id=account_id,
-                    broker_route=route,
-                    amount=proposed_exposure,
-                    current_exposure=risk_snapshot.current_exposure,
-                    max_total_exposure=max_total_exposure,
-                )
+                reservation_id = self.risk_reservation_store.reserve(reservation_id=None, client_order_id=client_order_id, broker_account_id=account_id, broker_route=route, amount=proposed_exposure, current_exposure=risk_snapshot.current_exposure, max_total_exposure=max_total_exposure)
             except Exception as exc:
                 raise RuntimeError("risk reservation could not be acquired; execution blocked") from exc
         authorize = getattr(self.order_submitter, "authorize_request", None)
@@ -128,9 +111,21 @@ class AIExecutionOrchestrator:
             # worker cannot reuse the same exposure before reconciliation.
             raise
         lifecycle = getattr(execution, "lifecycle", None)
-        if reservation_id is not None and lifecycle is not None and getattr(lifecycle, "status", None) in {OrderStatus.REJECTED, OrderStatus.CANCELLED}:
-            self.risk_reservation_store.release(reservation_id)
-            reservation_id = None
+        if reservation_id is not None and lifecycle is not None:
+            status = getattr(lifecycle, "status", None)
+            if status in {OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED}:
+                reconcile = getattr(self.risk_reservation_store, "reconcile_client_order", None)
+                if callable(reconcile):
+                    remaining_amount = 0.0
+                    if status is OrderStatus.PARTIALLY_FILLED:
+                        remaining_quantity = max(0.0, float(request.quantity) - float(getattr(lifecycle, "filled_quantity", 0.0)))
+                        remaining_amount = remaining_quantity * abs(float(request.price)) * multiplier
+                    broker_status = status.value.upper()
+                    reconcile(client_order_id=client_order_id, broker_status=broker_status, remaining_amount=remaining_amount)
+                elif status in {OrderStatus.REJECTED, OrderStatus.CANCELLED}:
+                    self.risk_reservation_store.release(reservation_id)
+                if status in {OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.FILLED}:
+                    reservation_id = None
         return AIExecutionResult(decision=decision, order_request=request, execution=execution, risk_decision=risk_decision, risk_reservation_id=reservation_id)
 
     @staticmethod
