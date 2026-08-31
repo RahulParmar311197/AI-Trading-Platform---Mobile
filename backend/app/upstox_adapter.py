@@ -16,10 +16,15 @@ class UpstoxConfig:
     timeout_seconds: float = 10.0
     slice_orders: bool = False
     market_protection: int = -1
+    broker_account_id: str | None = None
+    broker_route: str | None = None
+    broker_route_generation: str | None = None
     def __post_init__(self) -> None:
         if self.timeout_seconds <= 0: raise ValueError("Upstox HTTP timeout must be greater than zero")
         if not (-1 <= self.market_protection <= 25): raise ValueError("Upstox market protection must be -1 or between 1 and 25")
         if self.slice_orders: raise ValueError("UPSTOX_SLICE is unsupported until child-order persistence is implemented")
+        for value, field in ((self.broker_account_id, "broker_account_id"), (self.broker_route, "broker_route"), (self.broker_route_generation, "broker_route_generation")):
+            if value is not None and not str(value).strip(): raise ValueError(f"Upstox {field} must be non-empty when configured")
     @classmethod
     def from_env(cls) -> "UpstoxConfig":
         return cls(access_token=os.getenv("UPSTOX_ACCESS_TOKEN", ""),base_url=os.getenv("UPSTOX_API_BASE_URL", "https://api-hft.upstox.com").rstrip("/"),live_enabled=os.getenv("UPSTOX_LIVE_ENABLED", "false").lower() == "true",timeout_seconds=float(os.getenv("UPSTOX_HTTP_TIMEOUT_SECONDS", "10")),slice_orders=os.getenv("UPSTOX_SLICE", "false").lower() == "true",market_protection=int(os.getenv("UPSTOX_MARKET_PROTECTION", "-1")))
@@ -42,6 +47,15 @@ class UpstoxAdapter(BrokerAdapter):
     def _validate_tag(client_order_id: str) -> str:
         if not client_order_id or len(client_order_id) > 40: raise ValueError("Upstox tag must be between 1 and 40 characters")
         return client_order_id
+    def _request_identity(self, request: BrokerOrderRequest) -> dict[str, str]:
+        identity = {
+            "broker_account_id": request.broker_account_id or self.config.broker_account_id,
+            "broker_route": request.broker_route or self.config.broker_route,
+            "broker_route_generation": request.broker_route_generation or self.config.broker_route_generation,
+        }
+        for field, expected in (("broker_account_id", self.config.broker_account_id), ("broker_route", self.config.broker_route), ("broker_route_generation", self.config.broker_route_generation)):
+            if expected is not None and identity[field] != expected: raise ValueError(f"Upstox {field} does not match configured route")
+        return {k: str(v) for k, v in identity.items() if v is not None}
     def submit_order(self, request: BrokerOrderRequest) -> BrokerOrderUpdate:
         self._require_live(); tag=self._validate_tag(request.client_order_id); order_type=request.order_type.upper()
         if order_type in {"MARKET","SL-M"} and not (-1 <= self.config.market_protection <= 25): raise ValueError("Upstox market protection must be -1 or between 1 and 25")
@@ -50,7 +64,7 @@ class UpstoxAdapter(BrokerAdapter):
         response=self.transport.request("POST",f"{self.config.base_url}/v3/order/place",headers=self._headers(),json=payload); response.raise_for_status(); body=response.json(); data=body.get("data",body); order_ids=data.get("order_ids") or ([data.get("order_id")] if data.get("order_id") else [])
         if not order_ids: raise RuntimeError("Upstox placement response did not contain an order id")
         if len(order_ids)>1: raise RuntimeError("Upstox sliced order returned multiple broker order ids; child-order persistence is required")
-        raw={"order_id":str(order_ids[0]),"status":"NEW","client_order_id":tag,"symbol":request.symbol,"side":request.side.upper(),"quantity":request.quantity,"price":request.price,"message":";".join(map(str,order_ids))}
+        raw={"order_id":str(order_ids[0]),"status":"NEW","client_order_id":tag,"symbol":request.symbol,"side":request.side.upper(),"quantity":request.quantity,"price":request.price,"message":";".join(map(str,order_ids)),**self._request_identity(request)}
         return normalize_broker_update(raw, expected=request)
     def find_order_by_client_id(self, client_order_id: str) -> dict[str, Any] | None:
         self._require_live(); tag=self._validate_tag(client_order_id); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/history",headers=self._headers(),params={"tag":tag})
@@ -77,7 +91,7 @@ class UpstoxAdapter(BrokerAdapter):
         if not isinstance(data,list): raise RuntimeError("Upstox trades response is invalid")
         return data
     def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
-        self._require_live(); response=self.transport.request("DELETE",f"{self.config.base_url}/v3/order/cancel",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); data=body.get("data",body); raw={"order_id":str(data.get("order_id",broker_order_id)),"status":"CANCELLED","message":str(data.get("message","")) or None}; return normalize_broker_update(raw)
+        self._require_live(); response=self.transport.request("DELETE",f"{self.config.base_url}/v3/order/cancel",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); data=body.get("data",body); raw={"order_id":str(data.get("order_id",broker_order_id)),"status":"CANCELLED","message":str(data.get("message","")) or None,**{k:v for k,v in (("broker_account_id",self.config.broker_account_id),("broker_route",self.config.broker_route),("broker_route_generation",self.config.broker_route_generation)) if v is not None}}; return normalize_broker_update(raw)
     def get_positions(self) -> list[dict[str, Any]]:
         self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/portfolio/short-term-positions",headers=self._headers()); response.raise_for_status(); body=response.json(); data=body.get("data",body)
         if not isinstance(data,list): raise RuntimeError("Upstox positions response is invalid")
