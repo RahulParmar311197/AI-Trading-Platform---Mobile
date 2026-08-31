@@ -64,6 +64,20 @@ class TimeoutAfterAcceptanceBroker(PaperBrokerAdapter):
         raise RuntimeError("transport lost after broker acceptance")
 
 
+class AccountBoundTimeoutAfterAcceptanceBroker(TimeoutAfterAcceptanceBroker):
+    def get_orders(self):
+        orders = super().get_orders()
+        return [
+            {
+                **order,
+                "broker_account_id": "acct-1",
+                "broker_route": "paper-live",
+                "broker_route_generation": "gen-7",
+            }
+            for order in orders
+        ]
+
+
 def test_ambiguous_submission_recovery_binds_broker_order_before_resolving(tmp_path):
     safety = SafetyStateStore(str(tmp_path / "safety.json"))
     intents = SubmissionIntentStore(str(tmp_path / "intents.json"))
@@ -94,3 +108,39 @@ def test_ambiguous_submission_recovery_binds_broker_order_before_resolving(tmp_p
     assert persisted["broker_order_id"] == recovered.order_id
     assert persisted["broker_status"] == recovered.status.value
     assert persisted["resolved_at"] is not None
+
+
+def test_account_bound_ambiguous_recovery_requires_and_preserves_route_identity(tmp_path):
+    safety = SafetyStateStore(str(tmp_path / "safety.json"))
+    intents = SubmissionIntentStore(str(tmp_path / "intents.json"))
+    broker = AccountBoundTimeoutAfterAcceptanceBroker()
+    route = BrokerRoute("paper-live", broker, broker_account_id="acct-1", generation="gen-7")
+    router = BrokerRouter([route], "paper-live", safety_store=safety, submission_intent_store=intents)
+
+    check = router.reconciliation_engine.check([], [], [], [])
+    observed = datetime.fromisoformat(check.checked_at)
+    fingerprint = router._current_snapshot_fingerprint(route)
+    context = BrokerExecutionContext(
+        account_id="acct-1", broker_route="paper-live", route_generation="gen-7",
+        generation=1, snapshot_fingerprint=fingerprint, observed_at=observed,
+    )
+    halted = safety.halt("test reconciliation")
+    result = router.reconciliation_engine.build_verified_result(
+        check, context=context,
+        reconciled_at=max(halted.halted_at + timedelta(milliseconds=1), observed),
+        open_orders_reconciled=True, positions_reconciled=True,
+        submission_intents_resolved=0, broker_ready=True,
+    )
+    safety.clear(result, active_context=result.context)
+
+    request = BrokerOrderRequest(
+        "client-account-recovered", "NIFTY", "BUY", 1,
+        broker_account_id="acct-1", broker_route="paper-live", broker_route_generation="gen-7",
+    )
+    recovered = router.submit(request)
+
+    assert recovered.order_id
+    assert recovered.broker_account_id == "acct-1"
+    assert recovered.broker_route == "paper-live"
+    assert recovered.broker_route_generation == "gen-7"
+    assert intents.unresolved_count() == 0
