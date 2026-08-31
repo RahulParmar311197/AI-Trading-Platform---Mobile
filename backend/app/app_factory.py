@@ -32,6 +32,8 @@ from app.reconciliation_coordinator import ReconciliationCoordinator
 from app.startup_execution_state import StartupExecutionStateMachine
 from app.submission_intent_store import SubmissionIntentStore
 from app.risk_reservation_store import RiskReservationStore
+from app.durable_risk_reservations import DurableExposureReservationAdapter
+from app.risk_gate import PreTradeRiskGate
 from app.ai_execution_orchestrator import AIExecutionOrchestrator
 from app.trading_audit import TradingAuditLog
 from app.emergency_halt import EmergencyHaltController
@@ -39,9 +41,7 @@ from app.broker_connectivity_registry import BrokerConnectivityRegistry
 from app.broker_health_worker import BrokerHealthWorker
 from app.settings import settings
 
-
 _DEFAULT_ATTESTATION_SECRET = b"test-broker-context-attestation-secret-32+"
-
 
 @dataclass
 class AppResources:
@@ -77,7 +77,6 @@ class AppResources:
         return AuthoritativeLiveExecutionGateway(executor, policy=policy, position_reader=position_reader, local_positions_reader=local_positions_reader, incident_reporter=incident_reporter, authorization_store=self.execution_authorization_store, context_attestor=self.broker_context_attestor, submission_intent_store=self.submission_intent_store)
 
     def create_ai_execution_orchestrator(self, *, decision_engine, instrument_provider, order_submitter=None, intent_config=None) -> AIExecutionOrchestrator:
-        """Create the canonical AI execution boundary with durable risk reservations."""
         if order_submitter is None:
             raise ValueError("order_submitter is required for AI execution")
         if self.risk_reservation_store is None:
@@ -103,6 +102,10 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     execution_authorization_store = ExecutionAuthorizationStore(execution_authorization_path)
     submission_intent_store = SubmissionIntentStore(submission_intent_path, session_factory=session_local)
     risk_reservation_store = RiskReservationStore(session_local) if session_local is not None else None
+    if risk_reservation_store is not None:
+        PreTradeRiskGate.set_default_reservations(DurableExposureReservationAdapter(risk_reservation_store, settings.risk_max_position_quantity))
+    else:
+        PreTradeRiskGate.set_default_reservations(None)
     observability = ExecutionObservability()
     health = ExecutionHealth(observability)
     event_store = ExecutionAlertEventStore(alert_event_path)
@@ -116,7 +119,7 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     dead_letter_store = ExecutionAlertDeadLetterStore(alert_event_path)
     observability.add_hook(alert_service.evaluate, priority=100)
     observability.add_hook(recovery.evaluate, priority=200)
-    return AppResources(execution_store=ExecutionStateStore(execution_path), idempotency_store=IdempotencyStore(idempotency_path), safety_store=safety_store, audit_log=audit_log, execution_observability=observability, execution_alert_store=alert_store, execution_alert_service=alert_service, execution_alert_recovery=recovery, execution_alert_event_store=event_store, execution_alert_event_publisher=event_publisher, execution_alert_dispatcher=dispatcher, execution_alert_worker=worker, execution_alert_worker_health=worker_health, execution_alert_dead_letter_store=dead_letter_store, connectivity_registry=BrokerConnectivityRegistry(), broker_context_attestor=broker_context_attestor, execution_authorization_store=execution_authorization_store, submission_intent_store=submission_intent_store, risk_reservation_store=risk_reservation_store, authorization=authorization, session_local=session_local, startup_execution_state=startup_execution_state, emergency_halt_controller=emergency_halt_controller, execution_health_token=execution_health_token)
+    return AppResources(execution_store=ExecutionStateStore(execution_path), idempotency_store=IdempotencyStore(idempotency_path), safety_store=safety_store, audit_log=audit_log, execution_observability=observability, execution_alert_store=alert_store, execution_alert_service=alert_service, execution_alert_recovery=recovery, execution_alert_event_store=event_store, execution_alert_event_publisher=event_publisher, execution_alert_dispatcher=dispatcher, execution_alert_worker=worker, execution_alert_dead_letter_store=dead_letter_store, connectivity_registry=BrokerConnectivityRegistry(), broker_context_attestor=broker_context_attestor, execution_authorization_store=execution_authorization_store, submission_intent_store=submission_intent_store, risk_reservation_store=risk_reservation_store, authorization=authorization, session_local=session_local, startup_execution_state=startup_execution_state, emergency_halt_controller=emergency_halt_controller, execution_health_token=execution_health_token)
 
 
 def create_app(resources: AppResources | None = None, broker_router: BrokerRouter | None = None, execution_health_token: str | None = None) -> FastAPI:
