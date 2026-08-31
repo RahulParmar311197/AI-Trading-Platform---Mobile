@@ -41,6 +41,37 @@ def test_resolved_intent_is_not_unresolved_after_restart(tmp_path: Path):
     assert second.unresolved_count() == 0
 
 
+def test_resolved_client_order_id_reopens_clean_lifecycle(tmp_path: Path):
+    path = tmp_path / "intents.json"
+    store = SubmissionIntentStore(str(path))
+    _create(store)
+    store.record_broker_order("cli-1", "broker-old", "FILLED")
+    store.resolve("cli-1")
+
+    reopened = store.create(
+        client_order_id="cli-1",
+        route="upstox",
+        account_id="acct-2",
+        symbol="BANKNIFTY",
+        side="SELL",
+        quantity=5,
+        request_fingerprint="fp-new",
+    )
+
+    assert reopened.client_order_id == "cli-1"
+    assert reopened.route == "upstox"
+    assert reopened.account_id == "acct-2"
+    assert reopened.symbol == "BANKNIFTY"
+    assert reopened.side == "SELL"
+    assert reopened.quantity == 5
+    assert reopened.request_fingerprint == "fp-new"
+    assert reopened.resolved_at is None
+    assert reopened.broker_order_id is None
+    assert reopened.broker_status is None
+    assert reopened.recovered_at is None
+    assert store.get_unresolved("cli-1") == reopened
+
+
 def test_duplicate_unresolved_intent_is_rejected(tmp_path: Path):
     store = SubmissionIntentStore(str(tmp_path / "intents.json"))
     _create(store)
