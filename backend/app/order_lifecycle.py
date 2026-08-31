@@ -75,6 +75,11 @@ class OrderLifecycle:
         order=self.orders[order_id]; previous=order.status
         if status in (OrderStatus.FILLED,OrderStatus.PARTIALLY_FILLED) and not 0<=filled_quantity<=order.quantity:raise ValueError("invalid filled quantity")
         if filled_quantity<order.applied_fill_quantity:raise ValueError("filled quantity cannot move backwards")
+        if filled_quantity == order.applied_fill_quantity and fill_price is not None and order.average_fill_price is not None:
+            incoming_price=float(fill_price)
+            if incoming_price<=0:raise ValueError("fill price must be positive")
+            if abs(incoming_price-order.average_fill_price)>1e-9:
+                raise ValueError("fill price cannot change without additional filled quantity")
         self._transition_machine(order_id,status); order.status=status; order.filled_quantity=filled_quantity
         if fill_price is not None:
             fill_price=float(fill_price)
