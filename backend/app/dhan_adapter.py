@@ -43,13 +43,20 @@ class DhanAdapter(BrokerAdapter):
         if not self.config.client_id or not self.config.access_token: return BrokerHealth("dhan", False, False, True, "Dhan credentials are not configured")
         try: self.get_account(); return BrokerHealth("dhan", True, True, True, "authenticated")
         except Exception as exc: return BrokerHealth("dhan", False, False, True, f"health check failed: {exc}")
+    @staticmethod
+    def _placement_status(raw_status: str) -> str:
+        status = str(raw_status or "").strip().upper()
+        return {"TRANSIT": "NEW", "PENDING": "NEW", "REJECTED": "REJECTED", "CANCELLED": "CANCELLED", "TRADED": "FILLED", "EXPIRED": "CANCELLED"}.get(status, status)
     def submit_order(self, request: BrokerOrderRequest) -> BrokerOrderUpdate:
         self._require_live()
         if not request.security_id: raise ValueError("security_id is required for Dhan")
         correlation_id=request.client_order_id or uuid.uuid4().hex[:20]
         if len(correlation_id)>30: raise ValueError("Dhan correlationId must be at most 30 characters")
         payload={"dhanClientId":self.config.client_id,"correlationId":correlation_id,"transactionType":request.side.upper(),"exchangeSegment":request.exchange_segment,"productType":request.product_type,"orderType":request.order_type,"validity":request.validity,"securityId":request.security_id,"quantity":request.quantity,"price":request.price,"triggerPrice":request.trigger_price}
-        response=self.transport.post(f"{self.config.base_url}/orders",headers=self._headers(),json=payload); response.raise_for_status(); data=response.json(); return BrokerOrderUpdate(order_id=str(data["orderId"]),status=str(data["orderStatus"]))
+        response=self.transport.post(f"{self.config.base_url}/orders",headers=self._headers(),json=payload); response.raise_for_status(); data=response.json()
+        status=self._placement_status(data.get("orderStatus"))
+        if status not in {"NEW","REJECTED","CANCELLED","FILLED"}: raise RuntimeError(f"unsupported Dhan placement status: {status}")
+        return BrokerOrderUpdate(order_id=str(data["orderId"]),status=status,client_order_id=correlation_id,symbol=request.symbol,side=request.side.upper(),quantity=request.quantity,broker_account_id=request.broker_account_id,broker_route=request.broker_route,broker_route_generation=request.broker_route_generation,message="DHAN_ORDER_ACCEPTED")
     def find_order_by_client_id(self, client_order_id: str) -> dict | None:
         self._require_live()
         if not client_order_id or len(client_order_id)>30: raise ValueError("Dhan correlationId must be between 1 and 30 characters")
@@ -57,7 +64,7 @@ class DhanAdapter(BrokerAdapter):
         if getattr(response,"status_code",None)==404: return None
         response.raise_for_status(); data=response.json(); return data if isinstance(data,dict) and data.get("orderId") else None
     def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
-        self._require_live(); response=self.transport.delete(f"{self.config.base_url}/orders/{broker_order_id}",headers=self._headers()); response.raise_for_status(); data=response.json(); return BrokerOrderUpdate(order_id=str(data["orderId"]),status=str(data["orderStatus"]))
+        self._require_live(); response=self.transport.delete(f"{self.config.base_url}/orders/{broker_order_id}",headers=self._headers()); response.raise_for_status(); data=response.json(); return BrokerOrderUpdate(order_id=str(data["orderId"]),status=self._placement_status(data.get("orderStatus")),message="DHAN_CANCEL_RESULT")
     def get_order(self, broker_order_id: str) -> dict:
         self._require_live(); response=self.transport.get(f"{self.config.base_url}/orders/{broker_order_id}",headers=self._headers()); response.raise_for_status(); return response.json()
     def get_orders(self) -> list[dict]:
@@ -72,7 +79,7 @@ class DhanAdapter(BrokerAdapter):
         if not isinstance(data,list): raise RuntimeError("Dhan positions response must be a list")
         return data
     def get_position_snapshot(self) -> BrokerPositionSnapshot:
-        return BrokerPositionSnapshot(positions=self.get_positions(), complete=True, source="dhan")
+        return BrokerPositionSnapshot(positions=self.get_positions(),complete=True,source="dhan")
     def get_account(self) -> dict:
         self._require_live(); response=self.transport.get(f"{self.config.base_url}/fundlimit",headers=self._headers()); response.raise_for_status(); return response.json()
     def get_snapshot(self) -> BrokerSnapshot: return dhan_snapshot(self.get_orders(), self.get_positions())
