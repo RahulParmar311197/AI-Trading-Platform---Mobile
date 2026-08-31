@@ -6,7 +6,7 @@ from .sql_repository import ExecutionRepository
 
 
 class SubmissionReconciler:
-    """Resolve broker-submission intents without ever re-submitting them."""
+    """Resolve broker-submission intents and synchronize the canonical Order."""
 
     def __init__(self, broker, repository: ExecutionRepository, clock=None):
         self._broker = broker
@@ -31,8 +31,17 @@ class SubmissionReconciler:
         broker_order_id = match.get("broker_order_id") or match.get("order_id")
         if not broker_order_id:
             raise RuntimeError("matching broker order has no durable identifier")
-        self._repository.resolve_intent(client_order_id, str(broker_order_id), match.get("status"))
-        intent.recovered_at = self._clock()
-        self._repository.session.flush()
+        broker_order_id = str(broker_order_id)
+
+        self._repository.resolve_intent(client_order_id, broker_order_id, match.get("status"))
+        self._repository.mark_recovered(client_order_id)
+        self._repository.sync_order_from_broker(
+            client_order_id,
+            broker_order_id,
+            match.get("status"),
+            match.get("filled_quantity") or match.get("filled_qty"),
+            match.get("average_fill_price") or match.get("average_price"),
+            "Recovered from broker reconciliation",
+        )
         self._repository.session.commit()
-        return {"status": match.get("status") or "SUBMITTED", "broker_order_id": str(broker_order_id), "recovered": True}
+        return {"status": match.get("status") or "SUBMITTED", "broker_order_id": broker_order_id, "recovered": True}
