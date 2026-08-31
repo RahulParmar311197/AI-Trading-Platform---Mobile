@@ -8,6 +8,21 @@ class BrokerAdapter(ABC):
     @abstractmethod
     def get_quote(self, symbol: str) -> dict[str, Any]: ...
 
+    def get_historical_candles(
+        self,
+        instrument_key: str,
+        unit: str,
+        interval: int,
+        to_date: str,
+        from_date: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return provider-native historical candle rows when supported.
+
+        Brokers that do not expose historical candles fail explicitly rather than
+        silently substituting quote data or a second market-data implementation.
+        """
+        raise NotImplementedError("historical candles are not supported by this broker")
+
     @abstractmethod
     def get_positions(self) -> list[dict[str, Any]]: ...
 
