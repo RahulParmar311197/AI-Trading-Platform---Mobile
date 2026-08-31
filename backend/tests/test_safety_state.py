@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import tempfile
+import threading
+import time
 
 import pytest
 
@@ -122,6 +124,45 @@ def test_clear_all_persists_all_verified_accounts_atomically(tmp_path):
     assert set(restored.reconciliation_by_account) == {"acct-1", "acct-2"}
     assert restored.reconciliation_by_account["acct-1"]["broker_snapshot_fingerprint"] == "fp-1"
     assert restored.reconciliation_by_account["acct-2"]["broker_snapshot_fingerprint"] == "fp-2"
+
+
+def test_mutations_are_serialized_across_workers(tmp_path):
+    class InstrumentedStore(SafetyStateStore):
+        def __init__(self, path):
+            super().__init__(path)
+            self.active_saves = 0
+            self.max_active_saves = 0
+            self._counter_lock = threading.Lock()
+
+        def _save_unlocked(self, state):
+            with self._counter_lock:
+                self.active_saves += 1
+                self.max_active_saves = max(self.max_active_saves, self.active_saves)
+            try:
+                time.sleep(0.05)
+                super()._save_unlocked(state)
+            finally:
+                with self._counter_lock:
+                    self.active_saves -= 1
+
+    store = InstrumentedStore(str(tmp_path / "safety.json"))
+    barrier = threading.Barrier(2)
+
+    def worker(reason):
+        barrier.wait()
+        store.halt(reason)
+
+    threads = [threading.Thread(target=worker, args=("WORKER_A",)), threading.Thread(target=worker, args=("WORKER_B",))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+    assert store.max_active_saves == 1
+    restored = store.load()
+    assert restored.trading_halted is True
+    assert restored.halt_reason in {"WORKER_A", "WORKER_B"}
 
 
 def test_context_rejects_naive_observation():
