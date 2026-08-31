@@ -12,6 +12,7 @@ Last maintained: 2026-08-31
 4. Prefer extending the canonical implementation already used by the application.
 5. After every code change: verify the changed file, callers, imports, and CI/status where available.
 6. Record every completed change and the next verified pending item here.
+7. User requested autonomous execution: do not ask the user to run commands; inspect, change, verify, and continue through the repository tools until the blueprint is satisfied.
 
 ## Completed / Verified
 
@@ -55,6 +56,17 @@ Last maintained: 2026-08-31
 - [x] Added provider-neutral optional historical-candle capability to `BrokerAdapter` without breaking brokers that do not support it.
 - [x] Added Upstox Historical Candle V3 client support using the official V3 endpoint and native OHLCV rows.
 - [x] Exposed Upstox historical candles through `UpstoxAdapter` without creating a second candle model or market-data subsystem.
+- [x] Verified the existing canonical `RepositoryHistoricalMarketDataProvider` / `HistoricalCandleRepository` boundary is the correct persistence contract.
+- [x] Connected the existing Upstox broker historical rows to the canonical `HistoricalMarketDataProvider` contract through `UpstoxHistoricalMarketDataProvider`.
+- [x] Added canonical timestamp normalization, timeframe mapping, date-range filtering, Candle validation, chronological ordering, and timestamp deduplication for Upstox historical data.
+- [x] Added regression coverage for the Upstox historical-to-canonical-Candle bridge.
+
+### Reconciliation / recovery findings
+- [x] Verified `broker_reconciliation.py` remains the pure broker/local validation and invariant engine.
+- [x] Verified `ReconciliationEngine` refuses a verified result while durable submission intents remain unresolved.
+- [x] Verified `BrokerRouter.reconcile_unresolved_submission_intents()` resolves durable intents only from a complete broker order snapshot and never resubmits automatically.
+- [x] Verified canonical `OrderLifecycle` remains the order-state transition owner; reconciliation does not introduce a competing lifecycle.
+- [x] Verified submission-intent lifecycle regression coverage exists for restart/reuse of a resolved client order ID.
 
 ## Pending — ordered by priority
 
@@ -69,7 +81,7 @@ Last maintained: 2026-08-31
 - [x] Ensure terminal broker states release the canonical reservation exactly once.
 - [x] Ensure partial fills retain the correct remaining reservation/exposure.
 - [x] Ensure repeated lifecycle events are idempotent at the reservation layer.
-- [ ] Validate reconciliation updates both intent and order state without bypassing canonical lifecycle rules.
+- [x] Validate reconciliation/order lifecycle integration: broker reconciliation validates authoritative state, durable submission-intent recovery resolves unresolved intents from broker snapshots, and canonical `OrderLifecycle` remains the only order-state transition owner.
 
 ### P0 — Production execution integration
 - [ ] Trace all API/order entrypoints to the actual broker gateway.
@@ -93,7 +105,7 @@ Last maintained: 2026-08-31
 - [ ] Backtesting engine audit.
 - [ ] Portfolio/position/P&L accounting audit.
 - [ ] Paper/sandbox/live mode separation audit.
-- [ ] Connect broker historical candles to the existing canonical `MarketDataProvider` / validated `Candle[]` pipeline.
+- [x] Connect broker historical candles to the existing canonical `MarketDataProvider` / validated `Candle[]` pipeline.
 - [ ] Add live/intraday candle ingestion or stream integration using the same canonical candle contract.
 
 ### P1 — Broker coverage
