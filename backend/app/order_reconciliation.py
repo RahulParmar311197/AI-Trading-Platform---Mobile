@@ -211,7 +211,10 @@ def _coerce_broker_order(raw: Any, local_order=None) -> BrokerOrder:
         raise ValueError("broker order quantity is required")
     status_raw = str(raw.get("status", "")).strip().upper()
     status_aliases = {"OPEN": OrderStatus.SUBMITTED, "PENDING": OrderStatus.SUBMITTED}
-    status = status_aliases.get(status_raw, OrderStatus(status_raw))
+    if status_raw in status_aliases:
+        status = status_aliases[status_raw]
+    else:
+        status = OrderStatus(status_raw)
     filled_raw = raw.get("filled_quantity", raw.get("filledQty", raw.get("filled_qty", 0.0)))
     average = raw.get("average_fill_price", raw.get("average_price", raw.get("averagePrice")))
     return BrokerOrder(
