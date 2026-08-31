@@ -71,6 +71,8 @@ Last maintained: 2026-09-01
 - [x] Added file-store and cross-process regression coverage for same-fingerprint replay and fingerprint mismatch.
 - [x] Hardened broker submission/recovery so an authoritative broker order is durably bound to the submission intent before the intent is resolved.
 - [x] Added regression coverage proving both normal acceptance and timeout-after-acceptance recovery persist the broker order binding before resolution.
+- [x] Hardened ambiguous submission recovery to require broker account/route/route-generation identity whenever the original request is account-bound.
+- [x] Added regression coverage proving account-bound timeout-after-acceptance recovery preserves canonical broker route identity.
 
 ### Broker adapter hardening
 - [x] Dhan submission results now pass the canonical broker-update normalization contract with request/account/route identity preserved.
@@ -105,8 +107,8 @@ Last maintained: 2026-09-01
 - [x] Replace API/manual-order-only in-memory exposure reservation with the canonical durable `RiskReservationStore` where the execution path has sufficient authoritative exposure inputs.
 
 ### P1 — Reliability / recovery
-- [x] Validate submission-intent uniqueness and fingerprint mismatch behavior under concurrency.
 - [ ] Validate ambiguous broker submission recovery end-to-end.
+- [x] Validate submission-intent uniqueness and fingerprint mismatch behavior under concurrency.
 - [ ] Validate startup reconciliation and recovery jobs.
 - [ ] Validate stale reservation recovery policy and observability.
 
