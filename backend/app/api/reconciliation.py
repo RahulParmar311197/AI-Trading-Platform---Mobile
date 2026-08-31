@@ -1,13 +1,15 @@
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
-from app.db import engine as database_engine
+from app.db import SessionLocal, engine as database_engine
 from app.reconciliation import ReconciliationEngine
 from app.reconciliation_state_store import ReconciliationStateStore
+from app.risk_reservation_store import RiskReservationStore
 
 router = APIRouter(prefix="/api/reconciliation", tags=["reconciliation"])
 state_store = ReconciliationStateStore(engine=database_engine)
-engine = ReconciliationEngine(state_store=state_store)
+risk_reservation_store = RiskReservationStore(SessionLocal)
+engine = ReconciliationEngine(state_store=state_store, risk_reservation_store=risk_reservation_store)
 
 
 class ReconcileRequest(BaseModel):
