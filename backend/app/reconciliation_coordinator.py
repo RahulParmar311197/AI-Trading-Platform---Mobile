@@ -35,8 +35,8 @@ class ReconciliationCoordinator:
             raise ValueError("context attestor is required")
         self.engine = engine
         self.route = route
-        self.account_id = account_id
-        self.route_generation = route_generation
+        self.account_id = str(account_id).strip()
+        self.route_generation = str(route_generation).strip()
         self.context_attestor = context_attestor
         self.generation = generation
 
@@ -58,6 +58,8 @@ class ReconciliationCoordinator:
             broker_snapshot.orders,
             internal_positions,
             broker_snapshot.positions,
+            broker_account_id=self.account_id,
+            broker_route=self.route,
         )
         if not check.ok or check.trading_halted:
             raise RuntimeError("broker reconciliation failed; trading remains halted")
