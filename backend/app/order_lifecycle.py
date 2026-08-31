@@ -22,7 +22,9 @@ class OrderRecord:
 
 @dataclass
 class PositionRecord:
-    symbol:str; side:str; quantity:float; entry_price:float; status:PositionStatus=PositionStatus.OPEN; exit_price:float|None=None; realized_pnl:float=0.0
+    symbol:str; side:str; quantity:float; entry_price:float
+    status:PositionStatus=PositionStatus.OPEN; exit_price:float|None=None; realized_pnl:float=0.0
+    broker_account_id:str|None=None; broker_route:str|None=None
 
 _STATUS_TO_STATE={OrderStatus.CREATED:OrderState.CREATED,OrderStatus.SUBMISSION_INTENT:OrderState.SUBMITTING,OrderStatus.SUBMITTED:OrderState.OPEN,OrderStatus.OPEN:OrderState.OPEN,OrderStatus.PARTIALLY_FILLED:OrderState.PARTIALLY_FILLED,OrderStatus.FILLED:OrderState.FILLED,OrderStatus.CANCELLED:OrderState.CANCELLED,OrderStatus.REJECTED:OrderState.REJECTED,OrderStatus.PENDING_RECONCILIATION:OrderState.PENDING_RECONCILIATION}
 
@@ -78,8 +80,7 @@ class OrderLifecycle:
         if filled_quantity == order.applied_fill_quantity and fill_price is not None and order.average_fill_price is not None:
             incoming_price=float(fill_price)
             if incoming_price<=0:raise ValueError("fill price must be positive")
-            if abs(incoming_price-order.average_fill_price)>1e-9:
-                raise ValueError("fill price cannot change without additional filled quantity")
+            if abs(incoming_price-order.average_fill_price)>1e-9:raise ValueError("fill price cannot change without additional filled quantity")
         self._transition_machine(order_id,status); order.status=status; order.filled_quantity=filled_quantity
         if fill_price is not None:
             fill_price=float(fill_price)
@@ -97,10 +98,13 @@ class OrderLifecycle:
         self.realized_pnl_by_symbol[symbol]=self.realized_pnl_by_symbol.get(symbol,0.0)+pnl; day=(when or datetime.now(timezone.utc)).astimezone(timezone.utc).date().isoformat(); self.realized_pnl_by_day[day]=self.realized_pnl_by_day.get(day,0.0)+pnl
     def _apply_position_delta(self,order,quantity,price):
         existing=self.positions.get(order.symbol)
-        if existing is None:self.positions[order.symbol]=PositionRecord(order.symbol,order.side,quantity,price);return
+        if existing is not None and (existing.broker_account_id != order.broker_account_id or existing.broker_route != order.broker_route):
+            raise ValueError("position broker account context mismatch")
+        if existing is None:
+            self.positions[order.symbol]=PositionRecord(order.symbol,order.side,quantity,price,broker_account_id=order.broker_account_id,broker_route=order.broker_route);return
         if existing.side==order.side:
             total=existing.quantity+quantity;existing.entry_price=((existing.entry_price*existing.quantity)+(price*quantity))/total;existing.quantity=total;return
         closing_qty=min(existing.quantity,quantity);pnl=(price-existing.entry_price)*closing_qty*(1 if existing.side=="BUY" else -1);existing.realized_pnl+=pnl;self._record_realized_pnl(order.symbol,pnl);remaining=quantity-closing_qty;existing.quantity-=closing_qty
         if existing.quantity>0:existing.exit_price=price;return
         del self.positions[order.symbol]
-        if remaining>0:self.positions[order.symbol]=PositionRecord(order.symbol,order.side,remaining,price)
+        if remaining>0:self.positions[order.symbol]=PositionRecord(order.symbol,order.side,remaining,price,broker_account_id=order.broker_account_id,broker_route=order.broker_route)
