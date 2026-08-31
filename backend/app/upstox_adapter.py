@@ -61,7 +61,7 @@ class UpstoxAdapter(BrokerAdapter):
         matches=[dict(order) for order in data if str(order.get("tag",tag))==tag]
         if not matches: return None
         if len(matches)==1: return matches[0]
-        return {"client_order_id":tag,"orders":matches,"multi_order":True}
+        raise RuntimeError("ambiguous broker order identity")
     def get_order(self, broker_order_id: str) -> dict[str, Any]:
         self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/details",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); return body.get("data",body)
     def get_orders(self) -> list[dict[str, Any]]:
