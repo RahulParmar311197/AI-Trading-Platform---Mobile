@@ -6,7 +6,7 @@ import uuid
 
 import httpx
 
-from app.broker_adapter import BrokerAdapter, BrokerHealth, BrokerOrderRequest, BrokerOrderUpdate
+from app.broker_adapter import BrokerAdapter, BrokerHealth, BrokerOrderRequest, BrokerOrderUpdate, normalize_broker_update
 from app.broker_snapshot import BrokerSnapshot, dhan_snapshot
 from app.broker_position_snapshot import BrokerPositionSnapshot
 
@@ -47,6 +47,13 @@ class DhanAdapter(BrokerAdapter):
     def _placement_status(raw_status: str) -> str:
         status = str(raw_status or "").strip().upper()
         return {"TRANSIT": "NEW", "PENDING": "NEW", "REJECTED": "REJECTED", "CANCELLED": "CANCELLED", "TRADED": "FILLED", "EXPIRED": "CANCELLED"}.get(status, status)
+    @staticmethod
+    def _fill_fields(data: dict) -> tuple[float | None, float | None]:
+        filled_raw = data.get("filledQty", data.get("filledQuantity", data.get("tradedQuantity")))
+        average_raw = data.get("averageTradedPrice", data.get("avgTradedPrice", data.get("averagePrice", data.get("tradedPrice"))))
+        filled = None if filled_raw in (None, "") else float(filled_raw)
+        average = None if average_raw in (None, "") else float(average_raw)
+        return filled, average
     def submit_order(self, request: BrokerOrderRequest) -> BrokerOrderUpdate:
         self._require_live()
         if not request.security_id: raise ValueError("security_id is required for Dhan")
@@ -56,7 +63,9 @@ class DhanAdapter(BrokerAdapter):
         response=self.transport.post(f"{self.config.base_url}/orders",headers=self._headers(),json=payload); response.raise_for_status(); data=response.json()
         status=self._placement_status(data.get("orderStatus"))
         if status not in {"NEW","REJECTED","CANCELLED","FILLED"}: raise RuntimeError(f"unsupported Dhan placement status: {status}")
-        return BrokerOrderUpdate(order_id=str(data["orderId"]),status=status,client_order_id=correlation_id,symbol=request.symbol,side=request.side.upper(),quantity=request.quantity,broker_account_id=request.broker_account_id,broker_route=request.broker_route,broker_route_generation=request.broker_route_generation,message="DHAN_ORDER_ACCEPTED")
+        filled, average = self._fill_fields(data)
+        raw={"order_id":str(data["orderId"]),"status":status,"client_order_id":correlation_id,"symbol":request.symbol,"side":request.side.upper(),"quantity":request.quantity,"filled_quantity":filled,"average_price":average,"price":request.price,"broker_account_id":request.broker_account_id,"broker_route":request.broker_route,"broker_route_generation":request.broker_route_generation,"message":"DHAN_ORDER_ACCEPTED"}
+        return normalize_broker_update(raw, expected=request)
     def find_order_by_client_id(self, client_order_id: str) -> dict | None:
         self._require_live()
         if not client_order_id or len(client_order_id)>30: raise ValueError("Dhan correlationId must be between 1 and 30 characters")
