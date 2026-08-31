@@ -168,10 +168,20 @@ class BrokerRouter:
             if self.safety_store is not None:self.safety_store.halt(f"multiple broker orders found for {request.client_order_id}")
             raise RuntimeError("multiple broker orders found; child-order aggregation is required")
         actual_client_id=existing.get("client_order_id") or existing.get("tag"); actual_symbol=existing.get("symbol"); actual_side=existing.get("side"); actual_quantity=existing.get("quantity",existing.get("order_quantity",existing.get("requested_quantity")))
+        actual_account=existing.get("broker_account_id",existing.get("account_id")); actual_route=existing.get("broker_route",existing.get("route")); actual_generation=existing.get("broker_route_generation",existing.get("route_generation"))
         if not actual_client_id or not actual_symbol or not actual_side or actual_quantity in (None,""):
             if self.safety_store is not None:self.safety_store.halt(f"incomplete broker recovery payload for {request.client_order_id}")
             raise RuntimeError("broker submission outcome is unknown; recovery payload is incomplete")
-        raw={"order_id":str(existing.get("order_id",existing.get("broker_order_id",""))),"status":str(existing.get("status","")),"client_order_id":actual_client_id,"symbol":actual_symbol,"side":actual_side,"quantity":actual_quantity,"filled_quantity":existing.get("filled_quantity",existing.get("filledQty",existing.get("filled_qty"))),"price":existing.get("price"),"average_price":existing.get("average_price",existing.get("averagePrice")),"message":"BROKER_SUBMISSION_RECOVERED"}
+        if request.broker_account_id is not None and (actual_account is None or str(actual_account)!=str(request.broker_account_id)):
+            if self.safety_store is not None:self.safety_store.halt(f"submission recovery account mismatch: {request.client_order_id}")
+            raise RuntimeError("broker submission outcome is unknown; account identity is mismatched")
+        if request.broker_route is not None and (actual_route is None or str(actual_route)!=str(request.broker_route)):
+            if self.safety_store is not None:self.safety_store.halt(f"submission recovery route mismatch: {request.client_order_id}")
+            raise RuntimeError("broker submission outcome is unknown; route identity is mismatched")
+        if request.broker_route_generation is not None and (actual_generation is None or str(actual_generation)!=str(request.broker_route_generation)):
+            if self.safety_store is not None:self.safety_store.halt(f"submission recovery route generation mismatch: {request.client_order_id}")
+            raise RuntimeError("broker submission outcome is unknown; route generation is mismatched")
+        raw={"order_id":str(existing.get("order_id",existing.get("broker_order_id",""))),"status":str(existing.get("status","")),"client_order_id":actual_client_id,"symbol":actual_symbol,"side":actual_side,"quantity":actual_quantity,"filled_quantity":existing.get("filled_quantity",existing.get("filledQty",existing.get("filled_qty"))),"price":existing.get("price"),"average_price":existing.get("average_price",existing.get("averagePrice")),"broker_account_id":actual_account,"broker_route":actual_route,"broker_route_generation":actual_generation,"message":"BROKER_SUBMISSION_RECOVERED"}
         result=normalize_broker_update(raw,expected=request)
         self.submission_intent_store.record_broker_order(request.client_order_id, result.order_id, result.status.value)
         self.submission_intent_store.resolve(request.client_order_id)
