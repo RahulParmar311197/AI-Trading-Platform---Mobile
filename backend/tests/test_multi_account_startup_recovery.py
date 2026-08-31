@@ -1,9 +1,7 @@
-from types import SimpleNamespace
-
 from app.broker_context_attestation import BrokerContextAttestor
 from app.broker_snapshot import BrokerSnapshot
 from app.multi_account_startup_recovery import MultiAccountStartupRecovery
-from app.order_lifecycle import OrderLifecycle
+from app.order_lifecycle import OrderLifecycle, PositionRecord
 from app.reconciliation import ReconciliationEngine
 from app.safety_state import SafetyStateStore
 from app.submission_intent_store import SubmissionIntentStore
@@ -21,11 +19,11 @@ class FakeRouter:
 
     def get(self, route):
         account_id = route.rsplit(":", 1)[-1]
-        return SimpleNamespace(
-            name=route,
-            broker_account_id=account_id,
-            generation=f"generation-{account_id}",
-        )
+        return type("Route", (), {
+            "name": route,
+            "broker_account_id": account_id,
+            "generation": f"generation-{account_id}",
+        })()
 
     def get_snapshot(self, route):
         return self.snapshots[route]
@@ -50,7 +48,7 @@ def _recovery(tmp_path, snapshots):
 
 
 def _account(account_id, broker="upstox"):
-    return SimpleNamespace(id=account_id, broker=broker)
+    return type("Account", (), {"id": account_id, "broker": broker})()
 
 
 def test_all_accounts_are_reconciled_independently(tmp_path):
@@ -87,10 +85,13 @@ def test_wrong_account_snapshot_fails_closed(tmp_path):
 
 def test_unscoped_persisted_position_is_rejected(tmp_path):
     lifecycle = OrderLifecycle()
-    lifecycle.positions["RELIANCE"] = SimpleNamespace(
+    lifecycle.positions["RELIANCE"] = PositionRecord(
         symbol="RELIANCE",
+        side="BUY",
         quantity=10,
+        entry_price=2500,
         broker_account_id=None,
+        broker_route=None,
     )
     accounts = [_account(101), _account(202)]
     snapshots = {
@@ -103,4 +104,4 @@ def test_unscoped_persisted_position_is_rejected(tmp_path):
 
     assert result.ready is False
     assert result.reason.startswith("MULTI_ACCOUNT_STATE_UNSCOPED")
-    assert safety.load().trading_halted is False
+    assert safety.load().trading_halted is True
