@@ -17,7 +17,7 @@ class ResyncResult:
 
 
 class MarketDataResynchronizer:
-    """Repairs a disconnected/gapped instrument before reopening strategy flow."""
+    """Repairs history before reopening strategy flow."""
 
     def __init__(
         self,
@@ -43,14 +43,19 @@ class MarketDataResynchronizer:
             raise ValueError("resume_sequence must be non-negative")
 
         self._state.sequence_gap(instrument)
-        loaded = await load_historical_candles(
-            self._provider,
-            self._repository,
-            instrument,
-            timeframe,
-            start,
-            end,
-            replace=True,
-        )
+        try:
+            loaded = await load_historical_candles(
+                self._provider,
+                self._repository,
+                instrument,
+                timeframe,
+                start,
+                end,
+                replace=True,
+            )
+        except Exception:
+            # Never promote an instrument to READY after an incomplete repair.
+            return ResyncResult(candles_loaded=0, ready=False)
+
         self._state.resynced(instrument, resume_sequence)
         return ResyncResult(candles_loaded=loaded, ready=True)
