@@ -11,6 +11,9 @@ from app.models.risk_reservation import RiskReservationRecord
 from app.models.submission_intent import SubmissionIntentRecord
 
 
+TERMINAL_RESERVATION_RELEASE_STATES = frozenset({"REJECTED", "CANCELLED", "CANCELED", "FILLED"})
+
+
 class ExecutionRepository:
     """Persistence boundary for order submission, intent, and reservation state."""
 
@@ -77,3 +80,11 @@ class ExecutionRepository:
             reservation.status = "RELEASED"
             reservation.released_at = datetime.now(timezone.utc)
             self.session.flush()
+
+    def settle_from_broker_status(self, client_order_id: str, broker_status: str) -> bool:
+        """Release a reservation only for an authoritative terminal broker outcome."""
+        status = str(broker_status or "").strip().upper()
+        if status not in TERMINAL_RESERVATION_RELEASE_STATES:
+            return False
+        self.release(client_order_id)
+        return True
