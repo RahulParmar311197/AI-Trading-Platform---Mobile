@@ -67,6 +67,8 @@ Last maintained: 2026-09-01
 - [x] Verified `BrokerRouter.reconcile_unresolved_submission_intents()` resolves durable intents only from a complete broker order snapshot and never resubmits automatically.
 - [x] Verified canonical `OrderLifecycle` remains the order-state transition owner; reconciliation does not introduce a competing lifecycle.
 - [x] Verified submission-intent lifecycle regression coverage exists for restart/reuse of a resolved client order ID.
+- [x] Hardened unresolved submission-intent creation so identical request fingerprints are idempotent while fingerprint mismatches fail closed.
+- [x] Added file-store and cross-process regression coverage for same-fingerprint replay and fingerprint mismatch.
 
 ### Broker adapter hardening
 - [x] Dhan submission results now pass the canonical broker-update normalization contract with request/account/route identity preserved.
@@ -101,7 +103,7 @@ Last maintained: 2026-09-01
 - [x] Replace API/manual-order-only in-memory exposure reservation with the canonical durable `RiskReservationStore` where the execution path has sufficient authoritative exposure inputs.
 
 ### P1 — Reliability / recovery
-- [ ] Validate submission-intent uniqueness and fingerprint mismatch behavior under concurrency.
+- [x] Validate submission-intent uniqueness and fingerprint mismatch behavior under concurrency.
 - [ ] Validate ambiguous broker submission recovery end-to-end.
 - [ ] Validate startup reconciliation and recovery jobs.
 - [ ] Validate stale reservation recovery policy and observability.
