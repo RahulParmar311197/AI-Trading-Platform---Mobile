@@ -92,6 +92,38 @@ def test_clear_rejects_missing_active_context(tmp_path):
         store.clear(result, active_context=None)
 
 
+def test_clear_all_is_atomic_when_a_later_account_is_invalid(tmp_path):
+    store = SafetyStateStore(str(tmp_path / "safety.json"))
+    store.halt("DRIFT")
+    first = verified_result(datetime.now(timezone.utc), account_id="acct-1", generation=1, fingerprint="fp-1")
+    second = verified_result(datetime.now(timezone.utc), account_id="acct-2", generation=2, fingerprint="fp-2")
+    mismatched_context = context(second.context.observed_at, account_id="acct-2", generation=999, fingerprint="wrong")
+
+    with pytest.raises(RuntimeError, match="context"):
+        store.clear_all([(first, first.context), (second, mismatched_context)])
+
+    restored = store.load()
+    assert restored.trading_halted is True
+    assert restored.halt_reason == "DRIFT"
+    assert restored.reconciliation_by_account == {}
+
+
+def test_clear_all_persists_all_verified_accounts_atomically(tmp_path):
+    store = SafetyStateStore(str(tmp_path / "safety.json"))
+    store.halt("DRIFT")
+    first = verified_result(datetime.now(timezone.utc), account_id="acct-1", generation=1, fingerprint="fp-1")
+    second = verified_result(datetime.now(timezone.utc), account_id="acct-2", generation=2, fingerprint="fp-2")
+
+    cleared = store.clear_all([(first, first.context), (second, second.context)])
+
+    restored = store.load()
+    assert cleared.trading_halted is False
+    assert restored.trading_halted is False
+    assert set(restored.reconciliation_by_account) == {"acct-1", "acct-2"}
+    assert restored.reconciliation_by_account["acct-1"]["broker_snapshot_fingerprint"] == "fp-1"
+    assert restored.reconciliation_by_account["acct-2"]["broker_snapshot_fingerprint"] == "fp-2"
+
+
 def test_context_rejects_naive_observation():
     with pytest.raises(ValueError, match="timezone-aware"):
         context(datetime.now())
