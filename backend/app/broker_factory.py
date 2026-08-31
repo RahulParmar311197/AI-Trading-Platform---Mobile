@@ -10,14 +10,30 @@ from app.broker_context_attestation import BrokerContextAttestor
 from app.broker_router import BrokerRoute, BrokerRouter
 from app.dhan_adapter import DhanAdapter, DhanConfig
 from app.models.broker_account import BrokerAccount
+from app.risk_reservation_store import RiskReservationStore
 from app.security.credential_encryption import decrypt_credentials
 from app.safety_state import SafetyStateStore
+from app.submission_intent_store import SubmissionIntentStore
 from app.upstox_adapter import UpstoxAdapter, UpstoxConfig
+from app.reconciliation import ReconciliationEngine
 
 
-def build_broker_router(safety_store: SafetyStateStore | None = None, *, context_attestor: BrokerContextAttestor | None = None) -> BrokerRouter:
+def build_broker_router(
+    safety_store: SafetyStateStore | None = None,
+    *,
+    context_attestor: BrokerContextAttestor | None = None,
+    submission_intent_store: SubmissionIntentStore | None = None,
+    risk_reservation_store: RiskReservationStore | None = None,
+) -> BrokerRouter:
     """Create the configured broker router without making network calls."""
     selected = os.getenv("BROKER_ROUTE", "paper").strip().lower()
+    safety = safety_store or SafetyStateStore()
+    intents = submission_intent_store or SubmissionIntentStore()
+    reconciliation_engine = ReconciliationEngine(
+        submission_intent_store=intents,
+        state_store=safety,
+        risk_reservation_store=risk_reservation_store,
+    )
     routes = [BrokerRoute("paper", PaperBrokerAdapter())]
 
     dhan = DhanAdapter()
@@ -26,7 +42,14 @@ def build_broker_router(safety_store: SafetyStateStore | None = None, *, context
     upstox = UpstoxAdapter()
     routes.append(BrokerRoute("upstox", upstox, enabled=bool(upstox.config.live_enabled)))
 
-    return BrokerRouter(routes, selected, safety_store=safety_store or SafetyStateStore(), context_attestor=context_attestor)
+    return BrokerRouter(
+        routes,
+        selected,
+        safety_store=safety,
+        context_attestor=context_attestor,
+        submission_intent_store=intents,
+        reconciliation_engine=reconciliation_engine,
+    )
 
 
 def account_route_name(account: BrokerAccount) -> str:
