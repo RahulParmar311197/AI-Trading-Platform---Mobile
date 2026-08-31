@@ -186,6 +186,13 @@ class OrderReconciliationResult:
     def changed(self) -> bool:
         return any(e.action in (ReconciliationAction.CREATE, ReconciliationAction.UPDATE) for e in self.events)
 
+    @property
+    def resolved(self) -> bool:
+        return bool(self.events) and not any(
+            e.action in (ReconciliationAction.PENDING, ReconciliationAction.ALERT)
+            for e in self.events
+        )
+
 
 def _coerce_broker_order(raw: Any, local_order=None) -> BrokerOrder:
     if isinstance(raw, BrokerOrder):
@@ -203,7 +210,8 @@ def _coerce_broker_order(raw: Any, local_order=None) -> BrokerOrder:
     if quantity is None:
         raise ValueError("broker order quantity is required")
     status_raw = str(raw.get("status", "")).strip().upper()
-    status = OrderStatus(status_raw)
+    status_aliases = {"OPEN": OrderStatus.SUBMITTED, "PENDING": OrderStatus.SUBMITTED}
+    status = status_aliases.get(status_raw, OrderStatus(status_raw))
     filled_raw = raw.get("filled_quantity", raw.get("filledQty", raw.get("filled_qty", 0.0)))
     average = raw.get("average_fill_price", raw.get("average_price", raw.get("averagePrice")))
     return BrokerOrder(
@@ -221,7 +229,7 @@ def _coerce_broker_order(raw: Any, local_order=None) -> BrokerOrder:
 
 
 class OrderReconciliationService:
-    """Application service supporting both bulk snapshots and startup order recovery."""
+    """Application service supporting bulk snapshots and startup order recovery."""
 
     def __init__(self, broker_or_lifecycle):
         self.broker = None if isinstance(broker_or_lifecycle, OrderLifecycle) else broker_or_lifecycle
@@ -242,12 +250,15 @@ class OrderReconciliationService:
     def reconcile(self, broker_orders_or_lifecycle, order_id=None):
         if isinstance(broker_orders_or_lifecycle, OrderLifecycle) and order_id is not None:
             lifecycle = broker_orders_or_lifecycle
-            remote = self._lookup_one(order_id)
-            if remote is None:
-                return OrderReconciliationResult((ReconciliationEvent(order_id, ReconciliationAction.PENDING, "BROKER_ORDER_NOT_FOUND"),))
-            broker_order = _coerce_broker_order(remote, lifecycle.orders.get(order_id))
-            result = OrderReconciler(lifecycle).reconcile([broker_order])
-            return OrderReconciliationResult(tuple(result))
+            try:
+                remote = self._lookup_one(order_id)
+                if remote is None:
+                    return OrderReconciliationResult((ReconciliationEvent(order_id, ReconciliationAction.PENDING, "BROKER_ORDER_NOT_FOUND"),))
+                broker_order = _coerce_broker_order(remote, lifecycle.orders.get(order_id))
+                result = OrderReconciler(lifecycle).reconcile([broker_order])
+                return OrderReconciliationResult(tuple(result))
+            except Exception as exc:
+                return OrderReconciliationResult((ReconciliationEvent(order_id, ReconciliationAction.ALERT, f"AUTHORITATIVE_LOOKUP_FAILED:{exc}"),))
         lifecycle = self.lifecycle
         if lifecycle is None:
             raise RuntimeError("lifecycle is required for bulk reconciliation")
