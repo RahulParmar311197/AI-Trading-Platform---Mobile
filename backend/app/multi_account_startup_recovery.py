@@ -76,12 +76,15 @@ class MultiAccountStartupRecovery:
                     raise RuntimeError("authoritative broker snapshot is required")
                 coordinator = ReconciliationCoordinator(engine=self.router.reconciliation_engine, route=selected.name, account_id=account_id, route_generation=str(selected.generation), context_attestor=self.context_attestor, generation=self.router._next_reconciliation_generation(selected))
                 result = coordinator.reconcile(internal_orders=self._orders_for_account(lifecycle, account_id), internal_positions=self._positions_for_account(lifecycle, account_id), broker_snapshot=snapshot, broker_ready=True)
+                if not result.ready:
+                    results.append(AccountRecoveryResult(account_id, route, False, result, "RECONCILIATION_FAILED"))
+                    continue
                 verified.append((result, result.context))
                 results.append(AccountRecoveryResult(account_id, route, True, result, "RECOVERY_OK"))
             except Exception as exc:
                 results.append(AccountRecoveryResult(account_id, route, False, None, f"RECOVERY_FAILED: {type(exc).__name__}"))
 
-        if len(results) != len(accounts) or not all(item.ready for item in results):
+        if len(results) != len(accounts) or not all(item.ready for item in results) or len(verified) != len(accounts):
             self.safety_store.halt("MULTI_ACCOUNT_RECONCILIATION_FAILED")
             return MultiAccountRecoveryResult(False, tuple(results), "MULTI_ACCOUNT_RECONCILIATION_FAILED")
         return MultiAccountRecoveryResult(True, tuple(results), "RECOVERY_OK", tuple(verified))
