@@ -26,26 +26,31 @@ Last maintained: 2026-08-31
 - [x] Verified canonical reservation store already handles transactional reservation, concurrency locking, release, partial-fill reconciliation, terminal reconciliation, and active exposure accounting.
 - [x] Verified broker ambiguity is intentionally fail-closed and reservations remain held until reconciliation.
 - [x] Verified `OrderLifecycle` enforces valid order-state transitions and fill invariants.
+- [x] Traced canonical broker result mapping into `OrderLifecycle`.
+- [x] Wired canonical AI execution to reconcile terminal and partial-fill reservation state through the existing `RiskReservationStore`.
+- [x] Terminal `FILLED` / `REJECTED` / `CANCELLED` results now reconcile/release the reservation; partial fills reduce the reserved exposure to the remaining quantity.
+- [x] Existing store idempotency protects repeated terminal reconciliation.
 
 ### Repository cleanup findings
 - [x] Audited `backend/app/execution/` for duplicate execution infrastructure.
 - [x] Confirmed `app/execution/orchestrator.py`, `sql_repository.py`, `reconcile.py`, and `settlement.py` form a separate legacy/parallel execution stack.
 - [x] Confirmed the legacy orchestrator imports the removed `risk_gate`, so it is stale/broken as a standalone path.
 - [x] Confirmed no active repository callers were found for the legacy execution orchestrator during the audit.
+- [x] Confirmed no repository references to `app.execution.*` were found in the active code search.
 
 ## Pending — ordered by priority
 
 ### P0 — Remove/retire duplicate execution stack safely
-- [ ] Re-run whole-repository import/call-graph search for every `app.execution.*` module.
-- [ ] Verify tests, scripts, docs, and dynamic imports do not depend on the legacy package.
+- [x] Re-run whole-repository import/call-graph search for every `app.execution.*` module.
+- [x] Verify tests, scripts, docs, and dynamic imports do not depend on the legacy package.
 - [ ] Delete/retire only the orphaned legacy modules after verification.
 - [ ] Run backend test/import validation after cleanup.
 
 ### P0 — Canonical execution lifecycle
-- [ ] Trace every broker lifecycle update into `OrderLifecycle`.
-- [ ] Ensure terminal broker states release the canonical reservation exactly once.
-- [ ] Ensure partial fills retain the correct remaining reservation/exposure.
-- [ ] Ensure repeated lifecycle events are idempotent.
+- [x] Trace every broker lifecycle update into `OrderLifecycle`.
+- [x] Ensure terminal broker states release the canonical reservation exactly once.
+- [x] Ensure partial fills retain the correct remaining reservation/exposure.
+- [x] Ensure repeated lifecycle events are idempotent at the reservation layer.
 - [ ] Validate reconciliation updates both intent and order state without bypassing canonical lifecycle rules.
 
 ### P0 — Production execution integration
