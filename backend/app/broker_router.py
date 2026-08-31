@@ -82,6 +82,12 @@ class BrokerRouter:
                         if actual_symbol != intent.symbol.upper() or actual_side != intent.side.upper() or actual_quantity != float(intent.quantity):
                             if self.safety_store is not None: self.safety_store.halt(f"submission intent payload mismatch: {intent.client_order_id}")
                             raise RuntimeError(f"submission intent payload mismatch: {intent.client_order_id}")
+                        broker_order_id=str(match.get("order_id",match.get("broker_order_id",""))).strip()
+                        broker_status=str(match.get("status","")).strip().upper()
+                        if not broker_order_id or not broker_status:
+                            if self.safety_store is not None: self.safety_store.halt(f"incomplete broker recovery payload: {intent.client_order_id}")
+                            raise RuntimeError(f"incomplete broker recovery payload: {intent.client_order_id}")
+                        self.submission_intent_store.record_broker_order(intent.client_order_id, broker_order_id, broker_status)
                         self.submission_intent_store.resolve(intent.client_order_id); resolved.append(intent.client_order_id); continue
             if self.submission_intent_store.unresolved_count():
                 if self.safety_store is not None:self.safety_store.halt("unresolved submission intents remain after broker reconciliation")
@@ -166,7 +172,10 @@ class BrokerRouter:
             if self.safety_store is not None:self.safety_store.halt(f"incomplete broker recovery payload for {request.client_order_id}")
             raise RuntimeError("broker submission outcome is unknown; recovery payload is incomplete")
         raw={"order_id":str(existing.get("order_id",existing.get("broker_order_id",""))),"status":str(existing.get("status","")),"client_order_id":actual_client_id,"symbol":actual_symbol,"side":actual_side,"quantity":actual_quantity,"filled_quantity":existing.get("filled_quantity",existing.get("filledQty",existing.get("filled_qty"))),"price":existing.get("price"),"average_price":existing.get("average_price",existing.get("averagePrice")),"message":"BROKER_SUBMISSION_RECOVERED"}
-        result=normalize_broker_update(raw,expected=request);self.submission_intent_store.resolve(request.client_order_id);return result
+        result=normalize_broker_update(raw,expected=request)
+        self.submission_intent_store.record_broker_order(request.client_order_id, result.order_id, result.status.value)
+        self.submission_intent_store.resolve(request.client_order_id)
+        return result
     def submit(self,request:BrokerOrderRequest,route=None):
         with self._route_lifecycle_lock:
             selected_route=route or request.broker_route or self.default_route;selected=self.get(selected_route);self._require_execution_ready(selected);self._require_account_binding(request,selected);key=(selected_route,str(request.client_order_id))
@@ -187,7 +196,11 @@ class BrokerRouter:
                     current=self._current_snapshot_fingerprint(selected)
                     if current!=expected:raise RuntimeError("broker state changed immediately before submission")
                 self.submission_intent_store.create(client_order_id=request.client_order_id,route=selected.name,account_id=str(selected.broker_account_id) if selected.broker_account_id is not None else None,symbol=request.symbol,side=request.side,quantity=request.quantity,request_fingerprint=self._request_fingerprint(request))
-                try:raw_result=selected.adapter.submit_order(request);result=normalize_broker_update(raw_result,expected=request);self.submission_intent_store.resolve(request.client_order_id);return result
+                try:
+                    raw_result=selected.adapter.submit_order(request);result=normalize_broker_update(raw_result,expected=request)
+                    self.submission_intent_store.record_broker_order(request.client_order_id, result.order_id, result.status.value)
+                    self.submission_intent_store.resolve(request.client_order_id)
+                    return result
                 except Exception as submit_error:return self._recover_after_submit_failure(request,selected,submit_error)
             finally:
                 with self._submission_lock:self._submission_claims.discard(key)
