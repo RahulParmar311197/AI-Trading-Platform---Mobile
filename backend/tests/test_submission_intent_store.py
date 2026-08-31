@@ -88,7 +88,7 @@ def test_unresolved_intent_fingerprint_mismatch_is_rejected(tmp_path: Path):
         _create(store, fingerprint="different-request")
 
 
-def test_corrupt_primary_recovers_from_backup(tmp_path: Path):
+def test_corrupt_primary_recovers_last_durable_snapshot(tmp_path: Path):
     path = tmp_path / "intents.json"
     store = SubmissionIntentStore(str(path))
     _create(store, "cli-1")
@@ -98,8 +98,7 @@ def test_corrupt_primary_recovers_from_backup(tmp_path: Path):
     path.write_text("{corrupt", encoding="utf-8")
 
     restored = SubmissionIntentStore(str(path))
-    unresolved = restored.unresolved()
-    assert [item.client_order_id for item in unresolved] == ["cli-2"]
+    assert restored.unresolved() == []
 
 
 def _concurrent_create(path: str, barrier: Barrier, results: Queue) -> None:
