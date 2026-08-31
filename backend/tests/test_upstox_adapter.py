@@ -64,13 +64,12 @@ def test_reconciliation_returns_single_match():
     assert result["filled_quantity"] == 10
 
 
-def test_reconciliation_preserves_multiple_matches():
+def test_reconciliation_fails_closed_on_multiple_matches():
     transport = Transport()
     transport.next_response = Response({"data": [{"tag": "client-1", "order_id": "U1"}, {"tag": "client-1", "order_id": "U2"}]})
     adapter = UpstoxAdapter(UpstoxConfig("token", live_enabled=True), transport)
-    result = adapter.find_order_by_client_id("client-1")
-    assert result["multi_order"] is True
-    assert [x["order_id"] for x in result["orders"]] == ["U1", "U2"]
+    with pytest.raises(RuntimeError, match="ambiguous broker order identity"):
+        adapter.find_order_by_client_id("client-1")
 
 
 def test_transport_rejects_invalid_timeout():
