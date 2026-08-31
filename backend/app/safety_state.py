@@ -84,19 +84,7 @@ class SafetyStateStore:
         by_account = data.get("reconciliation_by_account") or {}
         if not isinstance(by_account, dict):
             raise ValueError("invalid account reconciliation state")
-        return SafetyState(
-            bool(data.get("trading_halted", False)),
-            data.get("halt_reason"),
-            datetime.fromisoformat(reconciled_at) if reconciled_at else None,
-            datetime.fromisoformat(halted_at) if halted_at else None,
-            data.get("reconciliation_generation"),
-            data.get("reconciliation_account_id"),
-            data.get("broker_snapshot_fingerprint"),
-            by_account,
-            bool(data.get("risk_circuit_blocked", False)),
-            data.get("risk_circuit_reason"),
-            datetime.fromisoformat(risk_engaged_at) if risk_engaged_at else None,
-        )
+        return SafetyState(bool(data.get("trading_halted", False)), data.get("halt_reason"), datetime.fromisoformat(reconciled_at) if reconciled_at else None, datetime.fromisoformat(halted_at) if halted_at else None, data.get("reconciliation_generation"), data.get("reconciliation_account_id"), data.get("broker_snapshot_fingerprint"), by_account, bool(data.get("risk_circuit_blocked", False)), data.get("risk_circuit_reason"), datetime.fromisoformat(risk_engaged_at) if risk_engaged_at else None)
 
     def load(self) -> SafetyState:
         try:
@@ -115,11 +103,7 @@ class SafetyStateStore:
         if record is not None:
             return dict(record)
         if state.reconciliation_account_id is not None and str(state.reconciliation_account_id) == str(account_id):
-            return {
-                "last_reconciliation_at": state.last_reconciliation_at.isoformat() if state.last_reconciliation_at else None,
-                "reconciliation_generation": state.reconciliation_generation,
-                "broker_snapshot_fingerprint": state.broker_snapshot_fingerprint,
-            }
+            return {"last_reconciliation_at": state.last_reconciliation_at.isoformat() if state.last_reconciliation_at else None, "reconciliation_generation": state.reconciliation_generation, "broker_snapshot_fingerprint": state.broker_snapshot_fingerprint}
         return None
 
     def risk_circuit_status(self) -> tuple[bool, str | None]:
@@ -127,7 +111,6 @@ class SafetyStateStore:
         return state.risk_circuit_blocked, state.risk_circuit_reason
 
     def risk_circuit_reset_ready(self) -> bool:
-        """Allow reset only after broker reconciliation newer than the circuit engagement."""
         state = self.load()
         if not state.risk_circuit_blocked or state.risk_circuit_engaged_at is None:
             return False
@@ -150,19 +133,7 @@ class SafetyStateStore:
         if not reason.strip():
             raise ValueError("risk circuit reason is required")
         state = self.load()
-        engaged = SafetyState(
-            state.trading_halted,
-            state.halt_reason,
-            state.last_reconciliation_at,
-            state.halted_at,
-            state.reconciliation_generation,
-            state.reconciliation_account_id,
-            state.broker_snapshot_fingerprint,
-            dict(state.reconciliation_by_account),
-            True,
-            reason.strip(),
-            datetime.now(timezone.utc),
-        )
+        engaged = SafetyState(state.trading_halted, state.halt_reason, state.last_reconciliation_at, state.halted_at, state.reconciliation_generation, state.reconciliation_account_id, state.broker_snapshot_fingerprint, dict(state.reconciliation_by_account), True, reason.strip(), datetime.now(timezone.utc))
         self.save(engaged)
         return engaged
 
@@ -170,19 +141,7 @@ class SafetyStateStore:
         state = self.load()
         if state.risk_circuit_blocked and not self.risk_circuit_reset_ready():
             raise RuntimeError("risk circuit reset requires broker reconciliation after circuit engagement")
-        reset = SafetyState(
-            state.trading_halted,
-            state.halt_reason,
-            state.last_reconciliation_at,
-            state.halted_at,
-            state.reconciliation_generation,
-            state.reconciliation_account_id,
-            state.broker_snapshot_fingerprint,
-            dict(state.reconciliation_by_account),
-            False,
-            None,
-            None,
-        )
+        reset = SafetyState(state.trading_halted, state.halt_reason, state.last_reconciliation_at, state.halted_at, state.reconciliation_generation, state.reconciliation_account_id, state.broker_snapshot_fingerprint, dict(state.reconciliation_by_account), False, None, None)
         self.save(reset)
         return reset
 
@@ -190,41 +149,36 @@ class SafetyStateStore:
         if not reason.strip():
             raise ValueError("halt reason is required")
         state = self.load()
-        halted = SafetyState(
-            True, reason, None, datetime.now(timezone.utc), None, None, None,
-            dict(state.reconciliation_by_account), state.risk_circuit_blocked,
-            state.risk_circuit_reason, state.risk_circuit_engaged_at,
-        )
+        halted = SafetyState(True, reason, None, datetime.now(timezone.utc), None, None, None, dict(state.reconciliation_by_account), state.risk_circuit_blocked, state.risk_circuit_reason, state.risk_circuit_engaged_at)
         self.save(halted)
         return halted
 
-    def clear(self, reconciliation: ReconciliationResult, *, active_context: BrokerExecutionContext) -> SafetyState:
-        if not isinstance(reconciliation, ReconciliationResult) or not reconciliation.verified:
-            raise ValueError("verified reconciliation result is required before clearing safety halt")
-        if not isinstance(active_context, BrokerExecutionContext):
-            raise ValueError("active broker execution context is required")
-        if reconciliation.context.canonical_key != active_context.canonical_key:
-            raise RuntimeError("reconciliation does not match active broker execution context")
-
+    def clear_all(self, reconciliations: list[tuple[ReconciliationResult, BrokerExecutionContext]]) -> SafetyState:
+        if not reconciliations:
+            raise ValueError("at least one verified reconciliation is required")
         state = self.load()
-        at = reconciliation.reconciled_at.astimezone(timezone.utc)
-        if state.trading_halted and state.halted_at is not None and at <= state.halted_at:
-            raise RuntimeError("reconciliation must occur after the safety halt")
-        account_id = str(active_context.account_id)
         account_states = dict(state.reconciliation_by_account)
-        account_states[account_id] = self._context_record(reconciliation, active_context)
-        cleared = SafetyState(
-            False,
-            None,
-            at,
-            None,
-            active_context.generation,
-            active_context.account_id,
-            active_context.snapshot_fingerprint,
-            account_states,
-            state.risk_circuit_blocked,
-            state.risk_circuit_reason,
-            state.risk_circuit_engaged_at,
-        )
+        latest_at = state.last_reconciliation_at
+        latest_context: BrokerExecutionContext | None = None
+        for reconciliation, active_context in reconciliations:
+            if not isinstance(reconciliation, ReconciliationResult) or not reconciliation.verified:
+                raise ValueError("all reconciliation results must be verified")
+            if not isinstance(active_context, BrokerExecutionContext):
+                raise ValueError("all active broker contexts are required")
+            if reconciliation.context.canonical_key != active_context.canonical_key:
+                raise RuntimeError("reconciliation does not match active broker execution context")
+            at = reconciliation.reconciled_at.astimezone(timezone.utc)
+            if state.trading_halted and state.halted_at is not None and at <= state.halted_at:
+                raise RuntimeError("reconciliation must occur after the safety halt")
+            account_states[str(active_context.account_id)] = self._context_record(reconciliation, active_context)
+            if latest_at is None or at > latest_at:
+                latest_at = at
+                latest_context = active_context
+        if latest_context is None:
+            latest_context = reconciliations[-1][1]
+        cleared = SafetyState(False, None, latest_at, None, latest_context.generation, latest_context.account_id, latest_context.snapshot_fingerprint, account_states, state.risk_circuit_blocked, state.risk_circuit_reason, state.risk_circuit_engaged_at)
         self.save(cleared)
         return cleared
+
+    def clear(self, reconciliation: ReconciliationResult, *, active_context: BrokerExecutionContext) -> SafetyState:
+        return self.clear_all([(reconciliation, active_context)])
