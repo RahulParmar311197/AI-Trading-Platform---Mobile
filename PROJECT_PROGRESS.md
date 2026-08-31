@@ -30,6 +30,10 @@ Last maintained: 2026-08-31
 - [x] Wired canonical AI execution to reconcile terminal and partial-fill reservation state through the existing `RiskReservationStore`.
 - [x] Terminal `FILLED` / `REJECTED` / `CANCELLED` results now reconcile/release the reservation; partial fills reduce the reserved exposure to the remaining quantity.
 - [x] Existing store idempotency protects repeated terminal reconciliation.
+- [x] Unified API/manual `PreTradeRiskGate` reservations with the durable `RiskReservationStore` when a database-backed resource set is active.
+- [x] Added durable reservation adapter binding to the authoritative broker account/route on every execution authorization.
+- [x] Made active reservation replay idempotent for the same client order, account/route, and amount.
+- [x] Added regression tests for durable reservation reserve/partial-fill/terminal-release behavior.
 
 ### Repository cleanup findings
 - [x] Audited `backend/app/execution/` for duplicate execution infrastructure.
@@ -70,9 +74,9 @@ Last maintained: 2026-08-31
 ### P0 — Production execution integration
 - [ ] Trace all API/order entrypoints to the actual broker gateway.
 - [ ] Verify AI-generated orders cannot bypass risk, authorization, reservation, or reconciliation.
-- [ ] Verify non-AI/manual order paths intentionally use the correct policy boundary.
+- [x] Verify non-AI/manual order paths now use the same durable reservation authority as the canonical AI path.
 - [ ] Verify all configured broker adapters conform to the same execution contract.
-- [ ] Replace any API/manual-order-only in-memory exposure reservation with the canonical durable `RiskReservationStore` where the execution path has sufficient authoritative exposure inputs.
+- [x] Replace API/manual-order-only in-memory exposure reservation with the canonical durable `RiskReservationStore` where the execution path has sufficient authoritative exposure inputs.
 
 ### P1 — Reliability / recovery
 - [ ] Validate submission-intent uniqueness and fingerprint mismatch behavior under concurrency.
@@ -108,17 +112,15 @@ Last maintained: 2026-08-31
 ## Current Architecture of Record
 
 ```text
-AI Decision
-    ↓
-AIExecutionOrchestrator
-    ↓
-risk_engine
-    ↓
-RiskReservationStore
+AI Decision / API Manual Order
     ↓
 Execution Authorization
     ↓
-LiveExecutionGateway
+PreTradeRiskGate
+    ↓
+RiskReservationStore (durable, cross-worker)
+    ↓
+LiveExecutionGateway / OrderExecutionService
     ↓
 Broker Adapter
     ↓
