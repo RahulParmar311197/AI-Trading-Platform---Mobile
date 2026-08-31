@@ -18,6 +18,7 @@ class UpstoxClient:
     """Bounded Upstox REST client; secrets are never included in exceptions."""
 
     API_BASE = "https://api.upstox.com/v2"
+    DATA_BASE = "https://api.upstox.com/v3"
     HFT_BASE = "https://api-hft.upstox.com/v3"
 
     def __init__(self, access_token: str, timeout: float = 10.0):
@@ -87,6 +88,37 @@ class UpstoxClient:
             self._request("GET", self.API_BASE, "/market-quote/quotes", params={"instrument_key": instrument_key}),
             "quote",
         )
+
+    def get_historical_candles(
+        self,
+        instrument_key: str,
+        unit: str,
+        interval: int,
+        to_date: str,
+        from_date: str | None = None,
+    ) -> list[list[Any]]:
+        """Fetch Upstox Historical Candle V3 rows without inventing provider fields."""
+        if not instrument_key.strip():
+            raise ValueError("instrument_key is required")
+        if unit not in {"minutes", "hours", "days", "weeks", "months"}:
+            raise ValueError("unit must be minutes, hours, days, weeks, or months")
+        if interval <= 0:
+            raise ValueError("interval must be positive")
+        if not to_date:
+            raise ValueError("to_date is required")
+        if from_date is not None and not from_date:
+            raise ValueError("from_date must be omitted or a non-empty date")
+        data = self._data(
+            self._request(
+                "GET",
+                self.DATA_BASE,
+                f"/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}"
+                + (f"/{from_date}" if from_date else ""),
+            )
+        )
+        if not isinstance(data, dict) or not isinstance(data.get("candles"), list):
+            raise UpstoxAPIError("Upstox historical-candle response has invalid candle data", payload=data)
+        return data["candles"]
 
     def get_positions(self) -> list[dict[str, Any]]:
         return self._list_data(self._request("GET", self.API_BASE, "/portfolio/short-term-positions"), "positions")
