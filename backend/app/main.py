@@ -44,21 +44,13 @@ execution_broker_router = build_broker_router(
     risk_reservation_store=resources.risk_reservation_store,
 )
 recovery_manager = StartupRecoveryManager(execution_store, safety_store)
-broker_recovery = BrokerStartupRecovery(
-    execution_broker_router, execution_store, safety_store, recovery_manager
-)
+broker_recovery = BrokerStartupRecovery(execution_broker_router, execution_store, safety_store, recovery_manager)
 startup_state = resources.startup_execution_state
 emergency_halt_controller = resources.emergency_halt_controller
-startup_gate = StartupReconciliationGate(
-    startup_state, safety_store, PortfolioReconciliationService()
-)
+startup_gate = StartupReconciliationGate(startup_state, safety_store, PortfolioReconciliationService())
 trading_health = TradingSystemHealth()
 trading_metrics = TradingMetricsCollector()
-risk_circuit_breaker = ObservableRiskCircuitBreaker(
-    metrics=trading_metrics,
-    audit=resources.audit_log,
-    safety_store=safety_store,
-)
+risk_circuit_breaker = ObservableRiskCircuitBreaker(metrics=trading_metrics, audit=resources.audit_log, safety_store=safety_store)
 
 
 def _persisted_local_positions(lifecycle: OrderLifecycle) -> dict[str, float]:
@@ -100,10 +92,7 @@ async def lifespan(app: FastAPI):
 
     if resources.submission_intent_store.database_backed:
         try:
-            migrated_count = migrate_legacy_submission_intents(
-                resources.session_local,
-                path=str(resources.submission_intent_store.path),
-            )
+            migrated_count = migrate_legacy_submission_intents(resources.session_local, path=str(resources.submission_intent_store.path))
         except Exception as exc:
             reason = f"legacy submission intent migration failed: {exc}"
             trading_health.record("submission_intent_migration", False, reason)
@@ -143,12 +132,7 @@ async def lifespan(app: FastAPI):
         startup_state.transition(StartupExecutionState.RECOVERING, "application startup recovery")
 
         if len(active_accounts) > 1:
-            multi_recovery = MultiAccountStartupRecovery(
-                execution_broker_router,
-                execution_store,
-                safety_store,
-                resources.broker_context_attestor,
-            )
+            multi_recovery = MultiAccountStartupRecovery(execution_broker_router, execution_store, safety_store, resources.broker_context_attestor)
             result = multi_recovery.run(lifecycle, active_accounts)
             app.state.multi_account_recovery_result = result
             trading_health.record("broker_account_reconciliation", result.ready, "ready" if result.ready else result.reason)
@@ -163,16 +147,26 @@ async def lifespan(app: FastAPI):
                 app.state.api_order_reconciliation = api_order_reconciliation
                 reconciliation_ready = not api_order_reconciliation
                 trading_health.record("api_order_reconciliation", reconciliation_ready, "reconciled" if reconciliation_ready else "unresolved")
+                verified = result.verified_reconciliations
+                portfolio_ready = (
+                    len(verified) == len(active_accounts)
+                    and len(result.accounts) == len(active_accounts)
+                    and all(item.ready and item.reconciliation is not None for item in result.accounts)
+                    and all(reconciliation.ready and context is not None for reconciliation, context in verified)
+                )
                 if api_order_reconciliation:
                     trading_metrics.increment("reconciliation_failures")
                     startup_state.fail("API order projection reconciliation unresolved")
+                elif not portfolio_ready:
+                    trading_health.record("portfolio_reconciliation", False, "verified multi-account reconciliation incomplete")
+                    startup_state.fail("multi-account portfolio reconciliation incomplete")
                 else:
                     startup_state.transition(StartupExecutionState.PORTFOLIO_RECONCILED, "all broker account portfolios reconciled")
-                    startup_state.transition(StartupExecutionState.RISK_READY, "risk readiness checks passed")
                     trading_health.record("portfolio_reconciliation", True, "all accounts reconciled")
+                    startup_state.transition(StartupExecutionState.RISK_READY, "risk readiness checks passed")
                     trading_health.record("risk_readiness", True, "ready")
                     try:
-                        safety_state = safety_store.clear_all([(item.reconciliation, item.reconciliation.context) for item in result.accounts if item.reconciliation is not None])
+                        safety_state = safety_store.clear_all(list(verified))
                         app.state.safety_state = safety_state
                         startup_state.transition(StartupExecutionState.READY)
                     except Exception as exc:
