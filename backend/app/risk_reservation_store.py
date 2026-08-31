@@ -117,6 +117,79 @@ class RiskReservationStore:
         finally: session.close()
         return self.reconcile(reservation_id=reservation_id, broker_status=broker_status, remaining_amount=remaining_amount)
 
+    def reconcile_authoritative_orders(self, *, broker_orders: list[dict], broker_account_id: str, broker_route: str) -> list[dict]:
+        """Reconcile every active reservation against one authoritative broker snapshot.
+
+        No reservation is mutated until every active reservation has exactly one
+        client-order match with a supported, internally consistent broker state.
+        Missing client identity, duplicate matches, and incomplete partial fills
+        are reported as failures so reconciliation can halt rather than silently
+        releasing or retaining risk based on an incomplete snapshot.
+        """
+        account = str(broker_account_id).strip(); route = str(broker_route).strip()
+        scope = self._scope(account, route)
+        by_client: dict[str, list[dict]] = {}
+        for order in broker_orders:
+            if not isinstance(order, dict):
+                continue
+            client_id = str(order.get("client_order_id") or "").strip()
+            if client_id:
+                by_client.setdefault(client_id, []).append(order)
+
+        session = self._session_factory()
+        try:
+            with session.begin():
+                self._lock_scope(session, scope)
+                records = session.query(RiskReservationRecord).filter(
+                    RiskReservationRecord.broker_account_id == account,
+                    RiskReservationRecord.broker_route == route,
+                    RiskReservationRecord.status == self.ACTIVE,
+                ).all()
+                failures: list[dict] = []
+                planned: list[tuple[RiskReservationRecord, str, Decimal | None]] = []
+                for record in records:
+                    matches = by_client.get(record.client_order_id, [])
+                    if len(matches) != 1:
+                        failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_BROKER_MATCH_MISSING" if not matches else "RISK_RESERVATION_BROKER_MATCH_AMBIGUOUS"})
+                        continue
+                    broker = matches[0]
+                    status = str(broker.get("status") or "").strip().upper().replace("-", "_").replace(" ", "_")
+                    if status in self.TERMINAL:
+                        planned.append((record, status, None)); continue
+                    if status != self.PARTIALLY_FILLED and status not in {"NEW", "SUBMITTED", "OPEN", "ACCEPTED", "PENDING", "PENDING_NEW", "TRIGGER_PENDING"}:
+                        failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_BROKER_STATE_AMBIGUOUS"})
+                        continue
+                    if status != self.PARTIALLY_FILLED:
+                        planned.append((record, status, None)); continue
+                    quantity = broker.get("quantity", broker.get("requested_quantity"))
+                    filled = broker.get("filled_quantity", broker.get("filledQty", broker.get("filled_qty")))
+                    try:
+                        quantity_d = self._decimal(quantity, "broker quantity")
+                        filled_d = self._decimal(filled, "broker filled quantity")
+                    except ValueError:
+                        failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_PARTIAL_FILL_FACTS_MISSING"})
+                        continue
+                    if quantity_d < 0 or filled_d < 0 or filled_d > quantity_d:
+                        failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_PARTIAL_FILL_FACTS_INVALID"})
+                        continue
+                    remaining = quantity_d - filled_d
+                    current = self._decimal(record.amount, "reservation amount")
+                    if remaining > current:
+                        failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_PARTIAL_FILL_INCREASE"})
+                        continue
+                    planned.append((record, status, remaining))
+                if failures:
+                    return failures
+                now = datetime.now(timezone.utc)
+                for record, status, remaining in planned:
+                    if status in self.TERMINAL or remaining == 0:
+                        record.status = self.RELEASED; record.released_at = now
+                    elif status == self.PARTIALLY_FILLED and remaining is not None:
+                        record.amount = remaining
+                return []
+        finally:
+            session.close()
+
     def active_amount(self, *, broker_account_id: str, broker_route: str) -> float:
         account = str(broker_account_id).strip(); route = str(broker_route).strip(); self._scope(account, route)
         session = self._session_factory()
