@@ -39,6 +39,8 @@ safety_store = resources.safety_store
 execution_broker_router = build_broker_router(
     safety_store,
     context_attestor=resources.broker_context_attestor,
+    submission_intent_store=resources.submission_intent_store,
+    risk_reservation_store=resources.risk_reservation_store,
 )
 recovery_manager = StartupRecoveryManager(execution_store, safety_store)
 broker_recovery = BrokerStartupRecovery(
