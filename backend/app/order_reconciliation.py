@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from app.order_lifecycle import OrderLifecycle, OrderStatus
 
@@ -69,7 +70,7 @@ class OrderReconciler:
         if local.broker_account_id is not None:
             if remote.broker_account_id is None:
                 return "BROKER_ACCOUNT_ID_MISSING"
-            if int(local.broker_account_id) != int(remote.broker_account_id):
+            if str(local.broker_account_id).strip() != str(remote.broker_account_id).strip():
                 return "BROKER_ACCOUNT_ID_MISMATCH"
         if local.broker_route is not None:
             if not remote.broker_route:
@@ -173,8 +174,6 @@ class OrderReconciler:
         return events
 
 
-# Backwards-compatible application-service import surface.  The implementation
-# lives here so callers importing from app.order_reconciliation keep one engine.
 @dataclass(frozen=True)
 class OrderReconciliationResult:
     events: tuple[ReconciliationEvent, ...]
@@ -188,15 +187,78 @@ class OrderReconciliationResult:
         return any(e.action in (ReconciliationAction.CREATE, ReconciliationAction.UPDATE) for e in self.events)
 
 
-class OrderReconciliationService:
-    def __init__(self, lifecycle: OrderLifecycle):
-        self.lifecycle = lifecycle
-        self.reconciler = OrderReconciler(lifecycle)
+def _coerce_broker_order(raw: Any, local_order=None) -> BrokerOrder:
+    if isinstance(raw, BrokerOrder):
+        return raw
+    if raw is None:
+        raise LookupError("broker order not found")
+    if not isinstance(raw, dict):
+        raise TypeError("broker order payload must be a mapping")
+    order_id = str(raw.get("order_id", raw.get("broker_order_id", ""))).strip()
+    if not order_id:
+        raise ValueError("broker order id is required")
+    symbol = str(raw.get("symbol", getattr(local_order, "symbol", ""))).strip().upper()
+    side = str(raw.get("side", getattr(local_order, "side", ""))).strip().upper()
+    quantity = raw.get("quantity", raw.get("order_quantity", raw.get("requested_quantity", getattr(local_order, "quantity", None))))
+    if quantity is None:
+        raise ValueError("broker order quantity is required")
+    status_raw = str(raw.get("status", "")).strip().upper()
+    status = OrderStatus(status_raw)
+    filled_raw = raw.get("filled_quantity", raw.get("filledQty", raw.get("filled_qty", 0.0)))
+    average = raw.get("average_fill_price", raw.get("average_price", raw.get("averagePrice")))
+    return BrokerOrder(
+        order_id=order_id,
+        symbol=symbol,
+        side=side,
+        quantity=float(quantity),
+        status=status,
+        filled_quantity=float(filled_raw or 0.0),
+        average_fill_price=float(average) if average not in (None, "") else None,
+        client_order_id=raw.get("client_order_id", raw.get("tag")) or getattr(local_order, "order_id", None),
+        broker_account_id=raw.get("broker_account_id", getattr(local_order, "broker_account_id", None)),
+        broker_route=raw.get("broker_route", getattr(local_order, "broker_route", None)),
+    )
 
-    def reconcile(self, broker_orders):
-        return OrderReconciliationResult(tuple(self.reconciler.reconcile(list(broker_orders))))
+
+class OrderReconciliationService:
+    """Application service supporting both bulk snapshots and startup order recovery."""
+
+    def __init__(self, broker_or_lifecycle):
+        self.broker = None if isinstance(broker_or_lifecycle, OrderLifecycle) else broker_or_lifecycle
+        self.lifecycle = broker_or_lifecycle if isinstance(broker_or_lifecycle, OrderLifecycle) else None
+        self.reconciler = OrderReconciler(self.lifecycle) if self.lifecycle is not None else None
+
+    def _lookup_one(self, order_id: str):
+        if self.broker is None:
+            raise RuntimeError("broker is required for single-order reconciliation")
+        finder = getattr(self.broker, "find_order", None)
+        if finder is not None:
+            return finder(order_id)
+        getter = getattr(self.broker, "get_order", None)
+        if getter is not None:
+            return getter(order_id)
+        raise RuntimeError("broker does not support authoritative single-order lookup")
+
+    def reconcile(self, broker_orders_or_lifecycle, order_id=None):
+        if isinstance(broker_orders_or_lifecycle, OrderLifecycle) and order_id is not None:
+            lifecycle = broker_orders_or_lifecycle
+            remote = self._lookup_one(order_id)
+            if remote is None:
+                return OrderReconciliationResult((ReconciliationEvent(order_id, ReconciliationAction.PENDING, "BROKER_ORDER_NOT_FOUND"),))
+            broker_order = _coerce_broker_order(remote, lifecycle.orders.get(order_id))
+            result = OrderReconciler(lifecycle).reconcile([broker_order])
+            return OrderReconciliationResult(tuple(result))
+        lifecycle = self.lifecycle
+        if lifecycle is None:
+            raise RuntimeError("lifecycle is required for bulk reconciliation")
+        self.reconciler = OrderReconciler(lifecycle)
+        return OrderReconciliationResult(tuple(self.reconciler.reconcile(list(broker_orders_or_lifecycle))))
 
     def reconcile_pending(self, broker_orders):
+        lifecycle = self.lifecycle
+        if lifecycle is None:
+            raise RuntimeError("lifecycle is required for pending reconciliation")
+        self.reconciler = OrderReconciler(lifecycle)
         return OrderReconciliationResult(tuple(self.reconciler.reconcile_pending(list(broker_orders))))
 
     def reconcile_or_raise(self, broker_orders):
