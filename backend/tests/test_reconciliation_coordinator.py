@@ -12,9 +12,9 @@ from app.submission_intent_store import SubmissionIntentStore
 SECRET = b"t" * 32
 
 
-def _coordinator(tmp_path, generation=3):
+def _coordinator(tmp_path, generation=3, engine=None):
     return ReconciliationCoordinator(
-        engine=ReconciliationEngine(SubmissionIntentStore(str(tmp_path / "intents.json"))),
+        engine=engine or ReconciliationEngine(SubmissionIntentStore(str(tmp_path / "intents.json"))),
         route="paper",
         account_id="paper-account",
         route_generation="paper-1",
@@ -47,6 +47,53 @@ def test_coordinator_builds_attested_verified_result_from_one_supplied_snapshot(
     assert result.verified is True
 
 
+def test_coordinator_passes_opaque_identity_to_durable_engine_check(tmp_path):
+    class RecordingStateStore:
+        def __init__(self):
+            self.recorded = None
+
+        def record_check(self, *, broker_account_id, broker_route, result):
+            self.recorded = (broker_account_id, broker_route, result)
+
+    state_store = RecordingStateStore()
+    engine = ReconciliationEngine(
+        SubmissionIntentStore(str(tmp_path / "intents.json")),
+        state_store=state_store,
+    )
+    _coordinator(tmp_path, engine=engine).reconcile(
+        internal_orders=[{"client_order_id": "c1", "status": "NEW", "quantity": 10, "filled_quantity": 0}],
+        internal_positions=[{"symbol": "NIFTY", "quantity": 0, "side": "BUY"}],
+        broker_snapshot=_snapshot(),
+    )
+    assert state_store.recorded is not None
+    account_id, route, result = state_store.recorded
+    assert account_id == "paper-account"
+    assert route == "paper"
+    assert result.ok is True
+
+
+def test_coordinator_preserves_leading_zero_account_identity(tmp_path):
+    snapshot = BrokerSnapshot(
+        orders=[{"client_order_id": "c1", "status": "NEW", "quantity": 10, "filled_quantity": 0}],
+        positions=[],
+        broker_route="paper",
+        broker_account_id="001",
+    )
+    coordinator = ReconciliationCoordinator(
+        engine=ReconciliationEngine(SubmissionIntentStore(str(tmp_path / "intents.json"))),
+        route="paper",
+        account_id="001",
+        route_generation="paper-1",
+        context_attestor=BrokerContextAttestor(SECRET),
+    )
+    result = coordinator.reconcile(
+        internal_orders=[{"client_order_id": "c1", "status": "NEW", "quantity": 10, "filled_quantity": 0}],
+        internal_positions=[],
+        broker_snapshot=snapshot,
+    )
+    assert result.context.account_id == "001"
+
+
 def test_coordinator_rejects_snapshot_route_mismatch(tmp_path):
     snapshot = _snapshot()
     mismatched = BrokerSnapshot(snapshot.orders, snapshot.positions, "upstox", "paper-account")
@@ -73,7 +120,7 @@ def test_coordinator_fails_closed_on_reconciliation_mismatch(tmp_path):
 
 def test_coordinator_rejects_naive_engine_timestamp(tmp_path):
     class NaiveEngine:
-        def check(self, *args):
+        def check(self, *args, **kwargs):
             class Check:
                 ok = True
                 trading_halted = False
