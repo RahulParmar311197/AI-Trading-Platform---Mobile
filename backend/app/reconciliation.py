@@ -61,10 +61,16 @@ class ReconciliationEngine:
         self.state_store = state_store
         self.risk_reservation_store = risk_reservation_store
 
-    def _reconcile_reservations(self, broker_orders: list[dict]) -> list[dict]:
-        """Apply only authoritative, explicitly client-bound broker outcomes to reservations."""
+    def _reconcile_reservations(self, broker_orders: list[dict], *, broker_account_id: str | None = None, broker_route: str | None = None) -> list[dict]:
+        """Reconcile reservations only from one validated authoritative broker snapshot."""
         if self.risk_reservation_store is None:
             return []
+        if broker_account_id is not None and broker_route and hasattr(self.risk_reservation_store, "reconcile_authoritative_orders"):
+            return self.risk_reservation_store.reconcile_authoritative_orders(
+                broker_orders=broker_orders,
+                broker_account_id=str(broker_account_id),
+                broker_route=str(broker_route),
+            )
         failures: list[dict] = []
         for broker in broker_orders:
             client_order_id = str(broker.get("client_order_id") or "").strip()
@@ -100,7 +106,7 @@ class ReconciliationEngine:
             elif internal_status=="FILLED" and abs(broker_filled-requested)>1e-9: drift="FILLED_WITH_INCOMPLETE_QUANTITY"
             if drift: order_drift.append({"id":key,"internal":internal,"broker":broker,"reason":drift,"internal_normalized_status":internal_status,"broker_normalized_status":broker_status,"internal_filled_quantity":internal_filled,"broker_filled_quantity":broker_filled,"requested_quantity":requested})
         position_drift=[{"symbol":s,"internal_signed_quantity":po.get(s,0),"broker_signed_quantity":pb.get(s,0),"reason":"POSITION_SIGNED_QUANTITY_MISMATCH"} for s in set(po)|set(pb) if abs(po.get(s,0)-pb.get(s,0))>1e-9]
-        order_drift.extend(self._reconcile_reservations(bo_list))
+        order_drift.extend(self._reconcile_reservations(bo_list, broker_account_id=broker_account_id, broker_route=broker_route))
         ok=not order_drift and not position_drift
         self.trading_halted=not ok
         result = ReconciliationCheckResult(ok=ok,trading_halted=self.trading_halted,order_drift=order_drift,position_drift=position_drift,checked_at=datetime.now(timezone.utc).isoformat(),_verification_token=_CHECK_TOKEN)
