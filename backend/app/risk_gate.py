@@ -35,7 +35,7 @@ class RiskDecision:
 
 
 class ExposureReservationBook:
-    """Atomic reservations rebuilt from durable lifecycle state after restart."""
+    """Atomic reservations; production resources may replace this with a durable adapter."""
     def __init__(self):
         self._lock = Lock()
         self._reservations: dict[str, float] = {}
@@ -97,19 +97,14 @@ class ExposureReservationBook:
 
 class PreTradeRiskGate:
     """Fail-closed authorization immediately before broker submission."""
-    def __init__(
-        self,
-        limits: RiskLimits,
-        reservations: ExposureReservationBook | None = None,
-        reconciliation_state_store=None,
-        reconciliation_max_age_seconds: float = 30.0,
-    ):
-        if not all(isfinite(float(value)) for value in (
-            limits.max_order_quantity,
-            limits.max_position_quantity,
-            limits.max_daily_loss,
-            limits.max_trade_loss,
-        )):
+    _default_reservations = None
+
+    @classmethod
+    def set_default_reservations(cls, reservations) -> None:
+        cls._default_reservations = reservations
+
+    def __init__(self, limits: RiskLimits, reservations: ExposureReservationBook | None = None, reconciliation_state_store=None, reconciliation_max_age_seconds: float = 30.0):
+        if not all(isfinite(float(value)) for value in (limits.max_order_quantity, limits.max_position_quantity, limits.max_daily_loss, limits.max_trade_loss)):
             raise ValueError("risk limits must be finite")
         if limits.max_order_quantity <= 0 or limits.max_position_quantity <= 0:
             raise ValueError("risk quantity limits must be positive")
@@ -122,7 +117,7 @@ class PreTradeRiskGate:
         if not isfinite(reconciliation_max_age_seconds) or reconciliation_max_age_seconds <= 0:
             raise ValueError("reconciliation_max_age_seconds must be positive and finite")
         self.limits = limits
-        self.reservations = reservations or ExposureReservationBook()
+        self.reservations = reservations or self._default_reservations or ExposureReservationBook()
         self.reconciliation_state_store = reconciliation_state_store
         self.reconciliation_max_age_seconds = reconciliation_max_age_seconds
 
@@ -148,13 +143,11 @@ class PreTradeRiskGate:
 
     @staticmethod
     def snapshot_from_lifecycle(lifecycle, position_quantity: float, broker_ready: bool, kill_switch: bool = False, projected_trade_loss: float = 0.0, trading_day: str | None = None, trading_day_timezone: str = "UTC", broker_snapshot_fingerprint: str | None = None) -> RiskSnapshot:
-        if trading_day is None:
-            trading_day = PreTradeRiskGate.trading_day_key(timezone_name=trading_day_timezone)
-        else:
+        trading_day = trading_day or PreTradeRiskGate.trading_day_key(timezone_name=trading_day_timezone)
+        if trading_day:
             PreTradeRiskGate.trading_day_key(timezone_name=trading_day_timezone)
-        daily = lifecycle.realized_pnl_by_day.get(trading_day, 0.0)
         try:
-            daily = float(daily)
+            daily = float(lifecycle.realized_pnl_by_day.get(trading_day, 0.0))
             position = float(position_quantity)
             trade_loss = float(projected_trade_loss)
         except (TypeError, ValueError) as exc:
@@ -171,16 +164,10 @@ class PreTradeRiskGate:
 
     def evaluate(self, request: BrokerOrderRequest, snapshot: RiskSnapshot) -> RiskDecision:
         if self.reconciliation_state_store is not None:
-            account_id = request.broker_account_id
-            route = request.broker_route
-            if account_id is None or not str(route or "").strip():
+            if request.broker_account_id is None or not str(request.broker_route or "").strip():
                 return RiskDecision(False, "RISK_RECONCILIATION_REQUIRED")
             try:
-                if self.reconciliation_state_store.is_trading_blocked(
-                    broker_account_id=account_id,
-                    broker_route=route,
-                    max_age_seconds=self.reconciliation_max_age_seconds,
-                ):
+                if self.reconciliation_state_store.is_trading_blocked(broker_account_id=request.broker_account_id, broker_route=request.broker_route, max_age_seconds=self.reconciliation_max_age_seconds):
                     return RiskDecision(False, "RISK_RECONCILIATION_REQUIRED")
             except Exception:
                 return RiskDecision(False, "RISK_RECONCILIATION_REQUIRED")
@@ -190,21 +177,13 @@ class PreTradeRiskGate:
             return RiskDecision(False, "RISK_BROKER_NOT_READY")
         try:
             quantity = float(request.quantity)
-        except (TypeError, ValueError):
-            return RiskDecision(False, "RISK_INVALID_NUMERIC_INPUT")
-        try:
             current_position = float(snapshot.position_quantity)
-        except (TypeError, ValueError):
-            return RiskDecision(False, "RISK_INVALID_POSITION_SNAPSHOT")
-        try:
             daily_pnl = float(snapshot.daily_pnl)
             projected_trade_loss = float(snapshot.projected_trade_loss)
         except (TypeError, ValueError):
             return RiskDecision(False, "RISK_INVALID_NUMERIC_INPUT")
-        if not isfinite(quantity) or not isfinite(daily_pnl) or not isfinite(projected_trade_loss):
+        if not all(isfinite(v) for v in (quantity, current_position, daily_pnl, projected_trade_loss)):
             return RiskDecision(False, "RISK_INVALID_NUMERIC_INPUT")
-        if not isfinite(current_position):
-            return RiskDecision(False, "RISK_INVALID_POSITION_SNAPSHOT")
         if quantity <= 0:
             return RiskDecision(False, "RISK_INVALID_QUANTITY")
         if quantity > self.limits.max_order_quantity:
@@ -212,8 +191,7 @@ class PreTradeRiskGate:
         side_sign = self._side_sign(request.side)
         if side_sign == 0:
             return RiskDecision(False, "RISK_INVALID_SIDE")
-        projected_position = current_position + side_sign * quantity
-        if abs(projected_position) > self.limits.max_position_quantity + 1e-9:
+        if abs(current_position + side_sign * quantity) > self.limits.max_position_quantity + 1e-9:
             return RiskDecision(False, "RISK_MAX_POSITION_QUANTITY")
         if -daily_pnl >= self.limits.max_daily_loss:
             return RiskDecision(False, "RISK_DAILY_LOSS_LIMIT")
@@ -226,14 +204,22 @@ class PreTradeRiskGate:
         if not decision.allowed:
             return decision
         signed = self._side_sign(request.side) * float(request.quantity)
-        if not self.reservations.reserve(request.client_order_id, signed, float(snapshot.position_quantity), self.limits.max_position_quantity):
+        try:
+            reserved = self.reservations.reserve(request.client_order_id, signed, float(snapshot.position_quantity), self.limits.max_position_quantity)
+        except Exception as exc:
+            return RiskDecision(False, "RISK_EXPOSURE_RESERVATION")
+        if not reserved:
             return RiskDecision(False, "RISK_EXPOSURE_RESERVATION")
         return RiskDecision(True, "RISK_OK")
 
     def update_after_fill(self, request: BrokerOrderRequest, filled_quantity: float, current_position: float) -> RiskDecision:
         remaining = max(0.0, float(request.quantity) - float(filled_quantity))
         signed_remaining = self._side_sign(request.side) * remaining
-        if not self.reservations.update(request.client_order_id, signed_remaining, current_position, self.limits.max_position_quantity):
+        try:
+            updated = self.reservations.update(request.client_order_id, signed_remaining, current_position, self.limits.max_position_quantity)
+        except Exception:
+            return RiskDecision(False, "RISK_EXPOSURE_RESERVATION_UPDATE")
+        if not updated:
             return RiskDecision(False, "RISK_EXPOSURE_RESERVATION_UPDATE")
         return RiskDecision(True, "RISK_OK")
 
