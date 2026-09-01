@@ -1,81 +1,86 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import sqrt
-from statistics import mean
+import math
+from statistics import mean, pstdev
 from typing import Sequence
-
-from app.backtest_engine import BacktestResult, BacktestTrade
 
 
 @dataclass(frozen=True)
 class PerformanceMetrics:
-    net_pnl: float
-    return_pct: float
+    total_return: float
     win_rate: float
     profit_factor: float
-    expectancy: float
     max_drawdown: float
     max_drawdown_pct: float
-    sharpe: float
-    sortino: float
-    average_win: float
-    average_loss: float
-    consecutive_wins: int
-    consecutive_losses: int
+    sharpe_ratio: float
+    sortino_ratio: float
+    calmar_ratio: float
+    volatility: float
     trade_count: int
+    winning_trades: int
+    losing_trades: int
+    gross_profit: float
+    gross_loss: float
+    net_pnl: float
 
 
-class PerformanceAnalyzer:
-    """Calculates risk-aware performance metrics from closed backtest trades."""
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    if denominator == 0:
+        return 0.0
+    value = numerator / denominator
+    return value if math.isfinite(value) else 0.0
 
-    @staticmethod
-    def _returns(result: BacktestResult) -> list[float]:
-        equity = result.initial_equity
-        values=[]
-        for trade in result.trades:
-            previous=equity
-            equity += trade.net_pnl
-            values.append(trade.net_pnl / previous if previous else 0.0)
-        return values
 
-    def analyze(self, result: BacktestResult) -> PerformanceMetrics:
-        trades: Sequence[BacktestTrade] = result.trades
-        pnls=[t.net_pnl for t in trades]
-        wins=[p for p in pnls if p > 0]
-        losses=[p for p in pnls if p < 0]
-        gross_profit=sum(wins); gross_loss=abs(sum(losses))
-        equity=result.initial_equity; peak=equity; max_dd=0.0
-        for pnl in pnls:
-            equity += pnl
-            peak=max(peak,equity)
-            max_dd=max(max_dd,peak-equity)
-        dd_pct=max_dd/result.initial_equity if result.initial_equity else 0.0
-        returns=self._returns(result)
-        avg=mean(returns) if returns else 0.0
-        downside=[min(0.0,r) for r in returns]
-        variance=mean([(r-avg)**2 for r in returns]) if returns else 0.0
-        downside_dev=sqrt(mean([r*r for r in downside])) if returns else 0.0
-        sharpe=(avg/sqrt(variance))*sqrt(len(returns)) if variance > 0 else 0.0
-        sortino=(avg/downside_dev)*sqrt(len(returns)) if downside_dev > 0 else 0.0
-        max_w=max_l=cur_w=cur_l=0
-        for p in pnls:
-            if p>0: cur_w+=1; cur_l=0; max_w=max(max_w,cur_w)
-            elif p<0: cur_l+=1; cur_w=0; max_l=max(max_l,cur_l)
-            else: cur_w=cur_l=0
-        return PerformanceMetrics(
-            net_pnl=result.net_pnl,
-            return_pct=(result.net_pnl/result.initial_equity) if result.initial_equity else 0.0,
-            win_rate=(len(wins)/len(pnls)) if pnls else 0.0,
-            profit_factor=(gross_profit/gross_loss) if gross_loss else (float('inf') if gross_profit else 0.0),
-            expectancy=mean(pnls) if pnls else 0.0,
-            max_drawdown=max_dd,
-            max_drawdown_pct=dd_pct,
-            sharpe=sharpe,
-            sortino=sortino,
-            average_win=mean(wins) if wins else 0.0,
-            average_loss=mean(losses) if losses else 0.0,
-            consecutive_wins=max_w,
-            consecutive_losses=max_l,
-            trade_count=len(pnls),
-        )
+def calculate_performance_metrics(
+    equity_curve: Sequence[float],
+    trade_pnls: Sequence[float] = (),
+    *,
+    initial_equity: float | None = None,
+    periods_per_year: float = 252.0,
+) -> PerformanceMetrics:
+    values = [float(v) for v in equity_curve]
+    if not values:
+        return PerformanceMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0, 0.0, 0.0, 0.0)
+    if periods_per_year <= 0:
+        raise ValueError('periods_per_year must be positive')
+    initial = float(initial_equity if initial_equity is not None else values[0])
+    final = values[-1]
+    total_return = _safe_ratio(final - initial, initial)
+    trades = [float(p) for p in trade_pnls]
+    winners = [p for p in trades if p > 0]
+    losers = [p for p in trades if p < 0]
+    gross_profit = sum(winners)
+    gross_loss = abs(sum(losers))
+    peak = values[0]
+    max_dd = max_dd_pct = 0.0
+    for value in values:
+        peak = max(peak, value)
+        dd = peak - value
+        max_dd = max(max_dd, dd)
+        if peak > 0:
+            max_dd_pct = max(max_dd_pct, dd / peak)
+    returns = [_safe_ratio(values[i], values[i - 1]) - 1.0 for i in range(1, len(values)) if values[i - 1] != 0]
+    std = pstdev(returns) if len(returns) > 1 else 0.0
+    volatility = std * math.sqrt(periods_per_year)
+    avg_return = mean(returns) if returns else 0.0
+    downside_dev = math.sqrt(mean([min(r, 0.0) ** 2 for r in returns])) if returns else 0.0
+    sharpe = _safe_ratio(avg_return * math.sqrt(periods_per_year), std)
+    sortino = _safe_ratio(avg_return * math.sqrt(periods_per_year), downside_dev)
+    return PerformanceMetrics(
+        total_return=total_return,
+        win_rate=_safe_ratio(len(winners), len(trades)),
+        profit_factor=_safe_ratio(gross_profit, gross_loss),
+        max_drawdown=max_dd,
+        max_drawdown_pct=max_dd_pct,
+        sharpe_ratio=sharpe,
+        sortino_ratio=sortino,
+        calmar_ratio=_safe_ratio(total_return, max_dd_pct),
+        volatility=volatility,
+        trade_count=len(trades),
+        winning_trades=len(winners),
+        losing_trades=len(losers),
+        gross_profit=gross_profit,
+        gross_loss=gross_loss,
+        net_pnl=sum(trades),
+    )
