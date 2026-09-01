@@ -10,6 +10,8 @@ Last maintained: 2026-09-01
 - [x] Realtime fan-out uses bounded queues and atomic fail-closed backpressure.
 - [x] Reconnect attempts are now explicitly bounded; exhaustion returns failure instead of retrying indefinitely.
 - [x] Regression coverage added for bounded reconnect exhaustion, invalid attempt limits, and successful reconnect before the limit.
+- [x] Dhan adapter snapshot access fails closed when broker credentials are unavailable; it no longer returns empty collections that could be mistaken for an authoritative zero-exposure snapshot.
+- [x] Regression coverage added for unconfigured Dhan positions, orders, order lookup, trades, and order-trades access.
 
 ## Pending — ordered by priority
 
@@ -32,6 +34,7 @@ Last maintained: 2026-09-01
 - [ ] Audit broker adapters and capability declarations.
 - [ ] Validate broker-specific order types, status mappings, precision, lot sizes, and rejection handling.
 - [x] Validate account identity and route binding for Dhan and Upstox submission paths.
+- [x] Prevent unconfigured Dhan snapshot reads from masquerading as authoritative empty broker state.
 
 ### P2 — Platform / operations
 - [ ] Authentication/authorization audit.
