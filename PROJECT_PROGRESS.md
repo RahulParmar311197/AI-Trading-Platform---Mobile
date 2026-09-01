@@ -95,6 +95,12 @@ Last maintained: 2026-09-01
 - [x] Upstox cancellation results preserve configured route identity when available.
 - [x] Added regression coverage for Upstox account-route identity and route mismatch rejection.
 
+### Startup recovery hardening
+- [x] Startup recovery remains fail-closed until broker order and position reconciliation complete.
+- [x] Startup position comparison now rejects unknown broker position sides instead of silently treating them as long exposure.
+- [x] Startup position comparison now rejects unknown local position sides and negative local quantities.
+- [x] Added regression coverage proving malformed position direction fails startup recovery and leaves execution locked.
+
 ## Pending — ordered by priority
 
 ### P0 — Remove/retire duplicate execution stack safely
@@ -121,7 +127,7 @@ Last maintained: 2026-09-01
 - [ ] Validate ambiguous broker submission recovery end-to-end in runtime/CI.
 - [x] Validate submission-intent uniqueness and fingerprint mismatch behavior under concurrency.
 - [ ] Validate startup reconciliation and recovery jobs in runtime/CI.
-- [x] Implement read-only stale reservation detection; still pending: authoritative recovery workflow and production observability/alerting.
+- [x] Implement read-only stale reservation detection and authoritative recovery workflow; still pending: production observability/alerting.
 
 ### P1 — Trading-system completeness
 - [ ] Full market-data pipeline audit.
