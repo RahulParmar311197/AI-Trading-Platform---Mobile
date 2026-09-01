@@ -199,16 +199,18 @@ class RiskReservationStore:
                     if status not in self.ACTIVE_BROKER_STATUSES:
                         failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_BROKER_STATE_AMBIGUOUS"}); continue
                     if status != self.PARTIALLY_FILLED: planned.append((record, status, None)); continue
-                    quantity = broker.get("quantity", broker.get("requested_quantity")); filled = broker.get("filled_quantity", broker.get("filledQty", broker.get("filled_qty")))
-                    try: quantity_d = self._decimal(quantity, "broker quantity"); filled_d = self._decimal(filled, "broker filled quantity")
+                    remaining_exposure = broker.get("remaining_exposure")
+                    if remaining_exposure is None:
+                        failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_PARTIAL_REMAINING_EXPOSURE_MISSING"}); continue
+                    try: remaining_d = self._decimal(remaining_exposure, "broker remaining exposure")
                     except ValueError:
-                        failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_PARTIAL_FILL_FACTS_MISSING"}); continue
-                    if quantity_d < 0 or filled_d < 0 or filled_d > quantity_d:
-                        failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_PARTIAL_FILL_FACTS_INVALID"}); continue
-                    remaining = quantity_d - filled_d; current = self._decimal(record.amount, "reservation amount")
-                    if remaining > current:
+                        failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_PARTIAL_REMAINING_EXPOSURE_INVALID"}); continue
+                    if remaining_d < 0:
+                        failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_PARTIAL_REMAINING_EXPOSURE_INVALID"}); continue
+                    current = self._decimal(record.amount, "reservation amount")
+                    if remaining_d > current:
                         failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_PARTIAL_FILL_INCREASE"}); continue
-                    planned.append((record, status, remaining))
+                    planned.append((record, status, remaining_d))
                 if failures: return failures
                 now = datetime.now(timezone.utc)
                 for record, status, remaining in planned:
