@@ -30,10 +30,13 @@ class BackoffPolicy:
 class ReconnectController:
     """Bounded reconnect loop. A successful connect is not strategy-ready."""
 
-    def __init__(self, connect, *, policy: BackoffPolicy | None = None, sleep=asyncio.sleep):
+    def __init__(self, connect, *, policy: BackoffPolicy | None = None, sleep=asyncio.sleep, max_attempts: int = 5):
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be >= 1")
         self._connect = connect
         self._policy = policy or BackoffPolicy()
         self._sleep = sleep
+        self._max_attempts = max_attempts
         self._stop = asyncio.Event()
         self._attempt = 0
 
@@ -45,7 +48,7 @@ class ReconnectController:
         self._stop.set()
 
     async def run(self) -> bool:
-        while not self._stop.is_set():
+        while not self._stop.is_set() and self._attempt < self._max_attempts:
             self._attempt += 1
             try:
                 result = self._connect()
@@ -55,7 +58,8 @@ class ReconnectController:
                     return True
             except Exception:
                 pass
-            await self._sleep(self._policy.delay(self._attempt))
+            if self._attempt < self._max_attempts:
+                await self._sleep(self._policy.delay(self._attempt))
         return False
 
 
