@@ -1,10 +1,63 @@
-import pandas as pd
-from fastapi import APIRouter
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, HTTPException
+
 from app.api.markets import demo_candles
-from app.backtest.engine import run
-router=APIRouter(tags=["backtest"])
+from app.backtest import BacktestConfig, CandleBacktester
+from app.market_data import Candle
+from app.performance_metrics import calculate_performance_metrics
+
+router = APIRouter(tags=["backtest"])
+
+
+def _to_candle(item: dict, symbol: str) -> Candle:
+    timestamp = item.get("timestamp")
+    if isinstance(timestamp, str):
+        try:
+            timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid candle timestamp") from exc
+    elif isinstance(timestamp, (int, float)):
+        timestamp = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    if not isinstance(timestamp, datetime):
+        raise HTTPException(status_code=422, detail="invalid candle timestamp")
+    return Candle(
+        timestamp=timestamp,
+        symbol=symbol,
+        timeframe=str(item.get("timeframe", "5m")),
+        open=float(item["open"]),
+        high=float(item["high"]),
+        low=float(item["low"]),
+        close=float(item["close"]),
+        volume=float(item.get("volume", 0.0)),
+    )
+
 
 @router.post("/backtest")
-def backtest(symbol:str="NIFTY", bars:int=1000, capital:float=100000, risk_percent:float=0.5):
-    df=pd.DataFrame(demo_candles(symbol,min(max(bars,50),2000)))
-    return run(df,capital,risk_percent/100)
+def backtest(symbol: str = "NIFTY", bars: int = 1000, capital: float = 100000, risk_percent: float = 0.5):
+    if capital <= 0:
+        raise HTTPException(status_code=422, detail="capital must be positive")
+    if not 0 < risk_percent <= 100:
+        raise HTTPException(status_code=422, detail="risk_percent must be greater than 0 and at most 100")
+    bounded_bars = min(max(bars, 50), 2000)
+    raw = demo_candles(symbol, bounded_bars)
+    candles = [_to_candle(item, symbol) for item in raw]
+    result = CandleBacktester(
+        BacktestConfig(initial_equity=capital, signal_min_score=2)
+    ).run(candles)
+    metrics = calculate_performance_metrics(
+        result.equity_curve,
+        [trade.pnl for trade in result.trades],
+        initial_equity=result.initial_equity,
+    )
+    return {
+        "initial_equity": result.initial_equity,
+        "final_equity": result.final_equity,
+        "net_pnl": result.net_pnl,
+        "gross_pnl": result.gross_pnl,
+        "fees": result.fees,
+        "equity_curve": list(result.equity_curve),
+        "metrics": metrics,
+    }
