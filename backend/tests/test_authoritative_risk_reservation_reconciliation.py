@@ -144,3 +144,34 @@ def test_authoritative_snapshot_does_not_mutate_when_any_reservation_is_ambiguou
         {"id": "client-2", "reason": "RISK_RESERVATION_BROKER_MATCH_MISSING"}
     ]
     assert store.active_amount(broker_account_id="001", broker_route="upstox:account:1") == 30
+
+
+def test_authoritative_snapshot_rejects_orphan_active_broker_order(tmp_path: Path):
+    store = _store(tmp_path)
+    _reserve(store, client_order_id="client-1", amount=20)
+
+    failures = store.reconcile_authoritative_orders(
+        broker_orders=[
+            {
+                "client_order_id": "client-1",
+                "order_id": "broker-1",
+                "status": "OPEN",
+                "quantity": 20,
+                "filled_quantity": 0,
+            },
+            {
+                "client_order_id": "orphan-client",
+                "order_id": "broker-orphan",
+                "status": "OPEN",
+                "quantity": 5,
+                "filled_quantity": 0,
+            },
+        ],
+        broker_account_id="001",
+        broker_route="upstox:account:1",
+    )
+
+    assert failures == [
+        {"id": "orphan-client", "reason": "RISK_RESERVATION_ORPHAN_BROKER_ORDER"}
+    ]
+    assert store.active_amount(broker_account_id="001", broker_route="upstox:account:1") == 20
