@@ -67,6 +67,53 @@ def test_submit_accepts_integer_quantity_and_sends_exact_quantity():
     assert transport.calls[0][2]["json"]["quantity"] == 10
 
 
+def test_submit_rejects_missing_security_id_before_transport_call():
+    transport = Transport()
+    adapter = UpstoxAdapter(UpstoxConfig("token", live_enabled=True), transport)
+    request = BrokerOrderRequest(client_order_id="client-1", symbol="NIFTY", side="BUY", quantity=10, product_type="INTRADAY")
+    with pytest.raises(ValueError, match="security_id is required"):
+        adapter.submit_order(request)
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("product_type", ["NRML", "FOO", ""])
+def test_submit_rejects_unsupported_product_before_transport_call(product_type):
+    transport = Transport()
+    adapter = UpstoxAdapter(UpstoxConfig("token", live_enabled=True), transport)
+    request = req(product_type=product_type)
+    with pytest.raises(ValueError, match="unsupported Upstox product_type"):
+        adapter.submit_order(request)
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("validity", ["GTC", "FOK", ""])
+def test_submit_rejects_unsupported_validity_before_transport_call(validity):
+    transport = Transport()
+    adapter = UpstoxAdapter(UpstoxConfig("token", live_enabled=True), transport)
+    request = req(validity=validity)
+    with pytest.raises(ValueError, match="unsupported Upstox validity"):
+        adapter.submit_order(request)
+    assert transport.calls == []
+
+
+def test_submit_rejects_unsupported_exchange_before_transport_call():
+    transport = Transport()
+    adapter = UpstoxAdapter(UpstoxConfig("token", live_enabled=True), transport)
+    request = req(exchange_segment="MCX_FO")
+    with pytest.raises(ValueError, match="unsupported Upstox exchange_segment"):
+        adapter.submit_order(request)
+    assert transport.calls == []
+
+
+def test_submit_accepts_supported_execution_contract():
+    transport = Transport()
+    adapter = UpstoxAdapter(UpstoxConfig("token", live_enabled=True), transport)
+    result = adapter.submit_order(req(validity="IOC", product_type="CNC", exchange_segment="NSE_EQ"))
+    assert result.order_id == "U1"
+    assert transport.calls[0][2]["json"]["validity"] == "IOC"
+    assert transport.calls[0][2]["json"]["product"] == "D"
+
+
 def test_account_bound_submit_preserves_route_identity():
     transport = Transport()
     config = UpstoxConfig("token", live_enabled=True, broker_account_id="42", broker_route="upstox:account:42", broker_route_generation="account:42:v1")
