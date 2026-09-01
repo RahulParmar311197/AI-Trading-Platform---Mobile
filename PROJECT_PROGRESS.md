@@ -43,6 +43,8 @@ Last maintained: 2026-09-01
 - [x] Added regression coverage proving orphan active broker orders fail closed without mutating existing reservations.
 - [x] Added canonical stale-reservation recovery workflow that uses stale age only as a recovery trigger and delegates all reservation mutation to the authoritative two-sided broker snapshot reconciler.
 - [x] Added regression coverage proving stale terminal matches release, missing matches retain exposure, orphan broker orders prevent mutation, and valid partial fills only shrink reservations.
+- [x] Added append-only audit events for stale reservation detection, successful authoritative recovery, and failed authoritative recovery; app resources now inject the canonical trading audit log into `RiskReservationStore`.
+- [x] Added regression coverage proving stale recovery emits detection/completion/failure audit events while preserving exposure on failure.
 
 ### Repository cleanup findings
 - [x] Audited `backend/app/execution/` for duplicate execution infrastructure.
@@ -51,7 +53,6 @@ Last maintained: 2026-09-01
 - [x] Confirmed no active repository callers were found for the legacy execution orchestrator during the audit.
 - [x] Confirmed no repository references to `app.execution.*` were found in the active code search.
 - [x] Retired the orphaned legacy execution stack after call-graph verification.
-- [x] Removed `backend/app/execution/orchestrator.py`, `sql_repository.py`, `reconcile.py`, and `settlement.py` from the active tree.
 - [x] Added CI import smoke validation for canonical backend entrypoints and explicit absence of the retired `app.execution` package.
 
 ### Market-data / AI pipeline findings
@@ -128,6 +129,7 @@ Last maintained: 2026-09-01
 - [x] Validate submission-intent uniqueness and fingerprint mismatch behavior under concurrency.
 - [ ] Validate startup reconciliation and recovery jobs in runtime/CI.
 - [x] Implement read-only stale reservation detection and authoritative recovery workflow; still pending: production observability/alerting.
+- [x] Add append-only stale reservation recovery audit events; pending: alert delivery/metrics and runtime/CI validation.
 
 ### P1 — Trading-system completeness
 - [ ] Full market-data pipeline audit.
