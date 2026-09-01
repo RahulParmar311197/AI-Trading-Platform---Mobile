@@ -47,12 +47,18 @@ class UpstoxAdapter(BrokerAdapter):
     def _validate_tag(client_order_id: str) -> str:
         if not client_order_id or len(client_order_id) > 40: raise ValueError("Upstox tag must be between 1 and 40 characters")
         return client_order_id
+    @staticmethod
+    def _require_record_list(data: Any, context: str) -> list[dict[str, Any]]:
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise RuntimeError(f"Upstox {context} is not an authoritative record list")
+        return [dict(item) for item in data]
+    @staticmethod
+    def _require_record(data: Any, context: str) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Upstox {context} is not an authoritative record")
+        return dict(data)
     def _request_identity(self, request: BrokerOrderRequest) -> dict[str, str]:
-        identity = {
-            "broker_account_id": request.broker_account_id or self.config.broker_account_id,
-            "broker_route": request.broker_route or self.config.broker_route,
-            "broker_route_generation": request.broker_route_generation or self.config.broker_route_generation,
-        }
+        identity = {"broker_account_id": request.broker_account_id or self.config.broker_account_id,"broker_route": request.broker_route or self.config.broker_route,"broker_route_generation": request.broker_route_generation or self.config.broker_route_generation}
         for field, expected in (("broker_account_id", self.config.broker_account_id), ("broker_route", self.config.broker_route), ("broker_route_generation", self.config.broker_route_generation)):
             if expected is not None and identity[field] != expected: raise ValueError(f"Upstox {field} does not match configured route")
         return {k: str(v) for k, v in identity.items() if v is not None}
@@ -71,34 +77,23 @@ class UpstoxAdapter(BrokerAdapter):
         if getattr(response,"status_code",None)==404: return None
         response.raise_for_status(); body=response.json(); data=body.get("data",body)
         if isinstance(data,dict): data=data.get("orders",[data])
-        if not isinstance(data,list): raise RuntimeError("Upstox order history response is invalid")
-        matches=[dict(order) for order in data if str(order.get("tag",tag))==tag]
+        matches=[order for order in self._require_record_list(data, "order history response") if str(order.get("tag",tag))==tag]
         if not matches: return None
         if len(matches)==1: return matches[0]
         raise RuntimeError("ambiguous broker order identity")
     def get_order(self, broker_order_id: str) -> dict[str, Any]:
-        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/details",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); return body.get("data",body)
+        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/details",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); return self._require_record(body.get("data",body), "order response")
     def get_orders(self) -> list[dict[str, Any]]:
-        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/retrieve-all",headers=self._headers()); response.raise_for_status(); body=response.json(); data=body.get("data",body)
-        if not isinstance(data,list): raise RuntimeError("Upstox retrieve-all order response is not a complete order list")
-        return data
+        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/retrieve-all",headers=self._headers()); response.raise_for_status(); body=response.json(); return self._require_record_list(body.get("data",body), "orders response")
     def get_order_snapshot(self) -> BrokerOrderSnapshot:
-        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/retrieve-all",headers=self._headers()); response.raise_for_status(); body=response.json(); data=body.get("data",body)
-        if not isinstance(data,list): raise RuntimeError("Upstox retrieve-all order snapshot is not authoritative")
-        return BrokerOrderSnapshot(orders=[dict(order) for order in data],complete=True,source="upstox")
+        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/retrieve-all",headers=self._headers()); response.raise_for_status(); body=response.json(); data=self._require_record_list(body.get("data",body), "order snapshot"); return BrokerOrderSnapshot(orders=data,complete=True,source="upstox")
     def get_trades_by_order(self, broker_order_id: str) -> list[dict[str, Any]]:
-        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/trades",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); data=body.get("data",body)
-        if not isinstance(data,list): raise RuntimeError("Upstox trades response is invalid")
-        return data
+        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/trades",headers=self._headers()); response.raise_for_status(); body=response.json(); return self._require_record_list(body.get("data",body), "trades response")
     def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
-        self._require_live(); response=self.transport.request("DELETE",f"{self.config.base_url}/v3/order/cancel",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); data=body.get("data",body); raw={"order_id":str(data.get("order_id",broker_order_id)),"status":"CANCELLED","message":str(data.get("message","")) or None,**{k:v for k,v in (("broker_account_id",self.config.broker_account_id),("broker_route",self.config.broker_route),("broker_route_generation",self.config.broker_route_generation)) if v is not None}}; return normalize_broker_update(raw)
+        self._require_live(); response=self.transport.request("DELETE",f"{self.config.base_url}/v3/order/cancel",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); data=self._require_record(body.get("data",body), "cancel response"); raw={"order_id":str(data.get("order_id",broker_order_id)),"status":"CANCELLED","message":str(data.get("message","")) or None,**{k:v for k,v in (("broker_account_id",self.config.broker_account_id),("broker_route",self.config.broker_route),("broker_route_generation",self.config.broker_route_generation)) if v is not None}}; return normalize_broker_update(raw)
     def get_positions(self) -> list[dict[str, Any]]:
-        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/portfolio/short-term-positions",headers=self._headers()); response.raise_for_status(); body=response.json(); data=body.get("data",body)
-        if not isinstance(data,list): raise RuntimeError("Upstox positions response is invalid")
-        return data
+        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/portfolio/short-term-positions",headers=self._headers()); response.raise_for_status(); body=response.json(); return self._require_record_list(body.get("data",body), "positions response")
     def get_position_snapshot(self) -> BrokerPositionSnapshot:
-        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/portfolio/short-term-positions",headers=self._headers()); response.raise_for_status(); body=response.json(); data=body.get("data",body)
-        if not isinstance(data,list): raise RuntimeError("Upstox position snapshot is not authoritative")
-        return BrokerPositionSnapshot(positions=[dict(position) for position in data],complete=True,source="upstox")
+        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/portfolio/short-term-positions",headers=self._headers()); response.raise_for_status(); body=response.json(); data=self._require_record_list(body.get("data",body), "position snapshot"); return BrokerPositionSnapshot(positions=data,complete=True,source="upstox")
     def get_account(self) -> dict[str, Any]:
-        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/user/get-funds-and-margin",headers=self._headers()); response.raise_for_status(); body=response.json(); return body.get("data",body)
+        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/user/get-funds-and-margin",headers=self._headers()); response.raise_for_status(); body=response.json(); return self._require_record(body.get("data",body), "account response")
