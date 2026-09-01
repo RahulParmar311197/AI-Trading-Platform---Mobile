@@ -28,7 +28,8 @@ class Transport:
 
 
 def req(tag="client-1", order_type="MARKET", **identity):
-    return BrokerOrderRequest(client_order_id=tag, symbol="NIFTY", side="BUY", quantity=10, order_type=order_type, price=100, security_id="NSE_EQ|TEST", product_type="INTRADAY", **identity)
+    price = None if order_type == "MARKET" else 100
+    return BrokerOrderRequest(client_order_id=tag, symbol="NIFTY", side="BUY", quantity=10, order_type=order_type, price=price, security_id="NSE_EQ|TEST", product_type="INTRADAY", **identity)
 
 
 def test_live_disabled_by_default():
