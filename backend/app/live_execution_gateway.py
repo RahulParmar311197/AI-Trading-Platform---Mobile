@@ -49,8 +49,6 @@ class BrokerPositionReader(Protocol):
 
 @dataclass(frozen=True)
 class ExecutionAuthorization:
-    """Single-use authorization bound to one normalized order and broker context."""
-
     _nonce: str
     _order_fingerprint: str
     _context_key: str
@@ -90,7 +88,6 @@ class LiveExecutionGateway:
         self.submission_intent_store = submission_intent_store or SubmissionIntentStore()
 
     def authorize(self, order: OrderIntent, context: BrokerExecutionContext) -> ExecutionAuthorization:
-        """Validate a live order against current state and a coordinator-attested broker context."""
         if self.policy.kill_switch:
             self.incident_reporter.report_kill_switch("execution blocked: kill switch is active")
             raise ExecutionSafetyError("execution blocked: kill switch is active")
@@ -137,15 +134,11 @@ class LiveExecutionGateway:
             raise ExecutionSafetyError("execution blocked: kill switch is active")
         if self.policy.mode is ExecutionMode.LIVE and not self.policy.live_trading_enabled:
             raise ExecutionSafetyError("live execution is disabled")
-
         safe_order = self._validate_order(order)
         if self.policy.mode is ExecutionMode.LIVE:
             if expected_request is None:
-                raise ExecutionSafetyError(
-                    "execution blocked: live execution requires the original broker order request"
-                )
+                raise ExecutionSafetyError("execution blocked: live execution requires the original broker order request")
             self._consume_authorization(safe_order, authorization, context)
-
         lifecycle = OrderLifecycle(requested_quantity=safe_order.quantity)
         lifecycle.apply(OrderLifecycleEvent(status=OrderStatus.ACCEPTED, timestamp=_now()))
         intent_created = False
@@ -162,16 +155,19 @@ class LiveExecutionGateway:
                 )
                 intent_created = True
             except Exception as exc:
-                self.incident_reporter.report(
-                    IncidentType.UNKNOWN_BROKER_ORDER,
-                    IncidentSeverity.CRITICAL,
-                    f"execution blocked: submission intent could not be persisted for client_order_id={expected_request.client_order_id}: {exc}",
-                )
+                self.incident_reporter.report(IncidentType.UNKNOWN_BROKER_ORDER, IncidentSeverity.CRITICAL, f"execution blocked: submission intent could not be persisted for client_order_id={expected_request.client_order_id}: {exc}")
                 raise ExecutionSafetyError("execution blocked: submission intent could not be persisted") from exc
         try:
             result = self._submit(safe_order, expected_request)
-            self._apply_broker_result(lifecycle, result, expected_request=expected_request)
+            verified_result = self._apply_broker_result(lifecycle, result, expected_request=expected_request)
             if intent_created and expected_request is not None:
+                if verified_result is None:
+                    raise ExecutionSafetyError("execution blocked: broker response did not contain a verifiable order identity")
+                self.submission_intent_store.record_broker_order(
+                    expected_request.client_order_id,
+                    verified_result.order_id,
+                    verified_result.status,
+                )
                 self.submission_intent_store.resolve(expected_request.client_order_id)
         except Exception as exc:
             if expected_request is not None:
@@ -179,38 +175,23 @@ class LiveExecutionGateway:
                 if recovered is not None:
                     self._apply_broker_result(lifecycle, recovered, expected_request=expected_request)
                     if intent_created:
+                        self.submission_intent_store.record_broker_order(expected_request.client_order_id, recovered.order_id, recovered.status)
                         self.submission_intent_store.resolve(expected_request.client_order_id)
                     return TrackedExecution(result=recovered, lifecycle=lifecycle)
-                self.incident_reporter.report(
-                    IncidentType.UNKNOWN_BROKER_ORDER,
-                    IncidentSeverity.CRITICAL,
-                    f"broker submission outcome is unknown for client_order_id={expected_request.client_order_id}: {exc}",
-                )
-                raise ExecutionSafetyError(
-                    "execution blocked: broker submission outcome is unknown; reconcile by client order id before retry"
-                ) from exc
+                self.incident_reporter.report(IncidentType.UNKNOWN_BROKER_ORDER, IncidentSeverity.CRITICAL, f"broker submission outcome is unknown for client_order_id={expected_request.client_order_id}: {exc}")
+                raise ExecutionSafetyError("execution blocked: broker submission outcome is unknown; reconcile by client order id before retry") from exc
             if not lifecycle.terminal:
                 lifecycle.apply(OrderLifecycleEvent(status=OrderStatus.REJECTED, timestamp=_now(), reason=str(exc)))
             self.incident_reporter.report_order_rejection(str(exc))
             raise
         return TrackedExecution(result=result, lifecycle=lifecycle)
 
-    def execute_request(
-        self,
-        request: BrokerOrderRequest,
-        authorization: ExecutionAuthorization | None = None,
-        context: BrokerExecutionContext | None = None,
-    ) -> TrackedExecution:
+    def execute_request(self, request: BrokerOrderRequest, authorization: ExecutionAuthorization | None = None, context: BrokerExecutionContext | None = None) -> TrackedExecution:
         if self.policy.mode is ExecutionMode.LIVE:
             if not isinstance(context, BrokerExecutionContext):
                 raise ExecutionSafetyError("execution blocked: broker execution context is required")
             self._validate_request_context_identity(request, context)
-        return self.execute(
-            _order_intent_from_request(request),
-            authorization,
-            context,
-            expected_request=request,
-        )
+        return self.execute(_order_intent_from_request(request), authorization, context, expected_request=request)
 
     def _submit(self, order: OrderIntent, request: BrokerOrderRequest | None) -> object:
         if request is not None:
@@ -218,9 +199,7 @@ class LiveExecutionGateway:
             if callable(submitter):
                 return submitter(request)
             if self.policy.mode is ExecutionMode.LIVE:
-                raise ExecutionSafetyError(
-                    "execution blocked: live broker executor must support request-aware submit_order"
-                )
+                raise ExecutionSafetyError("execution blocked: live broker executor must support request-aware submit_order")
         return self.executor.execute(order)
 
     def _recover_ambiguous_submission(self, request: BrokerOrderRequest) -> BrokerOrderUpdate | None:
@@ -236,189 +215,88 @@ class LiveExecutionGateway:
             return None
 
     @staticmethod
-    def _apply_broker_result(
-        lifecycle: OrderLifecycle,
-        result: object,
-        *,
-        expected_request: BrokerOrderRequest | None = None,
-    ) -> None:
+    def _apply_broker_result(lifecycle: OrderLifecycle, result: object, *, expected_request: BrokerOrderRequest | None = None) -> BrokerOrderUpdate | None:
         if not isinstance(result, (BrokerOrderUpdate, dict)):
-            return
+            return None
         try:
             verified_result = normalize_broker_update(result, expected=expected_request)
         except (TypeError, ValueError) as exc:
             raise ExecutionSafetyError(f"execution blocked: unverified broker response: {exc}") from exc
-        status_map = {
-            "NEW": OrderStatus.ACCEPTED,
-            "PARTIALLY_FILLED": OrderStatus.PARTIALLY_FILLED,
-            "FILLED": OrderStatus.FILLED,
-            "REJECTED": OrderStatus.REJECTED,
-            "CANCELLED": OrderStatus.CANCELLED,
-        }
+        status_map = {"NEW": OrderStatus.ACCEPTED, "PARTIALLY_FILLED": OrderStatus.PARTIALLY_FILLED, "FILLED": OrderStatus.FILLED, "REJECTED": OrderStatus.REJECTED, "CANCELLED": OrderStatus.CANCELLED}
         try:
             status = status_map[verified_result.status.upper()]
         except (AttributeError, KeyError) as exc:
             raise ExecutionSafetyError("execution blocked: broker returned unsupported lifecycle status") from exc
         filled = verified_result.filled_quantity if verified_result.filled_quantity is not None else 0
-        lifecycle.apply(
-            OrderLifecycleEvent(
-                status=status,
-                timestamp=_now(),
-                broker_order_id=verified_result.order_id,
-                filled_quantity=filled,
-                average_price=verified_result.average_price,
-                reason=verified_result.message if status in {OrderStatus.REJECTED, OrderStatus.CANCELLED} else None,
-            )
-        )
+        lifecycle.apply(OrderLifecycleEvent(status=status, timestamp=_now(), broker_order_id=verified_result.order_id, filled_quantity=filled, average_price=verified_result.average_price, reason=verified_result.message if status in {OrderStatus.REJECTED, OrderStatus.CANCELLED} else None))
+        return verified_result
 
     def _validate_order(self, order: OrderIntent) -> OrderIntent:
         try:
-            safe_order = order.normalized()
-            safe_order.validate()
-            return safe_order
+            safe_order = order.normalized(); safe_order.validate(); return safe_order
         except (TypeError, ValueError, OverflowError) as exc:
             raise ExecutionSafetyError(f"execution blocked: invalid order intent: {exc}") from exc
 
     def _validate_context_freshness(self, context: BrokerExecutionContext) -> None:
         max_age = int(self.policy.context_max_age_seconds)
-        if max_age <= 0:
-            raise ExecutionSafetyError("execution context max age must be positive")
+        if max_age <= 0: raise ExecutionSafetyError("execution context max age must be positive")
         observed_at = context.observed_at
-        if observed_at.tzinfo is None:
-            raise ExecutionSafetyError("execution blocked: broker execution context timestamp is not timezone-aware")
+        if observed_at.tzinfo is None: raise ExecutionSafetyError("execution blocked: broker execution context timestamp is not timezone-aware")
         age = (_now() - observed_at).total_seconds()
-        if age < 0:
-            raise ExecutionSafetyError("execution blocked: broker execution context timestamp is in the future")
-        if age > max_age:
-            raise ExecutionSafetyError("execution blocked: broker execution context is stale")
+        if age < 0: raise ExecutionSafetyError("execution blocked: broker execution context timestamp is in the future")
+        if age > max_age: raise ExecutionSafetyError("execution blocked: broker execution context is stale")
 
     @staticmethod
-    def _validate_request_context_identity(
-        request: BrokerOrderRequest,
-        context: BrokerExecutionContext,
-    ) -> None:
-        if not isinstance(request, BrokerOrderRequest):
-            raise ExecutionSafetyError("execution blocked: broker order request is required")
-        if request.broker_account_id is None:
-            raise ExecutionSafetyError("execution blocked: broker order request account identity is required")
-        if request.broker_route is None or not str(request.broker_route).strip():
-            raise ExecutionSafetyError("execution blocked: broker order request route identity is required")
-        if request.broker_route_generation is None or not str(request.broker_route_generation).strip():
-            raise ExecutionSafetyError("execution blocked: broker order request route generation is required")
-        if str(request.broker_account_id).strip() != context.account_id:
-            raise ExecutionSafetyError("execution blocked: broker order request account does not match execution context")
-        if str(request.broker_route).strip() != context.broker_route:
-            raise ExecutionSafetyError("execution blocked: broker order request route does not match execution context")
-        if str(request.broker_route_generation).strip() != context.route_generation:
-            raise ExecutionSafetyError("execution blocked: broker order request route generation does not match execution context")
+    def _validate_request_context_identity(request: BrokerOrderRequest, context: BrokerExecutionContext) -> None:
+        if not isinstance(request, BrokerOrderRequest): raise ExecutionSafetyError("execution blocked: broker order request is required")
+        if request.broker_account_id is None: raise ExecutionSafetyError("execution blocked: broker order request account identity is required")
+        if request.broker_route is None or not str(request.broker_route).strip(): raise ExecutionSafetyError("execution blocked: broker order request route identity is required")
+        if request.broker_route_generation is None or not str(request.broker_route_generation).strip(): raise ExecutionSafetyError("execution blocked: broker order request route generation is required")
+        if str(request.broker_account_id).strip() != context.account_id: raise ExecutionSafetyError("execution blocked: broker order request account does not match execution context")
+        if str(request.broker_route).strip() != context.broker_route: raise ExecutionSafetyError("execution blocked: broker order request route does not match execution context")
+        if str(request.broker_route_generation).strip() != context.route_generation: raise ExecutionSafetyError("execution blocked: broker order request route generation does not match execution context")
 
     def _check_reconciliation(self, context: BrokerExecutionContext) -> None:
-        if not self.policy.reconciliation_enabled:
-            return
+        if not self.policy.reconciliation_enabled: return
         if self.reconciliation_state_store is None:
-            self.incident_reporter.report_reconciliation_failure(
-                "execution blocked: durable reconciliation state is not configured"
-            )
+            self.incident_reporter.report_reconciliation_failure("execution blocked: durable reconciliation state is not configured")
             raise ExecutionSafetyError("execution blocked: durable reconciliation state is not configured")
         try:
-            if self.reconciliation_state_store.is_trading_blocked(
-                broker_account_id=context.account_id,
-                broker_route=context.broker_route,
-                max_age_seconds=self.policy.reconciliation_max_age_seconds,
-            ):
-                self.incident_reporter.report_reconciliation_failure(
-                    "execution blocked: durable reconciliation state is not verified and fresh"
-                )
-                raise ExecutionSafetyError(
-                    "execution blocked: durable reconciliation state is not verified and fresh"
-                )
+            if self.reconciliation_state_store.is_trading_blocked(broker_account_id=context.account_id, broker_route=context.broker_route, max_age_seconds=self.policy.reconciliation_max_age_seconds):
+                self.incident_reporter.report_reconciliation_failure("execution blocked: durable reconciliation state is not verified and fresh")
+                raise ExecutionSafetyError("execution blocked: durable reconciliation state is not verified and fresh")
             if self.position_reader is None or self.local_positions_reader is None:
-                self.incident_reporter.report_reconciliation_failure(
-                    "execution blocked: position reconciliation is not configured"
-                )
+                self.incident_reporter.report_reconciliation_failure("execution blocked: position reconciliation is not configured")
                 raise ExecutionSafetyError("execution blocked: position reconciliation is not configured")
-            PreTradeReconciliationGate(
-                PreTradeReconciliationPolicy(enabled=True, block_on_mismatch=True)
-            ).check(self.local_positions_reader(), self.position_reader.get_positions())
-        except ExecutionSafetyError:
-            raise
+            PreTradeReconciliationGate(PreTradeReconciliationPolicy(enabled=True, block_on_mismatch=True)).check(self.local_positions_reader(), self.position_reader.get_positions())
+        except ExecutionSafetyError: raise
         except Exception as exc:
             self.incident_reporter.report_reconciliation_failure(str(exc))
             raise ExecutionSafetyError(f"execution blocked: pre-trade reconciliation failed: {exc}") from exc
 
-    def _consume_authorization(
-        self,
-        order: OrderIntent,
-        authorization: ExecutionAuthorization | None,
-        context: BrokerExecutionContext | None,
-    ) -> None:
-        if authorization is None:
-            raise ExecutionSafetyError("execution blocked: single-use execution authorization is required")
-        if not isinstance(authorization, ExecutionAuthorization):
-            raise ExecutionSafetyError("execution blocked: invalid execution authorization")
-        if not isinstance(context, BrokerExecutionContext):
-            raise ExecutionSafetyError("execution blocked: broker execution context is required")
-        if self.context_attestor is None or not self.context_attestor.verify(context):
-            raise ExecutionSafetyError("execution blocked: broker execution context is not coordinator-attested")
-        if authorization._expires_at.tzinfo is None:
-            raise ExecutionSafetyError("execution blocked: invalid execution authorization expiry")
-        if authorization._order_fingerprint != _fingerprint(order):
-            raise ExecutionSafetyError("execution blocked: authorization is bound to a different order")
-        if authorization._context_key != _context_key(context):
-            raise ExecutionSafetyError("execution blocked: authorization is bound to a different broker context")
+    def _consume_authorization(self, order: OrderIntent, authorization: ExecutionAuthorization | None, context: BrokerExecutionContext | None) -> None:
+        if authorization is None: raise ExecutionSafetyError("execution blocked: single-use execution authorization is required")
+        if not isinstance(authorization, ExecutionAuthorization): raise ExecutionSafetyError("execution blocked: invalid execution authorization")
+        if not isinstance(context, BrokerExecutionContext): raise ExecutionSafetyError("execution blocked: broker execution context is required")
+        if self.context_attestor is None or not self.context_attestor.verify(context): raise ExecutionSafetyError("execution blocked: broker execution context is not coordinator-attested")
+        if authorization._expires_at.tzinfo is None: raise ExecutionSafetyError("execution blocked: invalid execution authorization expiry")
+        if authorization._order_fingerprint != _fingerprint(order): raise ExecutionSafetyError("execution blocked: authorization is bound to a different order")
+        if authorization._context_key != _context_key(context): raise ExecutionSafetyError("execution blocked: authorization is bound to a different broker context")
         try:
-            status = self.authorization_store.consume(
-                authorization,
-                _fingerprint(order),
-                _context_key(context),
-                _now,
-            )
-        except Exception as exc:
-            raise ExecutionSafetyError("execution blocked: authorization state could not be verified") from exc
-        messages = {
-            "missing": "execution blocked: invalid or already-consumed execution authorization",
-            "consumed": "execution blocked: invalid or already-consumed execution authorization",
-            "order_mismatch": "execution blocked: authorization is bound to a different order",
-            "context_mismatch": "execution blocked: authorization is bound to a different broker context",
-            "expired": "execution blocked: execution authorization expired",
-            "invalid_expiry": "execution blocked: invalid execution authorization expiry",
-        }
-        if status != "consumed_now":
-            raise ExecutionSafetyError(messages.get(status, "execution blocked: invalid execution authorization"))
+            status = self.authorization_store.consume(authorization, _fingerprint(order), _context_key(context), _now)
+        except Exception as exc: raise ExecutionSafetyError("execution blocked: authorization state could not be verified") from exc
+        messages = {"missing": "execution blocked: invalid or already-consumed execution authorization", "consumed": "execution blocked: invalid or already-consumed execution authorization", "order_mismatch": "execution blocked: authorization is bound to a different order", "context_mismatch": "execution blocked: authorization is bound to a different broker context", "expired": "execution blocked: execution authorization expired", "invalid_expiry": "execution blocked: invalid execution authorization expiry"}
+        if status != "consumed_now": raise ExecutionSafetyError(messages.get(status, "execution blocked: invalid execution authorization"))
 
 
 def _order_intent_from_request(request: BrokerOrderRequest) -> OrderIntent:
-    if request.price is None or request.stop is None or request.target is None:
-        raise ExecutionSafetyError("execution blocked: AI broker request requires entry, stop, and target")
+    if request.price is None or request.stop is None or request.target is None: raise ExecutionSafetyError("execution blocked: AI broker request requires entry, stop, and target")
     risk_amount = abs(float(request.price) - float(request.stop)) * float(request.quantity)
-    return OrderIntent(
-        symbol=request.symbol,
-        side=request.side,
-        entry=float(request.price),
-        stop_loss=float(request.stop),
-        take_profit=float(request.target),
-        quantity=float(request.quantity),
-        risk_amount=risk_amount,
-        source="ai-execution",
-        confidence=1.0,
-    )
+    return OrderIntent(symbol=request.symbol, side=request.side, entry=float(request.price), stop_loss=float(request.stop), take_profit=float(request.target), quantity=float(request.quantity), risk_amount=risk_amount, source="ai-execution", confidence=1.0)
 
 
 def _fingerprint(order: OrderIntent) -> str:
-    payload = "|".join(
-        str(value)
-        for value in (
-            order.symbol,
-            order.side,
-            order.entry,
-            order.stop_loss,
-            order.take_profit,
-            order.quantity,
-            order.risk_amount,
-            order.source,
-            order.confidence,
-        )
-    )
+    payload = "|".join(str(value) for value in (order.symbol, order.side, order.entry, order.stop_loss, order.take_profit, order.quantity, order.risk_amount, order.source, order.confidence))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
