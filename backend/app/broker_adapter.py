@@ -45,6 +45,31 @@ class BrokerOrderRequest:
     broker_route: str | None = None
     broker_route_generation: str | None = None
     def __post_init__(self):
+        side = str(self.side or "").strip().upper()
+        if side not in {"BUY", "SELL"}: raise ValueError("side must be BUY or SELL")
+        order_type = str(self.order_type or "").strip().upper()
+        if order_type not in {"MARKET", "LIMIT", "SL", "SL-M"}: raise ValueError(f"unsupported order_type: {self.order_type}")
+        quantity = float(self.quantity)
+        if not math.isfinite(quantity) or quantity <= 0: raise ValueError("quantity must be positive and finite")
+        price = _finite_optional(self.price, "price")
+        trigger = _finite_optional(self.trigger_price, "trigger_price")
+        if order_type == "MARKET":
+            if price is not None and price != 0: raise ValueError("MARKET order cannot specify a non-zero price")
+            if trigger is not None and trigger != 0: raise ValueError("MARKET order cannot specify trigger_price")
+        elif order_type == "LIMIT":
+            if price is None or price <= 0: raise ValueError("LIMIT order requires a positive price")
+            if trigger is not None and trigger != 0: raise ValueError("LIMIT order cannot specify trigger_price")
+        elif order_type == "SL":
+            if price is None or price <= 0: raise ValueError("SL order requires a positive price")
+            if trigger is None or trigger <= 0: raise ValueError("SL order requires a positive trigger_price")
+        elif order_type == "SL-M":
+            if price is not None and price != 0: raise ValueError("SL-M order cannot specify a non-zero price")
+            if trigger is None or trigger <= 0: raise ValueError("SL-M order requires a positive trigger_price")
+        object.__setattr__(self, "side", side)
+        object.__setattr__(self, "order_type", order_type)
+        object.__setattr__(self, "quantity", quantity)
+        if price is not None: object.__setattr__(self, "price", price)
+        if trigger is not None: object.__setattr__(self, "trigger_price", trigger)
         if self.broker_account_id is None: return
         if isinstance(self.broker_account_id, bool): raise ValueError("broker_account_id must be a non-empty string")
         value = str(self.broker_account_id).strip()
@@ -251,6 +276,7 @@ class UpstoxAdapter(BrokerAdapter):
         if not isinstance(data,list): raise RuntimeError("Upstox order book response is invalid")
         result=[]
         for order in data:
+            if not isinstance(order,dict): raise RuntimeError("Upstox order book contains a malformed record")
             item=dict(order); item["broker_account_id"]=self.broker_account_id; item["broker_route"]=self.broker_route; item["broker_route_generation"]=self.broker_route_generation; item.setdefault("client_order_id",item.get("tag")); result.append(item)
         return result
     def find_order_by_client_id(self,client_order_id:str):
@@ -260,6 +286,7 @@ class UpstoxAdapter(BrokerAdapter):
     def get_positions(self)->list[dict[str,Any]]:
         raw=self._call(self.client,"get_positions"); data=self._data(raw)
         if not isinstance(data,list): raise RuntimeError("Upstox positions response is invalid")
+        if any(not isinstance(position,dict) for position in data): raise RuntimeError("Upstox positions response contains a malformed record")
         return [dict(position) for position in data]
     def get_account(self)->dict[str,Any]:
         raw=self._call(self.client,"get_profile"); data=dict(self._data(raw) or {}); account_id=str(data.get("user_id") or data.get("userId") or "").strip()
