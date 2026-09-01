@@ -41,6 +41,8 @@ Last maintained: 2026-09-01
 - [x] Added regression coverage proving stale detection is read-only, scoped, timezone-safe, and reports the reconciliation-required reason.
 - [x] Hardened authoritative reservation reconciliation to reject active broker orders that have no matching active durable reservation, preventing untracked broker exposure from being treated as reconciled.
 - [x] Added regression coverage proving orphan active broker orders fail closed without mutating existing reservations.
+- [x] Added canonical stale-reservation recovery workflow that uses stale age only as a recovery trigger and delegates all reservation mutation to the authoritative two-sided broker snapshot reconciler.
+- [x] Added regression coverage proving stale terminal matches release, missing matches retain exposure, orphan broker orders prevent mutation, and valid partial fills only shrink reservations.
 
 ### Repository cleanup findings
 - [x] Audited `backend/app/execution/` for duplicate execution infrastructure.
