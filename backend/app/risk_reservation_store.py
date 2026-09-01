@@ -193,7 +193,12 @@ class RiskReservationStore:
                     matches = by_client.get(record.client_order_id, [])
                     if len(matches) != 1:
                         failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_BROKER_MATCH_MISSING" if not matches else "RISK_RESERVATION_BROKER_MATCH_AMBIGUOUS"}); continue
-                    broker = matches[0]; status = str(broker.get("status") or "").strip().upper().replace("-", "_").replace(" ", "_")
+                    broker = matches[0]
+                    broker_account = str(broker.get("broker_account_id") or "").strip()
+                    broker_route = str(broker.get("broker_route") or "").strip()
+                    if broker_account != account or broker_route != route:
+                        failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_BROKER_IDENTITY_MISMATCH"}); continue
+                    status = str(broker.get("status") or "").strip().upper().replace("-", "_").replace(" ", "_")
                     if status in self.TERMINAL: planned.append((record, status, None)); continue
                     if status not in self.ACTIVE_BROKER_STATUSES:
                         failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_BROKER_STATE_AMBIGUOUS"}); continue
