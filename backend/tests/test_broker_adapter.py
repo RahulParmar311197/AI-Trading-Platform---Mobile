@@ -234,3 +234,40 @@ def test_normalize_broker_update_accepts_exact_requested_quantity():
         'client_order_id': 'c1', 'symbol': 'NIFTY', 'side': 'BUY',
     }, expected=request)
     assert result.quantity == 10
+
+
+def test_order_request_rejects_invalid_side_and_order_type():
+    with pytest.raises(ValueError, match='side must be BUY or SELL'):
+        BrokerOrderRequest('c1', 'NIFTY', 'HOLD', 10)
+    with pytest.raises(ValueError, match='unsupported order_type'):
+        BrokerOrderRequest('c1', 'NIFTY', 'BUY', 10, order_type='TRAILING')
+
+
+def test_order_request_rejects_limit_without_positive_price():
+    with pytest.raises(ValueError, match='LIMIT order requires a positive price'):
+        BrokerOrderRequest('c1', 'NIFTY', 'BUY', 10, order_type='LIMIT')
+    with pytest.raises(ValueError, match='LIMIT order requires a positive price'):
+        BrokerOrderRequest('c1', 'NIFTY', 'BUY', 10, order_type='LIMIT', price=0)
+
+
+def test_order_request_rejects_stop_orders_without_trigger_semantics():
+    with pytest.raises(ValueError, match='SL order requires a positive trigger_price'):
+        BrokerOrderRequest('c1', 'NIFTY', 'BUY', 10, order_type='SL', price=100)
+    with pytest.raises(ValueError, match='SL-M order requires a positive trigger_price'):
+        BrokerOrderRequest('c1', 'NIFTY', 'BUY', 10, order_type='SL-M')
+
+
+def test_order_request_rejects_market_price_and_trigger_price():
+    with pytest.raises(ValueError, match='MARKET order cannot specify a non-zero price'):
+        BrokerOrderRequest('c1', 'NIFTY', 'BUY', 10, price=100)
+    with pytest.raises(ValueError, match='MARKET order cannot specify trigger_price'):
+        BrokerOrderRequest('c1', 'NIFTY', 'BUY', 10, trigger_price=100)
+
+
+def test_order_request_accepts_valid_limit_and_stop_orders():
+    limit = BrokerOrderRequest('c1', 'NIFTY', 'BUY', 10, order_type='LIMIT', price=100)
+    sl = BrokerOrderRequest('c2', 'NIFTY', 'SELL', 10, order_type='SL', price=99, trigger_price=100)
+    slm = BrokerOrderRequest('c3', 'NIFTY', 'SELL', 10, order_type='SL-M', trigger_price=100)
+    assert limit.price == 100
+    assert sl.trigger_price == 100
+    assert slm.trigger_price == 100
