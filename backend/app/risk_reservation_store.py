@@ -1,4 +1,4 @@
-from __future__ import annotations
+from __future__
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -17,6 +17,7 @@ class RiskReservationStore:
     RELEASED = "RELEASED"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     TERMINAL = {"FILLED", "CANCELLED", "REJECTED"}
+    ACTIVE_BROKER_STATUSES = {"NEW", "SUBMITTED", "OPEN", "ACCEPTED", "PENDING", "PENDING_NEW", "TRIGGER_PENDING", "PARTIALLY_FILLED"}
 
     def __init__(self, session_factory: Callable[[], object]) -> None:
         self._session_factory = session_factory
@@ -175,9 +176,10 @@ class RiskReservationStore:
 
         No reservation is mutated until every active reservation has exactly one
         client-order match with a supported, internally consistent broker state.
-        Missing client identity, duplicate matches, and incomplete partial fills
-        are reported as failures so reconciliation can halt rather than silently
-        releasing or retaining risk based on an incomplete snapshot.
+        Missing client identity, duplicate matches, incomplete partial fills, and
+        broker orders with active client identities but no local reservation are
+        reported as failures so reconciliation can halt rather than silently
+        releasing or retaining risk based on an incomplete local projection.
         """
         account = str(broker_account_id).strip(); route = str(broker_route).strip()
         scope = self._scope(account, route)
@@ -198,7 +200,16 @@ class RiskReservationStore:
                     RiskReservationRecord.broker_route == route,
                     RiskReservationRecord.status == self.ACTIVE,
                 ).all()
+                active_clients = {record.client_order_id for record in records}
                 failures: list[dict] = []
+                for client_id, matches in by_client.items():
+                    if client_id not in active_clients:
+                        active_matches = [
+                            match for match in matches
+                            if str(match.get("status") or "").strip().upper().replace("-", "_").replace(" ", "_") in self.ACTIVE_BROKER_STATUSES
+                        ]
+                        if active_matches:
+                            failures.append({"id": client_id, "reason": "RISK_RESERVATION_ORPHAN_BROKER_ORDER"})
                 planned: list[tuple[RiskReservationRecord, str, Decimal | None]] = []
                 for record in records:
                     matches = by_client.get(record.client_order_id, [])
@@ -209,7 +220,7 @@ class RiskReservationStore:
                     status = str(broker.get("status") or "").strip().upper().replace("-", "_").replace(" ", "_")
                     if status in self.TERMINAL:
                         planned.append((record, status, None)); continue
-                    if status != self.PARTIALLY_FILLED and status not in {"NEW", "SUBMITTED", "OPEN", "ACCEPTED", "PENDING", "PENDING_NEW", "TRIGGER_PENDING"}:
+                    if status not in self.ACTIVE_BROKER_STATUSES:
                         failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_BROKER_STATE_AMBIGUOUS"})
                         continue
                     if status != self.PARTIALLY_FILLED:
