@@ -244,3 +244,35 @@ def test_authoritative_reconciliation_rejects_duplicate_broker_order_id_across_s
         {"id": "c1", "reason": "RISK_RESERVATION_BROKER_MATCH_AMBIGUOUS"},
     ]
     assert store.active_amount(broker_account_id="001", broker_route="upstox") == 1000
+
+
+def test_release_refreshes_reservation_after_scope_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    store = _store(tmp_path)
+    _reserve(store, amount=20)
+    refresh_calls = []
+    original = store._refresh_after_scope_lock
+
+    def tracked_refresh(session, record):
+        refresh_calls.append((record.reservation_id, record.amount, record.status))
+        return original(session, record)
+
+    monkeypatch.setattr(store, "_refresh_after_scope_lock", tracked_refresh)
+    store.release("r1")
+    assert refresh_calls == [("r1", 20, store.ACTIVE)]
+    assert store.active_amount(broker_account_id="001", broker_route="upstox") == 0
+
+
+def test_reconcile_refreshes_reservation_after_scope_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    store = _store(tmp_path)
+    _reserve(store, amount=20)
+    refresh_calls = []
+    original = store._refresh_after_scope_lock
+
+    def tracked_refresh(session, record):
+        refresh_calls.append((record.reservation_id, record.amount, record.status))
+        return original(session, record)
+
+    monkeypatch.setattr(store, "_refresh_after_scope_lock", tracked_refresh)
+    assert store.reconcile(reservation_id="r1", broker_status="PARTIALLY_FILLED", remaining_amount=7) == store.ACTIVE
+    assert refresh_calls == [("r1", 20, store.ACTIVE)]
+    assert store.active_amount(broker_account_id="001", broker_route="upstox") == 7
