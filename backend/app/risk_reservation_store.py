@@ -142,12 +142,7 @@ class RiskReservationStore:
         finally: session.close()
 
     def recover_stale_reservations(self, *, broker_orders: list[dict], broker_account_id: str, broker_route: str, max_age: timedelta, as_of: datetime | None = None) -> dict:
-        """Recover stale reservations only through the authoritative broker snapshot.
-
-        Age is a recovery trigger, never a release decision. Any validation
-        failure leaves every reservation unchanged because the authoritative
-        reconciler applies mutations only after validating the complete scope.
-        """
+        """Recover stale reservations only through the authoritative broker snapshot."""
         account = str(broker_account_id).strip(); route = str(broker_route).strip()
         candidates = self.stale_active_reservations(max_age=max_age, as_of=as_of, broker_account_id=account, broker_route=route)
         if not candidates:
@@ -174,16 +169,23 @@ class RiskReservationStore:
         """Reconcile every active reservation against one authoritative broker snapshot."""
         account = str(broker_account_id).strip(); route = str(broker_route).strip(); scope = self._scope(account, route)
         by_client: dict[str, list[dict]] = {}
+        by_broker_order: dict[str, list[dict]] = {}
         for order in broker_orders:
             if not isinstance(order, dict): continue
             client_id = str(order.get("client_order_id") or "").strip()
+            broker_order_id = str(order.get("broker_order_id") or "").strip()
             if client_id: by_client.setdefault(client_id, []).append(order)
+            if broker_order_id: by_broker_order.setdefault(broker_order_id, []).append(order)
         session = self._session_factory()
         try:
             with session.begin():
                 self._lock_scope(session, scope)
                 records = session.query(RiskReservationRecord).filter(RiskReservationRecord.broker_account_id == account, RiskReservationRecord.broker_route == route, RiskReservationRecord.status == self.ACTIVE).all()
                 active_clients = {record.client_order_id for record in records}; failures = []
+                duplicate_broker_ids = {broker_id for broker_id, matches in by_broker_order.items() if len(matches) > 1}
+                if duplicate_broker_ids:
+                    for broker_id in sorted(duplicate_broker_ids):
+                        failures.append({"id": broker_id, "reason": "RISK_RESERVATION_BROKER_ORDER_ID_AMBIGUOUS"})
                 for client_id, matches in by_client.items():
                     if client_id not in active_clients:
                         active_matches = [m for m in matches if str(m.get("status") or "").strip().upper().replace("-", "_").replace(" ", "_") in self.ACTIVE_BROKER_STATUSES]
@@ -198,6 +200,11 @@ class RiskReservationStore:
                     broker_route = str(broker.get("broker_route") or "").strip()
                     if broker_account != account or broker_route != route:
                         failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_BROKER_IDENTITY_MISMATCH"}); continue
+                    broker_order_id = str(broker.get("broker_order_id") or "").strip()
+                    if not broker_order_id:
+                        failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_BROKER_ORDER_ID_MISSING"}); continue
+                    if broker_order_id in duplicate_broker_ids:
+                        failures.append({"id": record.client_order_id, "reason": "RISK_RESERVATION_BROKER_ORDER_ID_AMBIGUOUS"}); continue
                     status = str(broker.get("status") or "").strip().upper().replace("-", "_").replace(" ", "_")
                     if status in self.TERMINAL: planned.append((record, status, None)); continue
                     if status not in self.ACTIVE_BROKER_STATUSES:
