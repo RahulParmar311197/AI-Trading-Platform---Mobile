@@ -8,6 +8,7 @@ from app.broker_execution_context import BrokerExecutionContext
 from app.broker_snapshot import BrokerSnapshot
 from app.reconciliation import ReconciliationEngine
 from app.reconciliation_result import ReconciliationResult
+from app.submission_intent_store import SubmissionIntentStore
 
 
 class ReconciliationCoordinator:
@@ -22,6 +23,7 @@ class ReconciliationCoordinator:
         route_generation: str,
         context_attestor: BrokerContextAttestor,
         generation: int = 0,
+        submission_intent_store: SubmissionIntentStore | None = None,
     ) -> None:
         if not route.strip():
             raise ValueError("route is required")
@@ -39,6 +41,9 @@ class ReconciliationCoordinator:
         self.route_generation = str(route_generation).strip()
         self.context_attestor = context_attestor
         self.generation = generation
+        self.submission_intent_store = submission_intent_store or engine.submission_intent_store
+        if self.submission_intent_store is None:
+            raise ValueError("durable submission intent store is required")
 
     def reconcile(
         self,
@@ -84,12 +89,13 @@ class ReconciliationCoordinator:
             observed_at=observed_at,
             attestation=attestation,
         )
+        resolved = self.submission_intent_store.recover_from_broker_orders(broker_snapshot.orders)
         return self.engine.build_verified_result(
             check,
             context=context,
             reconciled_at=observed_at,
             open_orders_reconciled=True,
             positions_reconciled=True,
-            submission_intents_resolved=0,
+            submission_intents_resolved=resolved,
             broker_ready=broker_ready,
         )
