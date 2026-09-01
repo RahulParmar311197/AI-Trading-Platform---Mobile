@@ -12,6 +12,8 @@ Last maintained: 2026-09-01
 - [x] Regression coverage added for bounded reconnect exhaustion, invalid attempt limits, and successful reconnect before the limit.
 - [x] Dhan adapter snapshot access fails closed when broker credentials are unavailable; it no longer returns empty collections that could be mistaken for an authoritative zero-exposure snapshot.
 - [x] Regression coverage added for unconfigured Dhan positions, orders, order lookup, trades, and order-trades access.
+- [x] Upstox authoritative order/position/account/trade payloads now reject malformed non-mapping records instead of allowing reconciliation to consume ambiguous data.
+- [x] Regression coverage added for malformed Upstox authoritative payloads.
 
 ## Pending — ordered by priority
 
@@ -35,6 +37,7 @@ Last maintained: 2026-09-01
 - [ ] Validate broker-specific order types, status mappings, precision, lot sizes, and rejection handling.
 - [x] Validate account identity and route binding for Dhan and Upstox submission paths.
 - [x] Prevent unconfigured Dhan snapshot reads from masquerading as authoritative empty broker state.
+- [x] Reject malformed Upstox authoritative snapshot payloads before reconciliation.
 
 ### P2 — Platform / operations
 - [ ] Authentication/authorization audit.
