@@ -37,6 +37,8 @@ Last maintained: 2026-09-01
 - [x] Added regression tests for durable reservation reserve/partial-fill/terminal-release behavior.
 - [x] Hardened authoritative broker reconciliation so every active durable reservation must have exactly one client-order match before any reservation mutation is applied.
 - [x] Added regression coverage proving missing/ambiguous broker matches and incomplete partial-fill facts fail closed without partial reservation mutation.
+- [x] Added read-only stale durable reservation detection with account/route scoping and explicit reconciliation-required reason codes; age alone never releases exposure.
+- [x] Added regression coverage proving stale detection is read-only, scoped, timezone-safe, and reports the reconciliation-required reason.
 
 ### Repository cleanup findings
 - [x] Audited `backend/app/execution/` for duplicate execution infrastructure.
@@ -115,7 +117,7 @@ Last maintained: 2026-09-01
 - [ ] Validate ambiguous broker submission recovery end-to-end in runtime/CI.
 - [x] Validate submission-intent uniqueness and fingerprint mismatch behavior under concurrency.
 - [ ] Validate startup reconciliation and recovery jobs in runtime/CI.
-- [ ] Validate stale reservation recovery policy and observability.
+- [x] Implement read-only stale reservation detection; still pending: authoritative recovery workflow and production observability/alerting.
 
 ### P1 — Trading-system completeness
 - [ ] Full market-data pipeline audit.
