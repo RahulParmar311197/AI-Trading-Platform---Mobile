@@ -39,6 +39,8 @@ Last maintained: 2026-09-01
 - [x] Added regression coverage proving missing/ambiguous broker matches and incomplete partial-fill facts fail closed without partial reservation mutation.
 - [x] Added read-only stale durable reservation detection with account/route scoping and explicit reconciliation-required reason codes; age alone never releases exposure.
 - [x] Added regression coverage proving stale detection is read-only, scoped, timezone-safe, and reports the reconciliation-required reason.
+- [x] Hardened authoritative reservation reconciliation to reject active broker orders that have no matching active durable reservation, preventing untracked broker exposure from being treated as reconciled.
+- [x] Added regression coverage proving orphan active broker orders fail closed without mutating existing reservations.
 
 ### Repository cleanup findings
 - [x] Audited `backend/app/execution/` for duplicate execution infrastructure.
