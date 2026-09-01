@@ -8,39 +8,52 @@ from app.execution_costs import ExecutionCostModel
 from app.idempotency import IdempotencyStore, InMemoryIdempotencyStore, claim_order
 from app.broker_connectivity import BrokerConnectivitySupervisor
 
+
 class OrderStatus(str, Enum):
-    ACCEPTED='ACCEPTED'
-    REJECTED='REJECTED'
-    FILLED='FILLED'
-    DUPLICATE='DUPLICATE'
+    ACCEPTED = 'ACCEPTED'
+    REJECTED = 'REJECTED'
+    FILLED = 'FILLED'
+    DUPLICATE = 'DUPLICATE'
+
 
 @dataclass(frozen=True)
 class ExecutionResult:
-    order_id:str
-    status:OrderStatus
-    filled_quantity:float
-    fill_price:float
-    message:str
-    commission:float = 0.0
-    slippage:float = 0.0
+    order_id: str
+    status: OrderStatus
+    filled_quantity: float
+    fill_price: float
+    message: str
+    commission: float = 0.0
+    slippage: float = 0.0
+
 
 class ExecutionAdapter:
     def submit(self, order: OrderIntent) -> ExecutionResult:
         raise NotImplementedError
 
+
 class PaperBroker(ExecutionAdapter):
     def __init__(self, costs: ExecutionCostModel | None = None) -> None:
-        self._counter=0
-        self.costs=costs or ExecutionCostModel()
+        self._counter = 0
+        self.costs = costs or ExecutionCostModel()
 
     def submit(self, order: OrderIntent) -> ExecutionResult:
         order = order.normalized()
         order.validate()
         self._counter += 1
-        fill=self.costs.fill_price(order.side,order.entry)
-        slip=abs(fill-order.entry)*order.quantity
-        commission=self.costs.commission(fill,order.quantity)
-        return ExecutionResult(f'PAPER-{self._counter:08d}',OrderStatus.FILLED,order.quantity,fill,'paper fill',commission,slip)
+        fill = self.costs.fill_price(order.side, order.entry)
+        slip = abs(fill - order.entry) * order.quantity
+        commission = self.costs.commission(fill, order.quantity)
+        return ExecutionResult(
+            f'PAPER-{self._counter:08d}',
+            OrderStatus.FILLED,
+            order.quantity,
+            fill,
+            'paper fill',
+            commission,
+            slip,
+        )
+
 
 def _order_payload(order: OrderIntent) -> dict[str, Any]:
     return {
@@ -55,6 +68,13 @@ def _order_payload(order: OrderIntent) -> dict[str, Any]:
         'confidence': order.confidence,
     }
 
+
+# Process-scoped default protects paper execution from accepting the same
+# request repeatedly when callers omit explicit store injection. Tests and
+# multi-account callers can still inject an isolated store.
+_DEFAULT_PAPER_IDEMPOTENCY_STORE = InMemoryIdempotencyStore()
+
+
 def execute_paper(
     *,
     risk: RiskGatewayResult,
@@ -66,15 +86,33 @@ def execute_paper(
     connectivity: BrokerConnectivitySupervisor | None = None,
 ) -> ExecutionResult:
     if not risk.approved:
-        return ExecutionResult('',OrderStatus.REJECTED,0.0,0.0,'risk gateway rejected order')
+        return ExecutionResult('', OrderStatus.REJECTED, 0.0, 0.0, 'risk gateway rejected order')
     if connectivity is not None and not connectivity.snapshot().can_trade:
-        return ExecutionResult('',OrderStatus.REJECTED,0.0,0.0,'broker connectivity gate rejected order')
+        return ExecutionResult('', OrderStatus.REJECTED, 0.0, 0.0, 'broker connectivity gate rejected order')
     order = risk.order.normalized()
     if request_id:
-        store = idempotency_store or InMemoryIdempotencyStore()
-        claim = claim_order(store,account_id=account_id,broker=broker_name,request_id=request_id,order=_order_payload(order))
+        store = idempotency_store or _DEFAULT_PAPER_IDEMPOTENCY_STORE
+        claim = claim_order(
+            store,
+            account_id=account_id,
+            broker=broker_name,
+            request_id=request_id,
+            order=_order_payload(order),
+        )
         if claim.conflict:
-            return ExecutionResult(f'IDEMPOTENCY-CONFLICT-{claim.fingerprint[:16]}',OrderStatus.REJECTED,0.0,0.0,'idempotency key was already used for a different order')
+            return ExecutionResult(
+                f'IDEMPOTENCY-CONFLICT-{claim.fingerprint[:16]}',
+                OrderStatus.REJECTED,
+                0.0,
+                0.0,
+                'idempotency key was already used for a different order',
+            )
         if not claim.claimed:
-            return ExecutionResult(f'IDEMPOTENT-{claim.fingerprint[:16]}',OrderStatus.DUPLICATE,0.0,0.0,'duplicate execution request rejected')
+            return ExecutionResult(
+                f'IDEMPOTENT-{claim.fingerprint[:16]}',
+                OrderStatus.DUPLICATE,
+                0.0,
+                0.0,
+                'duplicate execution request rejected',
+            )
     return (broker or PaperBroker()).submit(order)
