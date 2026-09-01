@@ -101,7 +101,7 @@ def create_resources(*, execution_path="data/execution_state.json", idempotency_
     broker_context_attestor = BrokerContextAttestor(attestation_secret)
     execution_authorization_store = ExecutionAuthorizationStore(execution_authorization_path)
     submission_intent_store = SubmissionIntentStore(submission_intent_path, session_factory=session_local)
-    risk_reservation_store = RiskReservationStore(session_local) if session_local is not None else None
+    risk_reservation_store = RiskReservationStore(session_local, audit_log=audit_log) if session_local is not None else None
     if risk_reservation_store is not None:
         PreTradeRiskGate.set_default_reservations(DurableExposureReservationAdapter(risk_reservation_store, settings.risk_max_position_quantity))
     else:
