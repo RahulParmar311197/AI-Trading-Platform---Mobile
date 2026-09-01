@@ -49,6 +49,23 @@ def test_submit_uses_v3_tag_and_safe_market_protection():
     assert kwargs["json"]["market_protection"] == -1
 
 
+def test_submit_rejects_fractional_quantity_before_transport_call():
+    transport = Transport()
+    adapter = UpstoxAdapter(UpstoxConfig("token", live_enabled=True), transport)
+    request = BrokerOrderRequest(client_order_id="client-1", symbol="NIFTY", side="BUY", quantity=10.5, security_id="NSE_EQ|TEST", product_type="INTRADAY")
+    with pytest.raises(ValueError, match="quantity must be an integer"):
+        adapter.submit_order(request)
+    assert transport.calls == []
+
+
+def test_submit_accepts_integer_quantity_and_sends_exact_quantity():
+    transport = Transport()
+    adapter = UpstoxAdapter(UpstoxConfig("token", live_enabled=True), transport)
+    result = adapter.submit_order(req())
+    assert result.quantity == 10
+    assert transport.calls[0][2]["json"]["quantity"] == 10
+
+
 def test_account_bound_submit_preserves_route_identity():
     transport = Transport()
     config = UpstoxConfig("token", live_enabled=True, broker_account_id="42", broker_route="upstox:account:42", broker_route_generation="account:42:v1")
