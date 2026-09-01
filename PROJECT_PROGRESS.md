@@ -10,7 +10,7 @@ Last maintained: 2026-09-01
 - [x] Realtime fan-out uses bounded queues and atomic fail-closed backpressure.
 - [x] Reconnect attempts are now explicitly bounded; exhaustion returns failure instead of retrying indefinitely.
 - [x] Regression coverage added for bounded reconnect exhaustion, invalid attempt limits, and successful reconnect before the limit.
-- [x] Dhan adapter snapshot access fails closed when broker credentials are unavailable; it no longer returns empty collections that could be mistaken for an authoritative zero-exposure snapshot.
+- [x] Dhan adapter snapshot access fails closed when broker credentials are unavailable; it no longer returns empty collections that could be mistaken for an authoritative zero-exposure broker state.
 - [x] Regression coverage added for unconfigured Dhan positions, orders, order lookup, trades, and order-trades access.
 - [x] Upstox authoritative order/position/account/trade payloads now reject malformed non-mapping records instead of allowing reconciliation to consume ambiguous data.
 - [x] Regression coverage added for malformed Upstox authoritative payloads.
@@ -18,6 +18,8 @@ Last maintained: 2026-09-01
 - [x] Regression coverage added for broker/request quantity mismatch.
 - [x] Canonical `BrokerOrderRequest` now rejects unsupported sides/order types and invalid MARKET/LIMIT/SL/SL-M price/trigger combinations before broker submission.
 - [x] Regression coverage added for pre-submission order parameter semantics.
+- [x] Upstox submission now rejects fractional quantities before transport; it no longer silently truncates quantity through `int(...)` conversion.
+- [x] Regression coverage verifies fractional quantities are rejected before any broker HTTP call and integer quantities are transmitted exactly.
 
 ## Pending — ordered by priority
 
@@ -43,6 +45,7 @@ Last maintained: 2026-09-01
 - [x] Validate account identity and route binding for Dhan and Upstox submission paths.
 - [x] Prevent unconfigured Dhan snapshot reads from masquerading as authoritative empty broker state.
 - [x] Reject malformed Upstox authoritative snapshot payloads before reconciliation.
+- [x] Reject fractional Upstox quantities before broker submission; no silent quantity truncation.
 
 ### P2 — Platform / operations
 - [ ] Authentication/authorization audit.
