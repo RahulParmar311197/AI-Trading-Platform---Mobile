@@ -106,7 +106,7 @@ class BrokerRouter:
         orders=order_snapshot_fn().require_authoritative(); positions=position_snapshot_fn().require_authoritative()
         return BrokerSnapshot(orders=[dict(x) for x in orders],positions=[dict(x) for x in positions],broker_route=route.name,broker_account_id=route.broker_account_id)
     def _current_snapshot_fingerprint(self,route:BrokerRoute)->str:return self._authoritative_reconciliation_snapshot(route).fingerprint()
-    def _next_reconciliation_generation(self, route: BrokerRoute) -> int:
+    def _next_reconciliation_generation(self, route:BrokerRoute) -> int:
         if self.safety_store is None:return 1
         if route.broker_account_id is None:return 1
         record=self.safety_store.account_reconciliation(str(route.broker_account_id))
@@ -153,8 +153,12 @@ class BrokerRouter:
         current=self._current_snapshot_fingerprint(route)
         if current!=expected:raise RuntimeError("broker state changed since reconciliation")
     def _require_account_binding(self,request:BrokerOrderRequest,route:BrokerRoute)->None:
-        if request.broker_account_id is None:return
-        if route.broker_account_id is None:raise RuntimeError("broker route is not bound to a broker account")
+        if route.broker_account_id is None:
+            if request.broker_account_id is not None:
+                raise RuntimeError("request specifies broker account but route is not account-bound")
+            return
+        if request.broker_account_id is None:
+            raise RuntimeError("broker account identity is required for account-bound route")
         if str(route.broker_account_id)!=str(request.broker_account_id):raise RuntimeError("broker account does not match broker route")
         if request.broker_route_generation is None:raise RuntimeError("broker account route generation is required")
         if route.generation is None or str(route.generation)!=str(request.broker_route_generation):raise RuntimeError("broker account route generation is stale")
@@ -205,40 +209,31 @@ class BrokerRouter:
                     if expected is None:raise RuntimeError("broker reconciliation fingerprint is unavailable")
                     current=self._current_snapshot_fingerprint(selected)
                     if current!=expected:raise RuntimeError("broker state changed immediately before submission")
-                self.submission_intent_store.create(client_order_id=request.client_order_id,route=selected.name,account_id=str(selected.broker_account_id) if selected.broker_account_id is not None else None,symbol=request.symbol,side=request.side,quantity=request.quantity,request_fingerprint=self._request_fingerprint(request))
                 try:
-                    raw_result=selected.adapter.submit_order(request);result=normalize_broker_update(raw_result,expected=request)
-                    self.submission_intent_store.record_broker_order(request.client_order_id, result.order_id, result.status.value)
-                    self.submission_intent_store.resolve(request.client_order_id)
-                    return result
-                except Exception as submit_error:return self._recover_after_submit_failure(request,selected,submit_error)
+                    result=selected.adapter.submit_order(request)
+                except Exception as exc:
+                    return self._recover_after_submit_failure(request,selected,exc)
+                normalized=normalize_broker_update(result,expected=request)
+                self.submission_intent_store.record_broker_order(request.client_order_id,normalized.order_id,normalized.status.value)
+                self.submission_intent_store.resolve(request.client_order_id)
+                return normalized
             finally:
                 with self._submission_lock:self._submission_claims.discard(key)
-    def cancel(self,order_id,route=None,broker_account_id=None):
-        with self._route_lifecycle_lock:
-            if not str(order_id).strip():raise ValueError("order_id is required")
-            selected=self.get(route)
-            if broker_account_id is not None:
-                if selected.broker_account_id is None:raise RuntimeError("broker route is not bound to a broker account")
-                if str(selected.broker_account_id)!=str(broker_account_id):raise RuntimeError("broker account does not match broker route")
-            return selected.adapter.cancel_order(order_id)
-    def get_order(self,order_id,route=None):
-        with self._route_lifecycle_lock:return self.get(route).adapter.get_order(order_id)
-    def get_orders(self,route=None):
-        with self._route_lifecycle_lock:
-            fn=getattr(self.get(route).adapter,"get_orders",None)
-            if fn is None:raise NotImplementedError("broker does not support order snapshots")
-            return fn()
-    def find_order_by_client_id(self,client_order_id,route=None):
-        with self._route_lifecycle_lock:
-            selected=self.get(route)
-            try:
-                snapshot=selected.adapter.get_order_snapshot();orders=snapshot.require_authoritative();matches=[dict(o) for o in orders if str(o.get("client_order_id",o.get("tag","")))==str(client_order_id)]
-                if len(matches)>1:raise RuntimeError(f"ambiguous broker order identity for client_order_id: {client_order_id}")
-                return matches[0] if matches else None
-            except NotImplementedError:return selected.adapter.find_order_by_client_id(client_order_id)
-    def get_positions(self,route=None):
-        with self._route_lifecycle_lock:return self.get(route).adapter.get_positions()
-    def get_account(self,route=None):
-        with self._route_lifecycle_lock:return self.get(route).adapter.get_account()
-    def get_snapshot(self,route=None):return self._authoritative_reconciliation_snapshot(self.get(route))
+    def cancel(self,broker_order_id:str,route=None):
+        if not broker_order_id:raise ValueError("order_id is required")
+        selected=self.get(route)
+        result=selected.adapter.cancel_order(broker_order_id)
+        return normalize_broker_update(result)
+    def find_order_by_client_id(self,client_order_id:str,route=None):
+        if not client_order_id:raise ValueError("client_order_id is required")
+        selected=self.get(route); finder=getattr(selected.adapter,"find_order_by_client_id",None)
+        if finder is not None:return finder(client_order_id)
+        snapshot_fn=getattr(selected.adapter,"get_order_snapshot",None)
+        if snapshot_fn is None:raise RuntimeError("broker does not support client-order identity lookup")
+        snapshot=snapshot_fn().require_authoritative(); matches=[dict(o) for o in snapshot if str(o.get("client_order_id",o.get("tag","")))==client_order_id]
+        if len(matches)>1:raise RuntimeError("ambiguous broker order identity")
+        return matches[0] if matches else None
+    def get_orders(self,route=None):return self.get(route).adapter.get_orders()
+    def get_positions(self,route=None):return self.get(route).adapter.get_positions()
+    def get_snapshot(self,route=None):
+        selected=self.get(route);return self._authoritative_reconciliation_snapshot(selected)
