@@ -56,18 +56,17 @@ class RiskReservationStore:
             with session.begin():
                 self._lock_scope(session, scope)
                 existing = session.query(RiskReservationRecord).filter_by(client_order_id=client_order_id).one_or_none()
-                if existing is not None and existing.status == self.ACTIVE:
-                    if existing.broker_account_id != account or existing.broker_route != route or self._decimal(existing.amount, "existing reservation") != amount_d:
-                        raise RuntimeError("active risk reservation already exists for client order")
-                    return existing.reservation_id
+                if existing is not None:
+                    if existing.status == self.ACTIVE:
+                        if existing.broker_account_id != account or existing.broker_route != route or self._decimal(existing.amount, "existing reservation") != amount_d:
+                            raise RuntimeError("active risk reservation already exists for client order")
+                        return existing.reservation_id
+                    raise RuntimeError("client_order_id has already been used by a terminal risk reservation")
                 reserved = session.query(func.coalesce(func.sum(RiskReservationRecord.amount), 0)).filter(RiskReservationRecord.broker_account_id == account, RiskReservationRecord.broker_route == route, RiskReservationRecord.status == self.ACTIVE).scalar()
                 reserved_d = self._decimal(reserved or 0, "active reservations")
                 if current_d + reserved_d + amount_d > limit_d: raise RuntimeError("risk reservation exceeds concurrent exposure limit")
                 now = datetime.now(timezone.utc)
-                if existing is not None:
-                    existing.reservation_id = rid; existing.broker_account_id = account; existing.broker_route = route; existing.amount = amount_d; existing.status = self.ACTIVE; existing.created_at = now; existing.released_at = None
-                else:
-                    session.add(RiskReservationRecord(reservation_id=rid, client_order_id=client_order_id, broker_account_id=account, broker_route=route, amount=amount_d, status=self.ACTIVE, created_at=now, released_at=None))
+                session.add(RiskReservationRecord(reservation_id=rid, client_order_id=client_order_id, broker_account_id=account, broker_route=route, amount=amount_d, status=self.ACTIVE, created_at=now, released_at=None))
                 session.flush(); return rid
         except IntegrityError as exc:
             raise RuntimeError("risk reservation could not be created safely") from exc
