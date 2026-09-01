@@ -212,3 +212,25 @@ def test_normalize_broker_update_accepts_matching_route_identity():
     assert result.broker_account_id == 'acct-42'
     assert result.broker_route == 'upstox-primary'
     assert result.broker_route_generation == '7'
+
+
+def test_normalize_broker_update_rejects_quantity_mismatch_when_request_is_scoped():
+    request = BrokerOrderRequest(
+        client_order_id='c1', symbol='NIFTY', side='BUY', quantity=10,
+    )
+    with pytest.raises(ValueError, match='broker quantity does not match request'):
+        normalize_broker_update({
+            'order_id': 'b1', 'status': 'NEW', 'quantity': 9,
+            'client_order_id': 'c1', 'symbol': 'NIFTY', 'side': 'BUY',
+        }, expected=request)
+
+
+def test_normalize_broker_update_accepts_exact_requested_quantity():
+    request = BrokerOrderRequest(
+        client_order_id='c1', symbol='NIFTY', side='BUY', quantity=10,
+    )
+    result = normalize_broker_update({
+        'order_id': 'b1', 'status': 'NEW', 'quantity': 10,
+        'client_order_id': 'c1', 'symbol': 'NIFTY', 'side': 'BUY',
+    }, expected=request)
+    assert result.quantity == 10
