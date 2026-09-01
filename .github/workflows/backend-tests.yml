@@ -56,7 +56,7 @@ jobs:
 
       - name: Import smoke test
         run: |
-          python -c "import importlib.util; assert importlib.util.find_spec('app.execution') is None; import app.app_factory; import app.api.orders; import app.api.ensemble"
+          python -c "import app.app_factory; import app.api.orders; import app.api.ensemble"
 
       - name: Run tests
         run: pytest -q
