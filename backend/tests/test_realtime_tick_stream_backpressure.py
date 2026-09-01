@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime, timezone
 
 import pytest
@@ -42,11 +41,12 @@ async def test_full_subscriber_fails_closed_without_partial_delivery() -> None:
     with pytest.raises(RealtimeMarketDataBackpressure, match="queue is full"):
         await stream.publish(tick_two)
 
-    # The failed publish is atomic: neither subscriber receives tick_two.
+    # The failed publish is atomic: neither subscriber received tick_two.
     assert await first.__anext__() == tick_one
     assert await second.__anext__() == tick_one
-    with pytest.raises(RealtimeMarketDataBackpressure):
-        await stream.publish(tick_two)
+    assert await stream.publish(tick_two) == 2
+    assert await first.__anext__() == tick_two
+    assert await second.__anext__() == tick_two
     await stream.close()
 
 
