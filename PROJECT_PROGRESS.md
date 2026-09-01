@@ -33,6 +33,8 @@ Last maintained: 2026-09-02
 - [x] Regression coverage verifies terminal client-order identity cannot be reused.
 - [x] Authoritative risk reconciliation now requires broker order account and route identity to exactly match the reconciled scope before any reservation mutation.
 - [x] Regression coverage verifies missing, cross-account, and cross-route broker identity fails closed without releasing or resizing risk.
+- [x] Authoritative risk reconciliation now requires a unique non-empty `broker_order_id` and rejects duplicate broker-order identities before reservation mutation.
+- [x] Regression coverage covers missing and duplicate broker-order identity without releasing or resizing risk.
 
 ## Pending — ordered by priority
 
