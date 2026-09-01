@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import uuid
 from typing import Callable
@@ -116,6 +116,59 @@ class RiskReservationStore:
             reservation_id = record.reservation_id
         finally: session.close()
         return self.reconcile(reservation_id=reservation_id, broker_status=broker_status, remaining_amount=remaining_amount)
+
+    def stale_active_reservations(
+        self,
+        *,
+        max_age: timedelta,
+        as_of: datetime | None = None,
+        broker_account_id: str | None = None,
+        broker_route: str | None = None,
+    ) -> list[dict]:
+        """Return stale ACTIVE reservations for authoritative broker recovery.
+
+        This method is deliberately read-only: age alone is never sufficient to
+        release exposure. Callers must reconcile each candidate against an
+        authoritative broker snapshot before mutating reservation state.
+        """
+        if max_age.total_seconds() < 0:
+            raise ValueError("max_age cannot be negative")
+        now = as_of or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        account = str(broker_account_id).strip() if broker_account_id is not None else None
+        route = str(broker_route).strip() if broker_route is not None else None
+        if account is not None and not account:
+            raise ValueError("broker_account_id cannot be empty")
+        if route is not None and not route:
+            raise ValueError("broker_route cannot be empty")
+        cutoff = now - max_age
+        session = self._session_factory()
+        try:
+            query = session.query(RiskReservationRecord).filter(
+                RiskReservationRecord.status == self.ACTIVE,
+                RiskReservationRecord.created_at <= cutoff,
+            )
+            if account is not None:
+                query = query.filter(RiskReservationRecord.broker_account_id == account)
+            if route is not None:
+                query = query.filter(RiskReservationRecord.broker_route == route)
+            records = query.order_by(RiskReservationRecord.created_at.asc()).all()
+            return [
+                {
+                    "reservation_id": record.reservation_id,
+                    "client_order_id": record.client_order_id,
+                    "broker_account_id": record.broker_account_id,
+                    "broker_route": record.broker_route,
+                    "amount": float(record.amount),
+                    "created_at": record.created_at,
+                    "age_seconds": max(0.0, (now - record.created_at).total_seconds()),
+                    "reason": "STALE_RISK_RESERVATION_REQUIRES_BROKER_RECONCILIATION",
+                }
+                for record in records
+            ]
+        finally:
+            session.close()
 
     def reconcile_authoritative_orders(self, *, broker_orders: list[dict], broker_account_id: str, broker_route: str) -> list[dict]:
         """Reconcile every active reservation against one authoritative broker snapshot.
