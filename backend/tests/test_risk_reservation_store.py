@@ -130,17 +130,17 @@ def test_client_order_binding_reconciles_idempotently(tmp_path: Path):
     assert store.reconcile_client_order(client_order_id="missing", broker_status="FILLED") is None
 
 
+def _broker_order(**overrides):
+    order = {"client_order_id": "c1", "broker_account_id": "001", "broker_route": "upstox"}
+    order.update(overrides)
+    return order
+
+
 def test_authoritative_partial_fill_uses_remaining_exposure_not_quantity(tmp_path: Path):
     store = _store(tmp_path)
     _reserve(store, amount=1000)
     failures = store.reconcile_authoritative_orders(
-        broker_orders=[{
-            "client_order_id": "c1",
-            "status": "PARTIALLY_FILLED",
-            "quantity": 50,
-            "filled_quantity": 10,
-            "remaining_exposure": 800,
-        }],
+        broker_orders=[_broker_order(status="PARTIALLY_FILLED", quantity=50, filled_quantity=10, remaining_exposure=800)],
         broker_account_id="001",
         broker_route="upstox",
     )
@@ -152,12 +152,7 @@ def test_authoritative_partial_fill_without_remaining_exposure_fails_closed(tmp_
     store = _store(tmp_path)
     _reserve(store, amount=1000)
     failures = store.reconcile_authoritative_orders(
-        broker_orders=[{
-            "client_order_id": "c1",
-            "status": "PARTIALLY_FILLED",
-            "quantity": 50,
-            "filled_quantity": 10,
-        }],
+        broker_orders=[_broker_order(status="PARTIALLY_FILLED", quantity=50, filled_quantity=10)],
         broker_account_id="001",
         broker_route="upstox",
     )
@@ -169,15 +164,38 @@ def test_authoritative_partial_fill_rejects_remaining_exposure_increase(tmp_path
     store = _store(tmp_path)
     _reserve(store, amount=1000)
     failures = store.reconcile_authoritative_orders(
-        broker_orders=[{
-            "client_order_id": "c1",
-            "status": "PARTIALLY_FILLED",
-            "quantity": 50,
-            "filled_quantity": 10,
-            "remaining_exposure": 1001,
-        }],
+        broker_orders=[_broker_order(status="PARTIALLY_FILLED", quantity=50, filled_quantity=10, remaining_exposure=1001)],
         broker_account_id="001",
         broker_route="upstox",
     )
     assert failures == [{"id": "c1", "reason": "RISK_RESERVATION_PARTIAL_FILL_INCREASE"}]
     assert store.active_amount(broker_account_id="001", broker_route="upstox") == 1000
+
+
+def test_authoritative_reconciliation_rejects_missing_broker_identity(tmp_path: Path):
+    store = _store(tmp_path)
+    _reserve(store, amount=1000)
+    failures = store.reconcile_authoritative_orders(
+        broker_orders=[{"client_order_id": "c1", "status": "FILLED"}],
+        broker_account_id="001",
+        broker_route="upstox",
+    )
+    assert failures == [{"id": "c1", "reason": "RISK_RESERVATION_BROKER_IDENTITY_MISMATCH"}]
+    assert store.active_amount(broker_account_id="001", broker_route="upstox") == 1000
+
+
+def test_authoritative_reconciliation_rejects_cross_account_or_route_identity(tmp_path: Path):
+    store = _store(tmp_path)
+    _reserve(store, amount=1000)
+    for bad_identity in (
+        {"broker_account_id": "002", "broker_route": "upstox"},
+        {"broker_account_id": "001", "broker_route": "dhan"},
+    ):
+        order = _broker_order(status="FILLED", **bad_identity)
+        failures = store.reconcile_authoritative_orders(
+            broker_orders=[order],
+            broker_account_id="001",
+            broker_route="upstox",
+        )
+        assert failures == [{"id": "c1", "reason": "RISK_RESERVATION_BROKER_IDENTITY_MISMATCH"}]
+        assert store.active_amount(broker_account_id="001", broker_route="upstox") == 1000
