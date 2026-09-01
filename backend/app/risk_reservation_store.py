@@ -43,6 +43,11 @@ class RiskReservationStore:
         if bind.dialect.name == "postgresql":
             session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"), {"scope": scope})
 
+    @staticmethod
+    def _refresh_after_scope_lock(session: object, record: RiskReservationRecord) -> None:
+        """Refresh a record after the scope lock so concurrent changes are not overwritten."""
+        session.refresh(record)
+
     def reserve(self, *, reservation_id: str | None, client_order_id: str, broker_account_id: str, broker_route: str, amount: float, current_exposure: float, max_total_exposure: float) -> str:
         client_order_id = str(client_order_id).strip()
         if not client_order_id: raise ValueError("client_order_id is required")
@@ -80,6 +85,8 @@ class RiskReservationStore:
             with session.begin():
                 record = session.get(RiskReservationRecord, reservation_id)
                 if record is None: raise KeyError(reservation_id)
+                self._lock_scope(session, self._scope(record.broker_account_id, record.broker_route))
+                self._refresh_after_scope_lock(session, record)
                 if record.status == self.ACTIVE:
                     record.status = self.RELEASED; record.released_at = datetime.now(timezone.utc)
         finally: session.close()
@@ -93,8 +100,9 @@ class RiskReservationStore:
             with session.begin():
                 record = session.get(RiskReservationRecord, rid)
                 if record is None: raise KeyError(rid)
-                if record.status == self.RELEASED: return self.RELEASED
                 self._lock_scope(session, self._scope(record.broker_account_id, record.broker_route))
+                self._refresh_after_scope_lock(session, record)
+                if record.status == self.RELEASED: return self.RELEASED
                 if status in self.TERMINAL:
                     record.status = self.RELEASED; record.released_at = datetime.now(timezone.utc); return self.RELEASED
                 if status != self.PARTIALLY_FILLED: raise RuntimeError("ambiguous broker state cannot release risk reservation")
