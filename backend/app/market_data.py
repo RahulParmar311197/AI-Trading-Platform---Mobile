@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Protocol
 import math
+import re
 
 
 @dataclass(frozen=True, init=False)
@@ -116,6 +117,117 @@ def validate_candle_sequence(candles: list[Candle], *, now: datetime | None = No
 
 class MarketDataProvider(Protocol):
     def candles(self, symbol: str, timeframe: str, limit: int = 200) -> list[Candle]: ...
+
+
+_TIMEFRAME_RE = re.compile(r"^(\d+)([mhd])$")
+
+
+def timeframe_seconds(timeframe: str) -> int:
+    """Return the fixed UTC bucket width for a supported intraday timeframe."""
+    match = _TIMEFRAME_RE.fullmatch(timeframe.strip().lower())
+    if not match:
+        raise ValueError("unsupported timeframe; expected <number>m, <number>h, or <number>d")
+    amount = int(match.group(1))
+    if amount <= 0:
+        raise ValueError("timeframe amount must be positive")
+    unit = match.group(2)
+    multiplier = {"m": 60, "h": 3600, "d": 86400}[unit]
+    seconds = amount * multiplier
+    if seconds > 86400 or 86400 % seconds != 0:
+        raise ValueError("timeframe must divide one UTC day and be at most 1d")
+    return seconds
+
+
+def _bucket_start(timestamp: datetime, timeframe: str) -> datetime:
+    ts = _utc(timestamp)
+    seconds = timeframe_seconds(timeframe)
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    elapsed = int((ts - epoch).total_seconds())
+    return epoch + timedelta(seconds=(elapsed // seconds) * seconds)
+
+
+@dataclass
+class _ActiveCandle:
+    timestamp: datetime
+    symbol: str
+    timeframe: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+    def to_candle(self) -> Candle:
+        return Candle(
+            timestamp=self.timestamp,
+            symbol=self.symbol,
+            timeframe=self.timeframe,
+            open=self.open,
+            high=self.high,
+            low=self.low,
+            close=self.close,
+            volume=self.volume,
+        )
+
+
+class TickCandleAggregator:
+    """Deterministic tick-to-candle aggregation using the canonical Candle contract.
+
+    Ticks must be strictly increasing per symbol. A new bucket finalizes the previous
+    bucket; gaps are intentionally not filled with synthetic candles.
+    """
+    def __init__(self):
+        self._active: dict[tuple[str, str], _ActiveCandle] = {}
+        self._last_tick: dict[str, datetime] = {}
+
+    def ingest(self, tick: MarketTick, timeframe: str) -> list[Candle]:
+        if not isinstance(tick, MarketTick):
+            raise TypeError("tick must be a MarketTick")
+        if tick.price <= 0 or tick.volume < 0 or not math.isfinite(tick.price) or not math.isfinite(tick.volume):
+            raise ValueError("invalid market tick")
+        seconds = timeframe_seconds(timeframe)
+        normalized_timeframe = timeframe.strip().lower()
+        symbol = tick.symbol.strip().upper()
+        if not symbol:
+            raise ValueError("tick symbol is required")
+        timestamp = _utc(tick.timestamp)
+        last = self._last_tick.get(symbol)
+        if last is not None and timestamp <= last:
+            return []
+        self._last_tick[symbol] = timestamp
+        key = (symbol, normalized_timeframe)
+        bucket = _bucket_start(timestamp, normalized_timeframe)
+        active = self._active.get(key)
+        if active is None:
+            self._active[key] = _ActiveCandle(bucket, symbol, normalized_timeframe, tick.price, tick.price, tick.price, tick.price, tick.volume)
+            return []
+        if bucket == active.timestamp:
+            active.high = max(active.high, tick.price)
+            active.low = min(active.low, tick.price)
+            active.close = tick.price
+            active.volume += tick.volume
+            return []
+        if bucket < active.timestamp:
+            return []
+        finalized = active.to_candle()
+        if bucket - active.timestamp < timedelta(seconds=seconds):
+            # A bucket transition is always exactly the next bucket for fixed widths;
+            # this branch is retained as an invariant guard.
+            raise RuntimeError("invalid candle bucket transition")
+        self._active[key] = _ActiveCandle(bucket, symbol, normalized_timeframe, tick.price, tick.price, tick.price, tick.price, tick.volume)
+        return [finalized]
+
+    def current(self, symbol: str, timeframe: str) -> Candle | None:
+        active = self._active.get((symbol.strip().upper(), timeframe.strip().lower()))
+        return active.to_candle() if active else None
+
+    def flush(self, symbol: str | None = None, timeframe: str | None = None) -> list[Candle]:
+        """Finalize active buckets explicitly; never manufacture missing candles."""
+        symbol_key = symbol.strip().upper() if symbol is not None else None
+        timeframe_key = timeframe.strip().lower() if timeframe is not None else None
+        keys = [key for key in self._active if (symbol_key is None or key[0] == symbol_key) and (timeframe_key is None or key[1] == timeframe_key)]
+        finalized = [self._active.pop(key).to_candle() for key in sorted(keys)]
+        return finalized
 
 
 class InMemoryMarketData:
