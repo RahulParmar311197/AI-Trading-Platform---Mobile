@@ -14,6 +14,10 @@ Last maintained: 2026-09-01
 - [x] Regression coverage added for unconfigured Dhan positions, orders, order lookup, trades, and order-trades access.
 - [x] Upstox authoritative order/position/account/trade payloads now reject malformed non-mapping records instead of allowing reconciliation to consume ambiguous data.
 - [x] Regression coverage added for malformed Upstox authoritative payloads.
+- [x] Canonical broker responses now require quantity equality with the submitted request when submission identity is scoped.
+- [x] Regression coverage added for broker/request quantity mismatch.
+- [x] Canonical `BrokerOrderRequest` now rejects unsupported sides/order types and invalid MARKET/LIMIT/SL/SL-M price/trigger combinations before broker submission.
+- [x] Regression coverage added for pre-submission order parameter semantics.
 
 ## Pending — ordered by priority
 
@@ -34,6 +38,7 @@ Last maintained: 2026-09-01
 
 ### P1 — Broker coverage
 - [ ] Audit broker adapters and capability declarations.
+- [x] Validate canonical pre-submission order type/price/trigger semantics.
 - [ ] Validate broker-specific order types, status mappings, precision, lot sizes, and rejection handling.
 - [x] Validate account identity and route binding for Dhan and Upstox submission paths.
 - [x] Prevent unconfigured Dhan snapshot reads from masquerading as authoritative empty broker state.
