@@ -7,23 +7,34 @@ from .models import Instrument, Tick
 from .provider import RealtimeMarketDataProvider
 
 
+class RealtimeMarketDataBackpressure(RuntimeError):
+    """Raised when a realtime subscriber cannot accept the next tick safely."""
+
+
 class RealtimeTickStream(RealtimeMarketDataProvider):
-    """Provider-neutral realtime tick fan-out.
+    """Provider-neutral realtime tick fan-out with bounded backpressure.
 
     Broker adapters publish already-normalized Tick objects. Subscribers get
-    their own queue, so a slow consumer cannot consume another consumer's
-    events. The stream is intentionally unbounded at this layer; production
-    adapters can impose provider-specific backpressure before publishing.
+    their own bounded queue, so a slow consumer cannot consume another
+    consumer's events or grow process memory without limit.
+
+    A full subscriber fails the entire publish atomically instead of dropping
+    a tick for one consumer while delivering it to others. Callers must treat
+    this as a data-quality/safety signal and recover or halt the affected
+    realtime pipeline; ticks are never silently discarded here.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_queue_size: int = 1024) -> None:
+        if max_queue_size <= 0:
+            raise ValueError("max_queue_size must be positive")
+        self._max_queue_size = max_queue_size
         self._subscriptions: dict[int, asyncio.Queue[Tick | None]] = {}
         self._next_id = 0
         self._lock = asyncio.Lock()
 
     async def subscribe(self, instruments: Sequence[Instrument]) -> tuple[int, AsyncIterator[Tick]]:
         allowed = frozenset(instruments)
-        queue: asyncio.Queue[Tick | None] = asyncio.Queue()
+        queue: asyncio.Queue[Tick | None] = asyncio.Queue(maxsize=self._max_queue_size)
         async with self._lock:
             subscription_id = self._next_id
             self._next_id += 1
@@ -45,17 +56,19 @@ class RealtimeTickStream(RealtimeMarketDataProvider):
     async def unsubscribe(self, subscription_id: int) -> None:
         async with self._lock:
             queue = self._subscriptions.pop(subscription_id, None)
-        if queue is not None:
+        if queue is not None and not queue.full():
             queue.put_nowait(None)
 
     async def publish(self, tick: Tick) -> int:
         async with self._lock:
             queues = tuple(self._subscriptions.values())
-        delivered = 0
-        for queue in queues:
-            queue.put_nowait(tick)
-            delivered += 1
-        return delivered
+            if any(queue.full() for queue in queues):
+                raise RealtimeMarketDataBackpressure(
+                    "realtime subscriber queue is full; refusing to drop market data"
+                )
+            for queue in queues:
+                queue.put_nowait(tick)
+        return len(queues)
 
     def ticks(self, instruments: Sequence[Instrument]) -> AsyncIterator[Tick]:
         async def stream() -> AsyncIterator[Tick]:
@@ -70,4 +83,5 @@ class RealtimeTickStream(RealtimeMarketDataProvider):
             subscriptions = tuple(self._subscriptions.items())
             self._subscriptions.clear()
         for _, queue in subscriptions:
-            queue.put_nowait(None)
+            if not queue.full():
+                queue.put_nowait(None)
