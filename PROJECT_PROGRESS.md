@@ -22,6 +22,11 @@ Last maintained: 2026-09-01
 - [x] Regression coverage verifies fractional quantities are rejected before any broker HTTP call and integer quantities are transmitted exactly.
 - [x] Account-bound broker routes now require the request to carry the matching broker account identity; unbound routes reject explicit account identity instead of silently discarding it.
 - [x] Regression coverage added for strict broker route/account binding.
+- [x] Strict instrument precision constraints reject off-grid prices/quantities and over-limit quantities instead of silently rounding or clamping live orders.
+- [x] Regression coverage added for strict instrument precision constraints.
+- [x] Coordinator reconciliation now recovers unambiguous durable submission intents from the same authoritative broker snapshot before producing a verified execution context.
+- [x] Recovery rejects duplicate broker client-order IDs, incomplete broker identity, and symbol/side/quantity mismatches without resolving the durable intent.
+- [x] Regression coverage added for coordinator submission-intent recovery, missing matches, and ambiguous duplicate matches.
 
 ## Pending — ordered by priority
 
@@ -49,6 +54,7 @@ Last maintained: 2026-09-01
 - [x] Prevent unconfigured Dhan snapshot reads from masquerading as authoritative empty broker state.
 - [x] Reject malformed Upstox authoritative snapshot payloads before reconciliation.
 - [x] Reject fractional Upstox quantities before broker submission; no silent quantity truncation.
+- [x] Recover matched durable submission intents during authoritative coordinator reconciliation.
 
 ### P2 — Platform / operations
 - [ ] Authentication/authorization audit.
