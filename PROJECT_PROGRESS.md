@@ -27,6 +27,8 @@ Last maintained: 2026-09-01
 - [x] Coordinator reconciliation now recovers unambiguous durable submission intents from the same authoritative broker snapshot before producing a verified execution context.
 - [x] Recovery rejects duplicate broker client-order IDs, incomplete broker identity, and symbol/side/quantity mismatches without resolving the durable intent.
 - [x] Regression coverage added for coordinator submission-intent recovery, missing matches, and ambiguous duplicate matches.
+- [x] Authoritative risk-reservation reconciliation now requires explicit `remaining_exposure` for partial fills; it no longer derives monetary reservation exposure from broker quantity/filled-quantity fields.
+- [x] Regression coverage proves missing/invalid/increasing remaining exposure fails closed without mutating the reservation.
 
 ## Pending — ordered by priority
 
