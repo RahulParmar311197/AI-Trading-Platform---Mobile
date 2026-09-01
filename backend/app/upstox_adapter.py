@@ -48,6 +48,12 @@ class UpstoxAdapter(BrokerAdapter):
         if not client_order_id or len(client_order_id) > 40: raise ValueError("Upstox tag must be between 1 and 40 characters")
         return client_order_id
     @staticmethod
+    def _validate_quantity(quantity: float) -> int:
+        value = float(quantity)
+        if not value.is_integer(): raise ValueError("Upstox order quantity must be an integer")
+        if value <= 0: raise ValueError("Upstox order quantity must be positive")
+        return int(value)
+    @staticmethod
     def _require_record_list(data: Any, context: str) -> list[dict[str, Any]]:
         if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
             raise RuntimeError(f"Upstox {context} is not an authoritative record list")
@@ -63,14 +69,14 @@ class UpstoxAdapter(BrokerAdapter):
             if expected is not None and identity[field] != expected: raise ValueError(f"Upstox {field} does not match configured route")
         return {k: str(v) for k, v in identity.items() if v is not None}
     def submit_order(self, request: BrokerOrderRequest) -> BrokerOrderUpdate:
-        self._require_live(); tag=self._validate_tag(request.client_order_id); order_type=request.order_type.upper()
+        self._require_live(); tag=self._validate_tag(request.client_order_id); quantity=self._validate_quantity(request.quantity); order_type=request.order_type.upper()
         if order_type in {"MARKET","SL-M"} and not (-1 <= self.config.market_protection <= 25): raise ValueError("Upstox market protection must be -1 or between 1 and 25")
-        payload={"quantity":int(request.quantity),"product":{"INTRADAY":"I","I":"I","CNC":"D","D":"D","MTF":"MTF"}.get(request.product_type.upper(),request.product_type.upper()),"validity":request.validity.upper(),"price":float(request.price or 0),"tag":tag,"instrument_token":request.security_id,"order_type":order_type,"transaction_type":request.side.upper(),"disclosed_quantity":0,"trigger_price":float(request.trigger_price or request.stop or 0),"is_amo":False,"slice":self.config.slice_orders}
+        payload={"quantity":quantity,"product":{"INTRADAY":"I","I":"I","CNC":"D","D":"D","MTF":"MTF"}.get(request.product_type.upper(),request.product_type.upper()),"validity":request.validity.upper(),"price":float(request.price or 0),"tag":tag,"instrument_token":request.security_id,"order_type":order_type,"transaction_type":request.side.upper(),"disclosed_quantity":0,"trigger_price":float(request.trigger_price or request.stop or 0),"is_amo":False,"slice":self.config.slice_orders}
         if order_type in {"MARKET","SL-M"}: payload["market_protection"]=self.config.market_protection
         response=self.transport.request("POST",f"{self.config.base_url}/v3/order/place",headers=self._headers(),json=payload); response.raise_for_status(); body=response.json(); data=body.get("data",body); order_ids=data.get("order_ids") or ([data.get("order_id")] if data.get("order_id") else [])
         if not order_ids: raise RuntimeError("Upstox placement response did not contain an order id")
         if len(order_ids)>1: raise RuntimeError("Upstox sliced order returned multiple broker order ids; child-order persistence is required")
-        raw={"order_id":str(order_ids[0]),"status":"NEW","client_order_id":tag,"symbol":request.symbol,"side":request.side.upper(),"quantity":request.quantity,"price":request.price,"message":";".join(map(str,order_ids)),**self._request_identity(request)}
+        raw={"order_id":str(order_ids[0]),"status":"NEW","client_order_id":tag,"symbol":request.symbol,"side":request.side.upper(),"quantity":quantity,"price":request.price,"message":";".join(map(str,order_ids)),**self._request_identity(request)}
         return normalize_broker_update(raw, expected=request)
     def find_order_by_client_id(self, client_order_id: str) -> dict[str, Any] | None:
         self._require_live(); tag=self._validate_tag(client_order_id); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/history",headers=self._headers(),params={"tag":tag})
