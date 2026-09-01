@@ -35,6 +35,8 @@ Last maintained: 2026-09-02
 - [x] Regression coverage verifies missing, cross-account, and cross-route broker identity fails closed without releasing or resizing risk.
 - [x] Authoritative risk reconciliation now requires a unique non-empty `broker_order_id` and rejects duplicate broker-order identities before reservation mutation.
 - [x] Regression coverage covers missing and duplicate broker-order identity without releasing or resizing risk.
+- [x] Reservation release and single-order reconciliation now refresh the durable reservation after acquiring the account/route scope lock, preventing a stale ORM object from overwriting a concurrent lifecycle mutation.
+- [x] Regression coverage verifies both mutation paths execute the post-lock refresh boundary.
 
 ## Pending — ordered by priority
 
