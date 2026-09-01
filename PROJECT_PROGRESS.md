@@ -20,6 +20,8 @@ Last maintained: 2026-09-01
 - [x] Regression coverage added for pre-submission order parameter semantics.
 - [x] Upstox submission now rejects fractional quantities before transport; it no longer silently truncates quantity through `int(...)` conversion.
 - [x] Regression coverage verifies fractional quantities are rejected before any broker HTTP call and integer quantities are transmitted exactly.
+- [x] Account-bound broker routes now require the request to carry the matching broker account identity; unbound routes reject explicit account identity instead of silently discarding it.
+- [x] Regression coverage added for strict broker route/account binding.
 
 ## Pending — ordered by priority
 
@@ -43,6 +45,7 @@ Last maintained: 2026-09-01
 - [x] Validate canonical pre-submission order type/price/trigger semantics.
 - [ ] Validate broker-specific order types, status mappings, precision, lot sizes, and rejection handling.
 - [x] Validate account identity and route binding for Dhan and Upstox submission paths.
+- [x] Require explicit request identity on account-bound broker routes.
 - [x] Prevent unconfigured Dhan snapshot reads from masquerading as authoritative empty broker state.
 - [x] Reject malformed Upstox authoritative snapshot payloads before reconciliation.
 - [x] Reject fractional Upstox quantities before broker submission; no silent quantity truncation.
