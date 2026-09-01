@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, String, Table, create_engine, select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 
 @dataclass(frozen=True)
@@ -95,23 +97,39 @@ class ReconciliationStateStore:
             "updated_at": datetime.now(timezone.utc),
         }
         with self.engine.begin() as connection:
-            existing = connection.execute(
-                select(self.table.c.broker_account_id).where(
-                    self.table.c.broker_account_id == account_id,
-                    self.table.c.broker_route == route,
+            dialect = connection.dialect.name
+            if dialect == "postgresql":
+                statement = postgresql_insert(self.table).values(**state)
+                statement = statement.on_conflict_do_update(
+                    index_elements=[self.table.c.broker_account_id, self.table.c.broker_route],
+                    set_={key: getattr(statement.excluded, key) for key in state if key not in {"broker_account_id", "broker_route"}},
                 )
-            ).first()
-            if existing:
-                connection.execute(
-                    update(self.table)
-                    .where(
+                connection.execute(statement)
+            elif dialect == "sqlite":
+                statement = sqlite_insert(self.table).values(**state)
+                statement = statement.on_conflict_do_update(
+                    index_elements=[self.table.c.broker_account_id, self.table.c.broker_route],
+                    set_={key: getattr(statement.excluded, key) for key in state if key not in {"broker_account_id", "broker_route"}},
+                )
+                connection.execute(statement)
+            else:
+                existing = connection.execute(
+                    select(self.table.c.broker_account_id).where(
                         self.table.c.broker_account_id == account_id,
                         self.table.c.broker_route == route,
                     )
-                    .values(**state)
-                )
-            else:
-                connection.execute(self.table.insert().values(**state))
+                ).first()
+                if existing:
+                    connection.execute(
+                        update(self.table)
+                        .where(
+                            self.table.c.broker_account_id == account_id,
+                            self.table.c.broker_route == route,
+                        )
+                        .values(**state)
+                    )
+                else:
+                    connection.execute(self.table.insert().values(**state))
         return ReconciliationState(
             broker_account_id=account_id,
             broker_route=route,
