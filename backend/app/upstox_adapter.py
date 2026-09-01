@@ -54,14 +54,25 @@ class UpstoxAdapter(BrokerAdapter):
         if value <= 0: raise ValueError("Upstox order quantity must be positive")
         return int(value)
     @staticmethod
+    def _validate_execution_contract(request: BrokerOrderRequest) -> None:
+        if not str(request.security_id or "").strip():
+            raise ValueError("Upstox security_id is required before submission")
+        product = str(request.product_type or "").strip().upper()
+        if product not in {"INTRADAY", "I", "CNC", "D", "MTF"}:
+            raise ValueError(f"unsupported Upstox product_type: {request.product_type}")
+        validity = str(request.validity or "").strip().upper()
+        if validity not in {"DAY", "IOC"}:
+            raise ValueError(f"unsupported Upstox validity: {request.validity}")
+        exchange = str(request.exchange_segment or "").strip().upper()
+        if exchange not in {"NSE_EQ", "NSE_FO", "BSE_EQ", "BSE_FO", "NCD_FO", "BCD_FO"}:
+            raise ValueError(f"unsupported Upstox exchange_segment: {request.exchange_segment}")
+    @staticmethod
     def _require_record_list(data: Any, context: str) -> list[dict[str, Any]]:
-        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
-            raise RuntimeError(f"Upstox {context} is not an authoritative record list")
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data): raise RuntimeError(f"Upstox {context} is not an authoritative record list")
         return [dict(item) for item in data]
     @staticmethod
     def _require_record(data: Any, context: str) -> dict[str, Any]:
-        if not isinstance(data, dict):
-            raise RuntimeError(f"Upstox {context} is not an authoritative record")
+        if not isinstance(data, dict): raise RuntimeError(f"Upstox {context} is not an authoritative record")
         return dict(data)
     def _request_identity(self, request: BrokerOrderRequest) -> dict[str, str]:
         identity = {"broker_account_id": request.broker_account_id or self.config.broker_account_id,"broker_route": request.broker_route or self.config.broker_route,"broker_route_generation": request.broker_route_generation or self.config.broker_route_generation}
@@ -69,7 +80,7 @@ class UpstoxAdapter(BrokerAdapter):
             if expected is not None and identity[field] != expected: raise ValueError(f"Upstox {field} does not match configured route")
         return {k: str(v) for k, v in identity.items() if v is not None}
     def submit_order(self, request: BrokerOrderRequest) -> BrokerOrderUpdate:
-        self._require_live(); tag=self._validate_tag(request.client_order_id); quantity=self._validate_quantity(request.quantity); order_type=request.order_type.upper()
+        self._require_live(); self._validate_execution_contract(request); tag=self._validate_tag(request.client_order_id); quantity=self._validate_quantity(request.quantity); order_type=request.order_type.upper()
         if order_type in {"MARKET","SL-M"} and not (-1 <= self.config.market_protection <= 25): raise ValueError("Upstox market protection must be -1 or between 1 and 25")
         payload={"quantity":quantity,"product":{"INTRADAY":"I","I":"I","CNC":"D","D":"D","MTF":"MTF"}.get(request.product_type.upper(),request.product_type.upper()),"validity":request.validity.upper(),"price":float(request.price or 0),"tag":tag,"instrument_token":request.security_id,"order_type":order_type,"transaction_type":request.side.upper(),"disclosed_quantity":0,"trigger_price":float(request.trigger_price or request.stop or 0),"is_amo":False,"slice":self.config.slice_orders}
         if order_type in {"MARKET","SL-M"}: payload["market_protection"]=self.config.market_protection
@@ -79,7 +90,7 @@ class UpstoxAdapter(BrokerAdapter):
         raw={"order_id":str(order_ids[0]),"status":"NEW","client_order_id":tag,"symbol":request.symbol,"side":request.side.upper(),"quantity":quantity,"price":request.price,"message":";".join(map(str,order_ids)),**self._request_identity(request)}
         return normalize_broker_update(raw, expected=request)
     def find_order_by_client_id(self, client_order_id: str) -> dict[str, Any] | None:
-        self._require_live(); tag=self._validate_tag(client_order_id); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/history",headers=self._headers(),params={"tag":tag})
+        self._require_live(); tag=self._validate_tag(client_order_id); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/history",headers=self._headers(),params={"tag":tag});
         if getattr(response,"status_code",None)==404: return None
         response.raise_for_status(); body=response.json(); data=body.get("data",body)
         if isinstance(data,dict): data=data.get("orders",[data])
