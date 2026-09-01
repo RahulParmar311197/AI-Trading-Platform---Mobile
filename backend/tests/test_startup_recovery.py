@@ -65,3 +65,38 @@ def test_recovery_exception_fails_closed():
 
     assert coordinator.state == RecoveryState.FAILED
     assert not coordinator.execution_allowed
+
+
+def test_unknown_broker_position_side_fails_closed():
+    lifecycle = OrderLifecycle()
+    lifecycle.create("o1", "NIFTY", "BUY", 1)
+    lifecycle.transition("o1", OrderStatus.FILLED, 1, 100.0)
+    coordinator = StartupRecoveryCoordinator()
+
+    with pytest.raises(ValueError, match="unknown broker position side"):
+        coordinator.recover(
+            lifecycle,
+            lambda order: order,
+            broker_positions=[{"symbol": "NIFTY", "quantity": 1, "side": "MYSTERY"}],
+        )
+
+    assert coordinator.state == RecoveryState.FAILED
+    assert not coordinator.execution_allowed
+
+
+def test_unknown_local_position_side_fails_closed():
+    lifecycle = OrderLifecycle()
+    lifecycle.create("o1", "NIFTY", "BUY", 1)
+    lifecycle.transition("o1", OrderStatus.FILLED, 1, 100.0)
+    lifecycle.positions["NIFTY"].side = "MYSTERY"
+    coordinator = StartupRecoveryCoordinator()
+
+    with pytest.raises(ValueError, match="unknown local position side"):
+        coordinator.recover(
+            lifecycle,
+            lambda order: order,
+            broker_positions=[{"symbol": "NIFTY", "quantity": 1, "side": "BUY"}],
+        )
+
+    assert coordinator.state == RecoveryState.FAILED
+    assert not coordinator.execution_allowed
