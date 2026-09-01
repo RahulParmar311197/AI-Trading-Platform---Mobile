@@ -43,20 +43,37 @@ class StartupRecoveryCoordinator:
         result = {}
         for raw in positions:
             symbol = str(raw.get("symbol", raw.get("tradingsymbol", ""))).strip().upper()
-            if not symbol: raise ValueError("broker position is missing symbol")
+            if not symbol:
+                raise ValueError("broker position is missing symbol")
             side = str(raw.get("side", "")).strip().upper()
             quantity = float(raw.get("quantity", raw.get("net_quantity", raw.get("netQty", 0))) or 0)
-            if quantity < 0: raise ValueError(f"negative broker position quantity: {symbol}")
-            signed = -quantity if side in {"SELL", "SHORT"} else quantity
-            if abs(signed) > 1e-12: result[symbol] = result.get(symbol, 0.0) + signed
+            if quantity < 0:
+                raise ValueError(f"negative broker position quantity: {symbol}")
+            if side in {"SELL", "SHORT"}:
+                signed = -quantity
+            elif side in {"", "BUY", "LONG"}:
+                signed = quantity
+            else:
+                raise ValueError(f"unknown broker position side: {raw.get('side')}")
+            if abs(signed) > 1e-12:
+                result[symbol] = result.get(symbol, 0.0) + signed
         return result
 
     @classmethod
     def compare_positions(cls, local_positions, broker_positions, tolerance=1e-9):
         local = {}
         for symbol, position in local_positions.items():
+            side = str(position.side).strip().upper()
             quantity = float(position.quantity)
-            local[str(symbol).upper()] = quantity if str(position.side).upper() == "BUY" else -quantity
+            if quantity < 0:
+                raise ValueError(f"negative local position quantity: {symbol}")
+            if side in {"BUY", "LONG"}:
+                signed = quantity
+            elif side in {"SELL", "SHORT"}:
+                signed = -quantity
+            else:
+                raise ValueError(f"unknown local position side: {position.side}")
+            local[str(symbol).upper()] = signed
         broker = cls._position_map(broker_positions)
         return tuple(f"{symbol}: local={local.get(symbol, 0.0)} broker={broker.get(symbol, 0.0)}" for symbol in sorted(set(local) | set(broker)) if abs(local.get(symbol, 0.0) - broker.get(symbol, 0.0)) > tolerance)
 
