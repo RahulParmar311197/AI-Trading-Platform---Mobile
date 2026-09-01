@@ -69,6 +69,10 @@ Last maintained: 2026-09-01
 - [x] Connected the existing Upstox broker historical rows to the canonical `HistoricalMarketDataProvider` contract through `UpstoxHistoricalMarketDataProvider`.
 - [x] Added canonical timestamp normalization, timeframe mapping, date-range filtering, Candle validation, chronological ordering, and timestamp deduplication for Upstox historical data.
 - [x] Added regression coverage for the Upstox historical-to-canonical-Candle bridge.
+- [x] Added canonical tick-to-candle aggregation over the existing realtime `Tick` contract.
+- [x] Added regression coverage for realtime candle aggregation invariants.
+- [x] Hardened realtime subscriber fan-out with bounded queues and atomic fail-closed backpressure; ticks are never silently dropped when a subscriber is saturated.
+- [x] Added regression coverage for bounded realtime backpressure, atomic publish failure, and queue-size validation.
 
 ### Reconciliation / recovery findings
 - [x] Verified `broker_reconciliation.py` remains the pure broker/local validation and invariant engine.
@@ -141,7 +145,8 @@ Last maintained: 2026-09-01
 - [ ] Portfolio/position/P&L accounting audit.
 - [ ] Paper/sandbox/live mode separation audit.
 - [x] Connect broker historical candles to the existing canonical `MarketDataProvider` / validated `Candle[]` pipeline.
-- [ ] Add live/intraday candle ingestion or stream integration using the same canonical candle contract.
+- [x] Add provider-neutral realtime tick fan-out and canonical tick-to-candle aggregation.
+- [ ] Add broker live/intraday stream transport integration using the same canonical tick contract.
 
 ### P1 — Broker coverage
 - [ ] Audit broker adapters and capability declarations.
