@@ -77,6 +77,7 @@ Last maintained: 2026-09-01
 - [x] Added regression coverage proving account-bound timeout-after-acceptance recovery preserves canonical broker route identity.
 - [x] Hardened durable reservation reconciliation to validate all active reservation-to-broker matches before applying any reservation mutation.
 - [x] Added regression coverage for orphaned reservations, ambiguous matches, and incomplete partial-fill facts.
+- [x] Added the ambiguous submission recovery regression matrix covering missing matches, duplicate matches, account mismatch, payload mismatch, incomplete broker identity, and successful durable binding/resolution.
 
 ### Broker adapter hardening
 - [x] Dhan submission results now pass the canonical broker-update normalization contract with request/account/route identity preserved.
@@ -111,9 +112,9 @@ Last maintained: 2026-09-01
 - [x] Replace API/manual-order-only in-memory exposure reservation with the canonical durable `RiskReservationStore` where the execution path has sufficient authoritative exposure inputs.
 
 ### P1 — Reliability / recovery
-- [ ] Validate ambiguous broker submission recovery end-to-end.
+- [ ] Validate ambiguous broker submission recovery end-to-end in runtime/CI.
 - [x] Validate submission-intent uniqueness and fingerprint mismatch behavior under concurrency.
-- [ ] Validate startup reconciliation and recovery jobs.
+- [ ] Validate startup reconciliation and recovery jobs in runtime/CI.
 - [ ] Validate stale reservation recovery policy and observability.
 
 ### P1 — Trading-system completeness
