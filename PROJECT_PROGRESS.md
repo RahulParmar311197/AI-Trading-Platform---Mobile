@@ -2,7 +2,7 @@
 
 > Persistent execution tracker. **Rule: before every next implementation step, re-check this file and the repository call graph to avoid duplicate/loop work.**
 
-Last maintained: 2026-09-01
+Last maintained: 2026-09-02
 
 ## Current verified additions
 - [x] Upstox V3 realtime market stream transport boundary exists and normalizes broker payloads into the canonical `Tick` contract.
@@ -29,6 +29,8 @@ Last maintained: 2026-09-01
 - [x] Regression coverage added for coordinator submission-intent recovery, missing matches, and ambiguous duplicate matches.
 - [x] Authoritative risk-reservation reconciliation now requires explicit `remaining_exposure` for partial fills; it no longer derives monetary reservation exposure from broker quantity/filled-quantity fields.
 - [x] Regression coverage proves missing/invalid/increasing remaining exposure fails closed without mutating the reservation.
+- [x] Risk reservations now permanently reject reuse of a previously consumed terminal `client_order_id`, preventing old broker lifecycle records from being rebound to a new order identity.
+- [x] Regression coverage verifies terminal client-order identity cannot be reused.
 
 ## Pending — ordered by priority
 
