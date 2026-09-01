@@ -52,7 +52,7 @@ Last maintained: 2026-09-01
 
 ### Market-data / AI pipeline findings
 - [x] Confirmed canonical `Candle` / `MarketTick` / `MarketDataProvider` contract already exists.
-- [x] Confirmed AI feature and SMC/technical signal layers consume canonical `Candle[]` directly.
+- [x] Confirmed AI feature and SMC/ICT/technical signal layers consume canonical `Candle[]` directly.
 - [x] Confirmed AI market analyst is grounded on deterministic signal snapshots and cannot place orders.
 - [x] Confirmed deterministic position sizing already exists and is used by `AITradeIntent`.
 - [x] Confirmed canonical AI execution bridge already reaches the existing execution authorization/gateway stack.
@@ -107,8 +107,8 @@ Last maintained: 2026-09-01
 - [x] Validate reconciliation/order lifecycle integration: broker reconciliation validates authoritative state, durable submission-intent recovery resolves unresolved intents from broker snapshots, and canonical `OrderLifecycle` remains the only order-state transition owner.
 
 ### P0 — Production execution integration
-- [ ] Trace all API/order entrypoints to the actual broker gateway.
-- [ ] Verify AI-generated orders cannot bypass risk, authorization, reservation, or reconciliation.
+- [x] Trace all API/order entrypoints to the actual broker gateway.
+- [x] Verify AI-generated orders cannot bypass risk, authorization, reservation, or reconciliation.
 - [x] Verify non-AI/manual order paths now use the same durable reservation authority as the canonical AI path.
 - [x] Verify all configured broker adapters conform to the same execution contract.
 - [x] Replace API/manual-order-only in-memory exposure reservation with the canonical durable `RiskReservationStore` where the execution path has sufficient authoritative exposure inputs.
