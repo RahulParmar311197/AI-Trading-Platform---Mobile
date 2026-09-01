@@ -41,23 +41,25 @@ def backtest(symbol: str = "NIFTY", bars: int = 1000, capital: float = 100000, r
         raise HTTPException(status_code=422, detail="capital must be positive")
     if not 0 < risk_percent <= 100:
         raise HTTPException(status_code=422, detail="risk_percent must be greater than 0 and at most 100")
+
     bounded_bars = min(max(bars, 50), 2000)
     raw = demo_candles(symbol, bounded_bars)
     candles = [_to_candle(item, symbol) for item in raw]
-    result = CandleBacktester(
-        BacktestConfig(initial_equity=capital, signal_min_score=2)
-    ).run(candles)
+    result = CandleBacktester(BacktestConfig(initial_equity=capital)).run(candles)
+    journal = list(result.trades)
+    trade_pnls = [float(item.get("pnl", 0.0)) for item in journal if isinstance(item, dict)]
     metrics = calculate_performance_metrics(
         result.equity_curve,
-        [trade.pnl for trade in result.trades],
+        trade_pnls,
         initial_equity=result.initial_equity,
     )
     return {
         "initial_equity": result.initial_equity,
         "final_equity": result.final_equity,
-        "net_pnl": result.net_pnl,
-        "gross_pnl": result.gross_pnl,
-        "fees": result.fees,
+        "net_pnl": result.final_equity - result.initial_equity,
+        "gross_pnl": metrics.gross_profit - metrics.gross_loss,
+        "fees": 0.0,
         "equity_curve": list(result.equity_curve),
         "metrics": metrics,
+        "trades": journal,
     }
