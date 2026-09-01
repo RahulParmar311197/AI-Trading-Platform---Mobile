@@ -1,10 +1,14 @@
 import pytest
 
-from app.broker_adapter import BrokerOrderRequest
 from app.broker_router import BrokerRoute, BrokerRouter
 from app.broker_snapshot import BrokerSnapshot
 from app.safety_state import SafetyStateStore
 from app.submission_intent_store import SubmissionIntentStore
+
+
+class AuthoritativeSnapshot(BrokerSnapshot):
+    def require_authoritative(self):
+        return self.orders
 
 
 class SnapshotBroker:
@@ -12,7 +16,7 @@ class SnapshotBroker:
         self.orders = list(orders)
 
     def get_order_snapshot(self):
-        return BrokerSnapshot(orders=list(self.orders), positions=[])
+        return AuthoritativeSnapshot(orders=list(self.orders), positions=[])
 
 
 def _router(tmp_path, orders):
@@ -28,11 +32,15 @@ def _router(tmp_path, orders):
     return router, intents, safety
 
 
-def _intent(intents, client_id="client-1"):
+def fingerprint(client_id):
+    return f"fingerprint-{client_id}"
+
+
+def _intent(intents, client_id="client-1", account_id="acct-1"):
     return intents.create(
         client_order_id=client_id,
         route="paper",
-        account_id="acct-1",
+        account_id=account_id,
         symbol="NIFTY",
         side="BUY",
         quantity=2,
@@ -40,21 +48,8 @@ def _intent(intents, client_id="client-1"):
     )
 
 
-def fingerprint(client_id):
-    return f"fingerprint-{client_id}"
-
-
 def test_recovery_requires_exactly_one_broker_match(tmp_path):
-    router, intents, safety = _router(
-        tmp_path,
-        [
-            {
-                "client_order_id": "other",
-                "order_id": "broker-1",
-                "status": "NEW",
-            }
-        ],
-    )
+    router, intents, safety = _router(tmp_path, [{"client_order_id": "other", "order_id": "broker-1", "status": "NEW"}])
     _intent(intents)
 
     resolved = router.reconcile_unresolved_submission_intents()
@@ -80,28 +75,8 @@ def test_recovery_rejects_duplicate_broker_matches(tmp_path):
 
 
 def test_recovery_rejects_account_mismatch(tmp_path):
-    router, intents, safety = _router(
-        tmp_path,
-        [
-            {
-                "client_order_id": "client-1",
-                "order_id": "broker-1",
-                "status": "NEW",
-                "symbol": "NIFTY",
-                "side": "BUY",
-                "quantity": 2,
-            }
-        ],
-    )
-    intents.create(
-        client_order_id="client-1",
-        route="paper",
-        account_id="acct-other",
-        symbol="NIFTY",
-        side="BUY",
-        quantity=2,
-        request_fingerprint=fingerprint("client-1"),
-    )
+    router, intents, safety = _router(tmp_path, [{"client_order_id": "client-1", "order_id": "broker-1", "status": "NEW", "symbol": "NIFTY", "side": "BUY", "quantity": 2}])
+    _intent(intents, account_id="acct-other")
     router.routes["paper"] = BrokerRoute("paper", router.routes["paper"].adapter, broker_account_id="acct-1", generation="gen-1")
 
     with pytest.raises(RuntimeError, match="account mismatch"):
@@ -112,19 +87,7 @@ def test_recovery_rejects_account_mismatch(tmp_path):
 
 
 def test_recovery_rejects_payload_identity_mismatch(tmp_path):
-    router, intents, safety = _router(
-        tmp_path,
-        [
-            {
-                "client_order_id": "client-1",
-                "order_id": "broker-1",
-                "status": "NEW",
-                "symbol": "BANKNIFTY",
-                "side": "BUY",
-                "quantity": 2,
-            }
-        ],
-    )
+    router, intents, safety = _router(tmp_path, [{"client_order_id": "client-1", "order_id": "broker-1", "status": "NEW", "symbol": "BANKNIFTY", "side": "BUY", "quantity": 2}])
     _intent(intents)
 
     with pytest.raises(RuntimeError, match="payload mismatch"):
@@ -135,19 +98,7 @@ def test_recovery_rejects_payload_identity_mismatch(tmp_path):
 
 
 def test_recovery_rejects_incomplete_broker_identity_before_resolution(tmp_path):
-    router, intents, safety = _router(
-        tmp_path,
-        [
-            {
-                "client_order_id": "client-1",
-                "order_id": "",
-                "status": "NEW",
-                "symbol": "NIFTY",
-                "side": "BUY",
-                "quantity": 2,
-            }
-        ],
-    )
+    router, intents, safety = _router(tmp_path, [{"client_order_id": "client-1", "order_id": "", "status": "NEW", "symbol": "NIFTY", "side": "BUY", "quantity": 2}])
     _intent(intents)
 
     with pytest.raises(RuntimeError, match="incomplete broker recovery payload"):
@@ -158,23 +109,10 @@ def test_recovery_rejects_incomplete_broker_identity_before_resolution(tmp_path)
 
 
 def test_recovery_binds_and_resolves_one_valid_match(tmp_path):
-    router, intents, safety = _router(
-        tmp_path,
-        [
-            {
-                "client_order_id": "client-1",
-                "order_id": "broker-1",
-                "status": "NEW",
-                "symbol": "NIFTY",
-                "side": "BUY",
-                "quantity": 2,
-            }
-        ],
-    )
+    router, intents, safety = _router(tmp_path, [{"client_order_id": "client-1", "order_id": "broker-1", "status": "NEW", "symbol": "NIFTY", "side": "BUY", "quantity": 2}])
     _intent(intents)
 
     assert router.reconcile_unresolved_submission_intents() == ["client-1"]
     assert intents.unresolved_count() == 0
     assert safety.load().trading_halted is False
-    resolved = intents.get_unresolved("client-1")
-    assert resolved is None
+    assert intents.get_unresolved("client-1") is None
