@@ -174,43 +174,6 @@ class SubmissionIntentStore:
         finally:
             session.close()
 
-    @staticmethod
-    def _broker_identity(row: dict) -> tuple[str, str] | None:
-        client = str(row.get("client_order_id") or "").strip()
-        broker = str(row.get("broker_order_id") or row.get("order_id") or "").strip()
-        if not client or not broker:
-            return None
-        return client, broker
-
-    def recover_from_broker_orders(self, broker_orders: list[dict]) -> int:
-        """Resolve only unresolved intents that have an authoritative broker match.
-
-        This operation is deliberately idempotent: resolved intents are invisible to
-        the unresolved set, and a pre-existing broker binding must match exactly.
-        """
-        recovered = 0
-        candidates = {}
-        for row in broker_orders:
-            identity = self._broker_identity(row)
-            if identity is None:
-                continue
-            client_order_id, broker_order_id = identity
-            if client_order_id in candidates and candidates[client_order_id][0] != broker_order_id:
-                raise RuntimeError("broker snapshot contains conflicting broker orders for one client order")
-            candidates[client_order_id] = (broker_order_id, str(row.get("status") or "").upper())
-
-        for intent in self.unresolved():
-            match = candidates.get(intent.client_order_id)
-            if match is None:
-                continue
-            broker_order_id, broker_status = match
-            if intent.account_id is not None and not str(intent.account_id).strip():
-                raise RuntimeError("submission intent has invalid account identity")
-            self.record_broker_order(intent.client_order_id, broker_order_id, broker_status)
-            self.resolve(intent.client_order_id)
-            recovered += 1
-        return recovered
-
     def get_unresolved(self, client_order_id: str) -> SubmissionIntent | None:
         """Return one unresolved intent without treating resolved state as recoverable."""
         client_order_id = str(client_order_id).strip()
