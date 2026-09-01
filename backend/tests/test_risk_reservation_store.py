@@ -79,6 +79,18 @@ def test_duplicate_active_client_order_is_rejected(tmp_path: Path):
         )
 
 
+def test_terminal_client_order_id_cannot_be_reused(tmp_path: Path):
+    store = _store(tmp_path)
+    _reserve(store, reservation_id="r1", client_order_id="c1", amount=10)
+    assert store.reconcile(reservation_id="r1", broker_status="FILLED") == store.RELEASED
+    with pytest.raises(RuntimeError, match="already been used"):
+        store.reserve(
+            reservation_id="r2", client_order_id="c1", broker_account_id="001",
+            broker_route="upstox", amount=10, current_exposure=0, max_total_exposure=100,
+        )
+    assert store.active_amount(broker_account_id="001", broker_route="upstox") == 0
+
+
 def test_filled_cancelled_or_rejected_releases_reservation(tmp_path: Path):
     for status in ("FILLED", "CANCELLED", "REJECTED"):
         store = _store(tmp_path / status.lower())
