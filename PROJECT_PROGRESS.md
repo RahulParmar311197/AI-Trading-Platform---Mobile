@@ -31,6 +31,8 @@ Last maintained: 2026-09-02
 - [x] Regression coverage proves missing/invalid/increasing remaining exposure fails closed without mutating the reservation.
 - [x] Risk reservations now permanently reject reuse of a previously consumed terminal `client_order_id`, preventing old broker lifecycle records from being rebound to a new order identity.
 - [x] Regression coverage verifies terminal client-order identity cannot be reused.
+- [x] Authoritative risk reconciliation now requires broker order account and route identity to exactly match the reconciled scope before any reservation mutation.
+- [x] Regression coverage verifies missing, cross-account, and cross-route broker identity fails closed without releasing or resizing risk.
 
 ## Pending — ordered by priority
 
