@@ -9,6 +9,7 @@ from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 
 from app.models.risk_reservation import RiskReservationRecord
+from app.trading_audit import TradingAuditLog
 
 
 class RiskReservationStore:
@@ -19,8 +20,9 @@ class RiskReservationStore:
     TERMINAL = {"FILLED", "CANCELLED", "REJECTED"}
     ACTIVE_BROKER_STATUSES = {"NEW", "SUBMITTED", "OPEN", "ACCEPTED", "PENDING", "PENDING_NEW", "TRIGGER_PENDING", "PARTIALLY_FILLED"}
 
-    def __init__(self, session_factory: Callable[[], object]) -> None:
+    def __init__(self, session_factory: Callable[[], object], audit_log: TradingAuditLog | None = None) -> None:
         self._session_factory = session_factory
+        self._audit_log = audit_log
 
     @staticmethod
     def _scope(account_id: str, route: str) -> str:
@@ -134,7 +136,10 @@ class RiskReservationStore:
             if account is not None: query = query.filter(RiskReservationRecord.broker_account_id == account)
             if route is not None: query = query.filter(RiskReservationRecord.broker_route == route)
             records = query.order_by(RiskReservationRecord.created_at.asc()).all()
-            return [{"reservation_id": r.reservation_id, "client_order_id": r.client_order_id, "broker_account_id": r.broker_account_id, "broker_route": r.broker_route, "amount": float(r.amount), "created_at": r.created_at, "age_seconds": max(0.0, (now-r.created_at).total_seconds()), "reason": "STALE_RISK_RESERVATION_REQUIRES_BROKER_RECONCILIATION"} for r in records]
+            candidates = [{"reservation_id": r.reservation_id, "client_order_id": r.client_order_id, "broker_account_id": r.broker_account_id, "broker_route": r.broker_route, "amount": float(r.amount), "created_at": r.created_at, "age_seconds": max(0.0, (now-r.created_at).total_seconds()), "reason": "STALE_RISK_RESERVATION_REQUIRES_BROKER_RECONCILIATION"} for r in records]
+            if candidates and self._audit_log is not None:
+                self._audit_log.record("STALE_RISK_RESERVATIONS_DETECTED", reason="stale reservations require authoritative broker reconciliation", metadata={"count": len(candidates), "reservation_ids": [x["reservation_id"] for x in candidates], "broker_account_id": account, "broker_route": route})
+            return candidates
         finally: session.close()
 
     def recover_stale_reservations(self, *, broker_orders: list[dict], broker_account_id: str, broker_route: str, max_age: timedelta, as_of: datetime | None = None) -> dict:
@@ -150,6 +155,8 @@ class RiskReservationStore:
             return {"candidates": [], "failures": [], "reconciled_reservation_ids": []}
         failures = self.reconcile_authoritative_orders(broker_orders=broker_orders, broker_account_id=account, broker_route=route)
         if failures:
+            if self._audit_log is not None:
+                self._audit_log.record("STALE_RISK_RESERVATION_RECOVERY_FAILED", reason="authoritative broker reconciliation failed", metadata={"candidate_count": len(candidates), "failures": failures, "broker_account_id": account, "broker_route": route})
             return {"candidates": candidates, "failures": failures, "reconciled_reservation_ids": []}
         session = self._session_factory()
         try:
@@ -158,7 +165,10 @@ class RiskReservationStore:
                 record = session.get(RiskReservationRecord, candidate["reservation_id"])
                 if record is None or record.status != self.ACTIVE:
                     reconciled_ids.append(candidate["reservation_id"])
-            return {"candidates": candidates, "failures": [], "reconciled_reservation_ids": reconciled_ids}
+            result = {"candidates": candidates, "failures": [], "reconciled_reservation_ids": reconciled_ids}
+            if self._audit_log is not None:
+                self._audit_log.record("STALE_RISK_RESERVATION_RECOVERY_COMPLETED", reason="stale reservations reconciled from authoritative broker snapshot", metadata={"candidate_count": len(candidates), "reconciled_reservation_ids": reconciled_ids, "broker_account_id": account, "broker_route": route})
+            return result
         finally: session.close()
 
     def reconcile_authoritative_orders(self, *, broker_orders: list[dict], broker_account_id: str, broker_route: str) -> list[dict]:
