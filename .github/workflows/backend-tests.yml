@@ -36,6 +36,7 @@ jobs:
       PYTHONPATH: .:..
       BROKER_CONTEXT_ATTESTATION_SECRET: ci-test-broker-context-attestation-secret-0123456789abcdef
       TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/trading_test
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/trading_test
 
     steps:
       - name: Checkout
@@ -57,6 +58,12 @@ jobs:
       - name: Import smoke test
         run: |
           python -c "import app.app_factory; import app.api.orders; import app.api.ensemble"
+
+      - name: Apply database migrations
+        run: alembic upgrade head
+
+      - name: Verify migration metadata is current
+        run: alembic check
 
       - name: Run tests
         run: pytest -q
