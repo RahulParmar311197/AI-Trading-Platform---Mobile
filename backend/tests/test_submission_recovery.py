@@ -29,6 +29,10 @@ class FakeBroker:
         return None
 
 
+class NoClientIdLookupBroker:
+    pass
+
+
 def _store(tmp_path: Path) -> SubmissionIntentStore:
     engine = create_engine(f"sqlite:///{tmp_path / 'recovery.db'}")
     Base.metadata.create_all(engine, tables=[SubmissionIntentRecord.__table__])
@@ -98,6 +102,21 @@ def test_bound_order_failure_does_not_fallback_to_client_id(tmp_path: Path):
     assert broker.find_calls == []
 
 
+def test_unbound_intent_requires_authoritative_client_id_lookup(tmp_path: Path):
+    store = _store(tmp_path)
+    store.create(
+        client_order_id="cli-1", route="upstox", account_id="001", symbol="NIFTY",
+        side="BUY", quantity=10, request_fingerprint="fp-1",
+    )
+
+    with pytest.raises(SubmissionRecoveryError, match="requires authoritative client-order-id lookup capability"):
+        recover_submission(_request(), executor=NoClientIdLookupBroker(), intent_store=store)
+
+    intent = store.get_unresolved("cli-1")
+    assert intent is not None
+    assert intent.broker_order_id is None
+
+
 def test_unbound_intent_establishes_binding_from_exact_client_id_match(tmp_path: Path):
     store = _store(tmp_path)
     store.create(
@@ -112,4 +131,4 @@ def test_unbound_intent_establishes_binding_from_exact_client_id_match(tmp_path:
     assert result is not None
     assert result.order_id == "broker-99"
     assert broker.find_calls == ["cli-1"]
-    assert store.get_unresolved("cli-1").broker_order_id == "broker-99"
+    assert store.get_unresolved("cli-1") is None
