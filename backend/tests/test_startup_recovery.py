@@ -17,7 +17,12 @@ def test_clean_startup_recovery_unlocks_execution():
     lifecycle.transition("o1", OrderStatus.FILLED, 1, 100.0)
     coordinator = StartupRecoveryCoordinator()
 
-    result = coordinator.recover(lifecycle, lambda order: order)
+    result = coordinator.recover(
+        lifecycle,
+        lambda order: order,
+        broker_orders=[],
+        broker_positions=[{"symbol": "NIFTY", "quantity": 1, "side": "BUY"}],
+    )
 
     assert result.state == RecoveryState.READY
     assert coordinator.execution_allowed
@@ -47,7 +52,12 @@ def test_reconciled_working_order_can_unlock_execution():
         lifecycle.transition(order.order_id, OrderStatus.FILLED, 1, 101.0)
         return lifecycle.orders[order.order_id]
 
-    result = coordinator.recover(lifecycle, reconcile)
+    result = coordinator.recover(
+        lifecycle,
+        reconcile,
+        broker_orders=[],
+        broker_positions=[{"symbol": "NIFTY", "quantity": 1, "side": "BUY"}],
+    )
 
     assert result.state == RecoveryState.READY
     assert coordinator.execution_allowed
@@ -67,6 +77,23 @@ def test_recovery_exception_fails_closed():
     assert not coordinator.execution_allowed
 
 
+def test_missing_broker_order_snapshot_fails_closed():
+    lifecycle = OrderLifecycle()
+    lifecycle.create("o1", "NIFTY", "BUY", 1)
+    lifecycle.transition("o1", OrderStatus.FILLED, 1, 100.0)
+    coordinator = StartupRecoveryCoordinator()
+
+    result = coordinator.recover(
+        lifecycle,
+        lambda order: order,
+        broker_positions=[{"symbol": "NIFTY", "quantity": 1, "side": "BUY"}],
+    )
+
+    assert result.state == RecoveryState.FAILED
+    assert result.reason == "broker order snapshot unavailable"
+    assert not coordinator.execution_allowed
+
+
 def test_unknown_broker_position_side_fails_closed():
     lifecycle = OrderLifecycle()
     lifecycle.create("o1", "NIFTY", "BUY", 1)
@@ -77,6 +104,7 @@ def test_unknown_broker_position_side_fails_closed():
         coordinator.recover(
             lifecycle,
             lambda order: order,
+            broker_orders=[],
             broker_positions=[{"symbol": "NIFTY", "quantity": 1, "side": "MYSTERY"}],
         )
 
@@ -95,6 +123,7 @@ def test_unknown_local_position_side_fails_closed():
         coordinator.recover(
             lifecycle,
             lambda order: order,
+            broker_orders=[],
             broker_positions=[{"symbol": "NIFTY", "quantity": 1, "side": "BUY"}],
         )
 
