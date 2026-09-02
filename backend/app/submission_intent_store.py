@@ -92,29 +92,25 @@ class SubmissionIntentStore:
             try:
                 with session.begin():
                     existing = session.get(SubmissionIntentRecord, client_order_id)
-                    if existing is not None and existing.resolved_at is None:
-                        return self._validate_replay(self._to_intent(existing), request_fingerprint)
                     if existing is not None:
-                        existing.route, existing.account_id = route, account_id
-                        existing.symbol, existing.side = symbol.upper(), side.upper()
-                        existing.quantity, existing.request_fingerprint = quantity, request_fingerprint
-                        existing.created_at, existing.resolved_at = created_at, None
-                        existing.broker_order_id, existing.broker_status, existing.recovered_at = None, None, None
-                        record = existing
-                    else:
-                        record = SubmissionIntentRecord(
-                            client_order_id=client_order_id, route=route, account_id=account_id,
-                            symbol=symbol.upper(), side=side.upper(), quantity=quantity,
-                            request_fingerprint=request_fingerprint, created_at=created_at,
-                        )
-                        session.add(record)
+                        if existing.resolved_at is None:
+                            return self._validate_replay(self._to_intent(existing), request_fingerprint)
+                        raise RuntimeError("submission client_order_id has already been resolved and cannot be reused")
+                    record = SubmissionIntentRecord(
+                        client_order_id=client_order_id, route=route, account_id=account_id,
+                        symbol=symbol.upper(), side=side.upper(), quantity=quantity,
+                        request_fingerprint=request_fingerprint, created_at=created_at,
+                    )
+                    session.add(record)
                     session.flush()
                     return self._to_intent(record)
             except IntegrityError:
                 session.rollback()
                 existing = session.get(SubmissionIntentRecord, client_order_id)
-                if existing is None or existing.resolved_at is not None:
+                if existing is None:
                     raise RuntimeError("submission intent creation conflicted with an unavailable record")
+                if existing.resolved_at is not None:
+                    raise RuntimeError("submission client_order_id has already been resolved and cannot be reused")
                 return self._validate_replay(self._to_intent(existing), request_fingerprint)
         finally:
             session.close()
@@ -256,8 +252,10 @@ class SubmissionIntentStore:
         with self._lock, self._process_lock(exclusive=True):
             data = self._load_unlocked()
             existing = data.get(client_order_id)
-            if existing is not None and existing.get("resolved_at") is None:
-                return self._validate_replay(SubmissionIntent(**existing), request_fingerprint)
+            if existing is not None:
+                if existing.get("resolved_at") is None:
+                    return self._validate_replay(SubmissionIntent(**existing), request_fingerprint)
+                raise RuntimeError("submission client_order_id has already been resolved and cannot be reused")
             intent = SubmissionIntent(client_order_id=client_order_id, route=route, account_id=account_id, symbol=symbol.upper(), side=side.upper(), quantity=float(quantity), request_fingerprint=request_fingerprint, created_at=datetime.now(timezone.utc).isoformat())
             data[client_order_id] = asdict(intent); self._save_unlocked(data); return intent
 
