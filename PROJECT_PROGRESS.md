@@ -14,11 +14,13 @@ Last maintained: 2026-09-02
 - [x] Regression coverage verifies missing/unknown broker order status fails closed and known terminal status remains non-live.
 - [x] Startup recovery now requires an authoritative broker order snapshot before execution can become READY; missing order state fails closed.
 - [x] Regression coverage verifies missing broker order snapshot keeps execution locked.
-- [x] Dedicated PostgreSQL reconciliation-safety CI gate runs ambiguous-submission, startup-recovery, and risk-reservation regression suites after migrations.
+- [x] Dedicated PostgreSQL reconciliation-safety CI gate runs ambiguous-submission, startup-recovery, risk-reservation, and stale-reservation regression suites after migrations.
 - [x] Canonical broker snapshot status normalization now rejects missing/unknown statuses before Dhan snapshots enter reconciliation.
 - [x] Regression coverage verifies canonical broker status normalization and fail-closed Dhan snapshot mapping.
 - [x] Risk reservation authoritative reconciliation now rejects malformed/non-list broker snapshots before any risk reservation mutation.
 - [x] Regression coverage verifies malformed/non-dict broker snapshot records fail closed without changing active risk.
+- [x] Stale risk-reservation recovery now fails closed when a stale candidate remains ACTIVE after authoritative reconciliation; completion audit is withheld on that path.
+- [x] Regression coverage verifies stale reservation release, missing matches, orphan broker orders, partial-fill resize, recovery audit events, and still-active fail-closed completion.
 
 ## Pending — ordered by priority
 
