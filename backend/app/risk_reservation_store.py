@@ -163,10 +163,18 @@ class RiskReservationStore:
         session = self._session_factory()
         try:
             reconciled_ids = []
+            still_active_ids = []
             for candidate in candidates:
                 record = session.get(RiskReservationRecord, candidate["reservation_id"])
                 if record is None or record.status != self.ACTIVE:
                     reconciled_ids.append(candidate["reservation_id"])
+                else:
+                    still_active_ids.append(candidate["reservation_id"])
+            if still_active_ids:
+                failures = [{"id": reservation_id, "reason": "STALE_RISK_RESERVATION_STILL_ACTIVE_AFTER_RECONCILIATION"} for reservation_id in still_active_ids]
+                if self._audit_log is not None:
+                    self._audit_log.record("STALE_RISK_RESERVATION_RECOVERY_FAILED", reason="stale reservations remained active after authoritative broker reconciliation", metadata={"candidate_count": len(candidates), "reconciled_reservation_ids": reconciled_ids, "still_active_reservation_ids": still_active_ids, "broker_account_id": account, "broker_route": route})
+                return {"candidates": candidates, "failures": failures, "reconciled_reservation_ids": reconciled_ids}
             result = {"candidates": candidates, "failures": [], "reconciled_reservation_ids": reconciled_ids}
             if self._audit_log is not None:
                 self._audit_log.record("STALE_RISK_RESERVATION_RECOVERY_COMPLETED", reason="stale reservations reconciled from authoritative broker snapshot", metadata={"candidate_count": len(candidates), "reconciled_reservation_ids": reconciled_ids, "broker_account_id": account, "broker_route": route})
