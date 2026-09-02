@@ -41,10 +41,14 @@ class StartupRecoveryCoordinator:
     @staticmethod
     def _position_map(positions):
         result = {}
+        seen_symbols = set()
         for raw in positions:
             symbol = str(raw.get("symbol", raw.get("tradingsymbol", ""))).strip().upper()
             if not symbol:
                 raise ValueError("broker position is missing symbol")
+            if symbol in seen_symbols:
+                raise ValueError(f"duplicate broker position symbol: {symbol}")
+            seen_symbols.add(symbol)
             side = str(raw.get("side", "")).strip().upper()
             quantity = float(raw.get("quantity", raw.get("net_quantity", raw.get("netQty", 0))) or 0)
             if quantity < 0:
@@ -56,7 +60,7 @@ class StartupRecoveryCoordinator:
             else:
                 raise ValueError(f"unknown broker position side: {raw.get('side')}")
             if abs(signed) > 1e-12:
-                result[symbol] = result.get(symbol, 0.0) + signed
+                result[symbol] = signed
         return result
 
     @classmethod
