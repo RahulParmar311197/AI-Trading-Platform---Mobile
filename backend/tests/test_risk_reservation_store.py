@@ -246,6 +246,45 @@ def test_authoritative_reconciliation_rejects_duplicate_broker_order_id_across_s
     assert store.active_amount(broker_account_id="001", broker_route="upstox") == 1000
 
 
+def test_authoritative_reconciliation_rejects_non_dict_snapshot_record_without_mutation(tmp_path: Path):
+    store = _store(tmp_path)
+    _reserve(store, amount=1000)
+    failures = store.reconcile_authoritative_orders(
+        broker_orders=[None],
+        broker_account_id="001",
+        broker_route="upstox",
+    )
+    assert failures == [{"id": "0", "reason": "RISK_RESERVATION_BROKER_RECORD_INVALID"}]
+    assert store.active_amount(broker_account_id="001", broker_route="upstox") == 1000
+
+
+def test_authoritative_reconciliation_rejects_malformed_record_without_mutation(tmp_path: Path):
+    store = _store(tmp_path)
+    _reserve(store, amount=1000)
+    failures = store.reconcile_authoritative_orders(
+        broker_orders=[{"client_order_id": "c1", "status": "FILLED"}],
+        broker_account_id="001",
+        broker_route="upstox",
+    )
+    assert {failure["reason"] for failure in failures} == {
+        "RISK_RESERVATION_BROKER_ORDER_ID_MISSING",
+        "RISK_RESERVATION_BROKER_IDENTITY_MISSING",
+    }
+    assert store.active_amount(broker_account_id="001", broker_route="upstox") == 1000
+
+
+def test_authoritative_reconciliation_rejects_non_list_snapshot_without_mutation(tmp_path: Path):
+    store = _store(tmp_path)
+    _reserve(store, amount=1000)
+    failures = store.reconcile_authoritative_orders(
+        broker_orders={"client_order_id": "c1"},
+        broker_account_id="001",
+        broker_route="upstox",
+    )
+    assert failures == [{"id": "broker_orders", "reason": "RISK_RESERVATION_BROKER_SNAPSHOT_INVALID"}]
+    assert store.active_amount(broker_account_id="001", broker_route="upstox") == 1000
+
+
 def test_release_refreshes_reservation_after_scope_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     store = _store(tmp_path)
     _reserve(store, amount=20)
