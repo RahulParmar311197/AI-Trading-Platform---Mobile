@@ -100,3 +100,56 @@ def test_unknown_local_position_side_fails_closed():
 
     assert coordinator.state == RecoveryState.FAILED
     assert not coordinator.execution_allowed
+
+
+def test_broker_order_missing_status_fails_closed():
+    lifecycle = OrderLifecycle()
+    lifecycle.create("o1", "NIFTY", "BUY", 1)
+    lifecycle.transition("o1", OrderStatus.FILLED, 1, 100.0)
+    coordinator = StartupRecoveryCoordinator()
+
+    with pytest.raises(ValueError, match="missing status"):
+        coordinator.recover(
+            lifecycle,
+            lambda order: order,
+            broker_positions=[{"symbol": "NIFTY", "quantity": 1, "side": "BUY"}],
+            broker_orders=[{"order_id": "b1"}],
+        )
+
+    assert coordinator.state == RecoveryState.FAILED
+    assert not coordinator.execution_allowed
+
+
+def test_unknown_broker_order_status_fails_closed():
+    lifecycle = OrderLifecycle()
+    lifecycle.create("o1", "NIFTY", "BUY", 1)
+    lifecycle.transition("o1", OrderStatus.FILLED, 1, 100.0)
+    coordinator = StartupRecoveryCoordinator()
+
+    with pytest.raises(ValueError, match="unknown broker order status"):
+        coordinator.recover(
+            lifecycle,
+            lambda order: order,
+            broker_positions=[{"symbol": "NIFTY", "quantity": 1, "side": "BUY"}],
+            broker_orders=[{"order_id": "b1", "status": "BROKER_INVENTED_STATE"}],
+        )
+
+    assert coordinator.state == RecoveryState.FAILED
+    assert not coordinator.execution_allowed
+
+
+def test_terminal_broker_order_status_is_not_treated_as_live():
+    lifecycle = OrderLifecycle()
+    lifecycle.create("o1", "NIFTY", "BUY", 1)
+    lifecycle.transition("o1", OrderStatus.FILLED, 1, 100.0)
+    coordinator = StartupRecoveryCoordinator()
+
+    result = coordinator.recover(
+        lifecycle,
+        lambda order: order,
+        broker_positions=[{"symbol": "NIFTY", "quantity": 1, "side": "BUY"}],
+        broker_orders=[{"order_id": "b1", "status": "COMPLETE"}],
+    )
+
+    assert result.state == RecoveryState.READY
+    assert coordinator.execution_allowed
