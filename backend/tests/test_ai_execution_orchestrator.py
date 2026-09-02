@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from app.ai_decision_engine import TradingDecision
 from app.ai_execution_orchestrator import AIRiskSnapshot, AIExecutionOrchestrator
 from app.broker_execution_context import BrokerExecutionContext
+from app.broker_order_lifecycle import OrderStatus
 from app.instruments import InstrumentProvider, InstrumentSpec
 
 
@@ -27,10 +29,11 @@ class FakeProvider(InstrumentProvider):
 
 
 class FakeSubmitter:
-    def __init__(self):
+    def __init__(self, lifecycle=None):
         self.requests = []
         self.authorized_requests = []
         self.executions = []
+        self.lifecycle = lifecycle
 
     def authorize_request(self, request, context):
         self.authorized_requests.append((request, context))
@@ -39,7 +42,28 @@ class FakeSubmitter:
     def execute_request(self, request, authorization, context):
         self.executions.append((request, authorization, context))
         self.requests.append(request)
+        if self.lifecycle is not None:
+            return SimpleNamespace(lifecycle=self.lifecycle)
         return {"status": "accepted"}
+
+
+class FakeReservationStore:
+    def __init__(self, reconcile_result="RELEASED"):
+        self.reconcile_result = reconcile_result
+        self.reserved = []
+        self.released = []
+        self.reconciled = []
+
+    def reserve(self, **kwargs):
+        self.reserved.append(kwargs)
+        return "reservation-1"
+
+    def release(self, reservation_id):
+        self.released.append(reservation_id)
+
+    def reconcile_client_order(self, **kwargs):
+        self.reconciled.append(kwargs)
+        return self.reconcile_result
 
 
 class LegacySubmitter:
@@ -74,10 +98,11 @@ def broker_context(**overrides):
     return BrokerExecutionContext(**values)
 
 
-def make_orchestrator(submitter):
+def make_orchestrator(submitter, risk_store=None):
     return AIExecutionOrchestrator(
         decision_engine=FakeDecisionEngine(make_decision()),
         instrument_provider=FakeProvider(), order_submitter=submitter,
+        risk_reservation_store=risk_store,
     )
 
 
@@ -213,3 +238,53 @@ async def test_risk_approved_trade_rejects_legacy_submitter_without_safety_bound
             object(), equity=100_000, client_order_id="ai-test-legacy",
             risk_snapshot=risk_snapshot(), broker_execution_context=broker_context(),
         )
+
+
+@pytest.mark.asyncio
+async def test_terminal_reconciliation_must_release_risk_reservation():
+    reservation_store = FakeReservationStore(reconcile_result="ACTIVE")
+    lifecycle = SimpleNamespace(status=OrderStatus.FILLED, filled_quantity=100.0)
+    submitter = FakeSubmitter(lifecycle=lifecycle)
+
+    with pytest.raises(RuntimeError, match="risk reservation reconciliation"):
+        await make_orchestrator(submitter, reservation_store).evaluate_and_execute(
+            object(), equity=100_000, client_order_id="ai-terminal-reconcile-mismatch",
+            risk_snapshot=risk_snapshot(), broker_execution_context=broker_context(),
+        )
+
+    assert reservation_store.reconciled == [{
+        "client_order_id": "ai-terminal-reconcile-mismatch",
+        "broker_status": "FILLED",
+        "remaining_amount": 0.0,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_terminal_reconciliation_missing_result_keeps_reservation_held():
+    reservation_store = FakeReservationStore(reconcile_result=None)
+    lifecycle = SimpleNamespace(status=OrderStatus.CANCELLED, filled_quantity=0.0)
+    submitter = FakeSubmitter(lifecycle=lifecycle)
+
+    with pytest.raises(RuntimeError, match="risk reservation reconciliation"):
+        await make_orchestrator(submitter, reservation_store).evaluate_and_execute(
+            object(), equity=100_000, client_order_id="ai-terminal-reconcile-missing",
+            risk_snapshot=risk_snapshot(), broker_execution_context=broker_context(),
+        )
+
+    assert reservation_store.released == []
+
+
+@pytest.mark.asyncio
+async def test_partial_fill_requires_active_reservation_when_exposure_remains():
+    reservation_store = FakeReservationStore(reconcile_result="RELEASED")
+    lifecycle = SimpleNamespace(status=OrderStatus.PARTIALLY_FILLED, filled_quantity=50.0)
+    submitter = FakeSubmitter(lifecycle=lifecycle)
+
+    with pytest.raises(RuntimeError, match="risk reservation reconciliation"):
+        await make_orchestrator(submitter, reservation_store).evaluate_and_execute(
+            object(), equity=100_000, client_order_id="ai-partial-reconcile-mismatch",
+            risk_snapshot=risk_snapshot(), broker_execution_context=broker_context(),
+        )
+
+    assert reservation_store.reconciled[0]["broker_status"] == "PARTIALLY_FILLED"
+    assert reservation_store.reconciled[0]["remaining_amount"] == 5000.0
