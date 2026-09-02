@@ -55,7 +55,9 @@ def recover_submission(
 
     finder = getattr(executor, "find_order_by_client_id", None)
     if not callable(finder):
-        return None
+        raise SubmissionRecoveryError(
+            "unbound submission intent requires authoritative client-order-id lookup capability"
+        )
     try:
         raw = finder(request.client_order_id)
         if raw is None:
