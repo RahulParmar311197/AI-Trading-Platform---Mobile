@@ -167,6 +167,26 @@ def test_reconciliation_fails_closed_on_multiple_matches():
         adapter.find_order_by_client_id("client-1")
 
 
+def test_get_trades_by_order_scopes_request_to_order_id():
+    transport = Transport()
+    transport.next_response = Response({"data": [{"order_id": "U1", "trade_id": "T1", "quantity": 10}]})
+    adapter = UpstoxAdapter(UpstoxConfig("token", live_enabled=True), transport)
+    result = adapter.get_trades_by_order("U1")
+    assert result[0]["trade_id"] == "T1"
+    method, url, kwargs = transport.calls[0]
+    assert method == "GET"
+    assert url.endswith("/v2/order/trades")
+    assert kwargs["params"] == {"order_id": "U1"}
+
+
+def test_get_trades_by_order_rejects_mismatched_order_identity():
+    transport = Transport()
+    transport.next_response = Response({"data": [{"order_id": "U2", "trade_id": "T2", "quantity": 10}]})
+    adapter = UpstoxAdapter(UpstoxConfig("token", live_enabled=True), transport)
+    with pytest.raises(RuntimeError, match="mismatched broker order identity"):
+        adapter.get_trades_by_order("U1")
+
+
 def test_transport_rejects_invalid_timeout():
     with pytest.raises(ValueError, match="greater than zero"):
         UpstoxHttpTransport(0)
