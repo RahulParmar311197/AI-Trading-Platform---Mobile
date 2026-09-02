@@ -54,13 +54,23 @@ class DhanAdapter(BrokerAdapter):
         filled = None if filled_raw in (None, "") else float(filled_raw)
         average = None if average_raw in (None, "") else float(average_raw)
         return filled, average
+    def _validate_authoritative_order(self, data: dict, *, expected_order_id: str | None = None, expected_client_order_id: str | None = None) -> dict:
+        if not isinstance(data, dict): raise RuntimeError("Dhan authoritative order must be an object")
+        order_id = str(data.get("orderId") or "").strip()
+        if not order_id: raise RuntimeError("Dhan authoritative order missing orderId")
+        if expected_order_id is not None and order_id != str(expected_order_id).strip(): raise RuntimeError("Dhan broker order identity mismatch")
+        correlation_id = data.get("correlationId")
+        if expected_client_order_id is not None and (correlation_id is None or str(correlation_id).strip() != str(expected_client_order_id).strip()): raise RuntimeError("Dhan client order identity mismatch")
+        broker_client_id = data.get("dhanClientId")
+        if broker_client_id is not None and str(broker_client_id).strip() != self.config.client_id: raise RuntimeError("Dhan account identity mismatch")
+        return data
     def submit_order(self, request: BrokerOrderRequest) -> BrokerOrderUpdate:
         self._require_live()
         if not request.security_id: raise ValueError("security_id is required for Dhan")
         correlation_id=request.client_order_id or uuid.uuid4().hex[:20]
         if len(correlation_id)>30: raise ValueError("Dhan correlationId must be at most 30 characters")
         payload={"dhanClientId":self.config.client_id,"correlationId":correlation_id,"transactionType":request.side.upper(),"exchangeSegment":request.exchange_segment,"productType":request.product_type,"orderType":request.order_type,"validity":request.validity,"securityId":request.security_id,"quantity":request.quantity,"price":request.price,"triggerPrice":request.trigger_price}
-        response=self.transport.post(f"{self.config.base_url}/orders",headers=self._headers(),json=payload); response.raise_for_status(); data=response.json()
+        response=self.transport.post(f"{self.config.base_url}/orders",headers=self._headers(),json=payload); response.raise_for_status(); data=self._validate_authoritative_order(response.json(), expected_client_order_id=correlation_id)
         status=self._placement_status(data.get("orderStatus"))
         if status not in {"NEW","PARTIALLY_FILLED","REJECTED","CANCELLED","FILLED"}: raise RuntimeError(f"unsupported Dhan placement status: {status}")
         filled, average = self._fill_fields(data)
@@ -71,15 +81,21 @@ class DhanAdapter(BrokerAdapter):
         if not client_order_id or len(client_order_id)>30: raise ValueError("Dhan correlationId must be between 1 and 30 characters")
         response=self.transport.get(f"{self.config.base_url}/orders/external/{client_order_id}",headers=self._headers())
         if getattr(response,"status_code",None)==404: return None
-        response.raise_for_status(); data=response.json(); return data if isinstance(data,dict) and data.get("orderId") else None
+        response.raise_for_status(); data=response.json(); return self._validate_authoritative_order(data, expected_client_order_id=client_order_id)
     def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
-        self._require_live(); response=self.transport.delete(f"{self.config.base_url}/orders/{broker_order_id}",headers=self._headers()); response.raise_for_status(); data=response.json(); return BrokerOrderUpdate(order_id=str(data["orderId"]),status=self._placement_status(data.get("orderStatus")),message="DHAN_CANCEL_RESULT")
+        self._require_live(); response=self.transport.delete(f"{self.config.base_url}/orders/{broker_order_id}",headers=self._headers()); response.raise_for_status(); data=self._validate_authoritative_order(response.json(), expected_order_id=broker_order_id); return BrokerOrderUpdate(order_id=str(data["orderId"]),status=self._placement_status(data.get("orderStatus")),message="DHAN_CANCEL_RESULT")
     def get_order(self, broker_order_id: str) -> dict:
-        self._require_live(); response=self.transport.get(f"{self.config.base_url}/orders/{broker_order_id}",headers=self._headers()); response.raise_for_status(); return response.json()
+        self._require_live(); response=self.transport.get(f"{self.config.base_url}/orders/{broker_order_id}",headers=self._headers()); response.raise_for_status(); return self._validate_authoritative_order(response.json(), expected_order_id=broker_order_id)
     def get_orders(self) -> list[dict]:
         self._require_live(); response=self.transport.get(f"{self.config.base_url}/orders",headers=self._headers()); response.raise_for_status(); data=response.json()
         if not isinstance(data,list): raise RuntimeError("Dhan orders response must be a list")
-        return data
+        validated=[]; seen=set()
+        for order in data:
+            item=self._validate_authoritative_order(order)
+            order_id=str(item["orderId"])
+            if order_id in seen: raise RuntimeError(f"duplicate Dhan broker order identity: {order_id}")
+            seen.add(order_id); validated.append(item)
+        return validated
     def get_order_snapshot(self):
         from app.broker_order_snapshot import BrokerOrderSnapshot
         return BrokerOrderSnapshot(orders=self.get_orders(), complete=True, source="dhan")
