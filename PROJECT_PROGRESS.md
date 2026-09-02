@@ -23,6 +23,8 @@ Last maintained: 2026-09-03
 - [x] Regression coverage verifies stale reservation release, missing matches, orphan broker orders, partial-fill resize, recovery audit events, and still-active fail-closed completion.
 - [x] Submission client-order IDs are now immutable after resolution; resolved IDs cannot be recycled for a new broker submission.
 - [x] Regression coverage verifies resolved submission client-order IDs cannot be reused while unresolved intents remain idempotent.
+- [x] PostgreSQL-backed submission-intent regression coverage verifies resolved client-order IDs remain immutable and unresolved replays remain idempotent.
+- [x] Reconciliation Safety CI executes the PostgreSQL submission-intent regression suite after migrations.
 
 ## Pending — ordered by priority
 
