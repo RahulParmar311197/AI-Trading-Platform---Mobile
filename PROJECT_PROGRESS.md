@@ -1,6 +1,6 @@
 # AI Trading Platform — Production Progress
 
-Last maintained: 2026-09-02
+Last maintained: 2026-09-03
 
 ## Completed — production hardening
 - [x] Regression coverage verifies Dhan order-trade identity mismatch, duplicate trade identity, invalid trade quantities/prices, account mismatch, and valid authoritative trade records.
@@ -21,6 +21,8 @@ Last maintained: 2026-09-02
 - [x] Regression coverage verifies malformed/non-dict broker snapshot records fail closed without changing active risk.
 - [x] Stale risk-reservation recovery now fails closed when a stale candidate remains ACTIVE after authoritative reconciliation; completion audit is withheld on that path.
 - [x] Regression coverage verifies stale reservation release, missing matches, orphan broker orders, partial-fill resize, recovery audit events, and still-active fail-closed completion.
+- [x] Submission client-order IDs are now immutable after resolution; resolved IDs cannot be recycled for a new broker submission.
+- [x] Regression coverage verifies resolved submission client-order IDs cannot be reused while unresolved intents remain idempotent.
 
 ## Pending — ordered by priority
 
@@ -28,6 +30,7 @@ Last maintained: 2026-09-02
 - [ ] Validate ambiguous broker submission recovery end-to-end in runtime/CI.
 - [ ] Validate startup reconciliation and recovery jobs in runtime/CI.
 - [ ] Validate stale reservation recovery audit events in runtime/CI.
+- [ ] Validate immutable submission client-order ID behavior in PostgreSQL-backed runtime/CI.
 
 ### P1 — Trading-system completeness
 - [ ] Full market-data pipeline audit.
