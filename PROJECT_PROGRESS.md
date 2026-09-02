@@ -53,6 +53,8 @@ Last maintained: 2026-09-02
 - [x] Regression coverage verifies Dhan broker-order identity mismatch, correlation-ID mismatch, account mismatch, and duplicate authoritative order identities fail closed.
 - [x] Dhan authoritative trade reconciliation now requires the requested broker `orderId`, unique non-empty `exchangeTradeId`, positive traded quantity/price, and matching configured `dhanClientId` before trade records can enter reconciliation.
 - [x] Regression coverage verifies Dhan order-trade identity mismatch, duplicate trade identity, invalid trade quantities/prices, account mismatch, and valid authoritative trade records.
+- [x] Main Dhan HTTP adapter now exposes authoritative `/trades` and `/trades/{orderId}` reads with strict trade identity/account/quantity/price validation.
+- [x] Regression coverage verifies order-scoped Dhan trade requests, wrong-order trade rejection, duplicate trade identity, account mismatch, and blank broker order IDs fail closed before transport.
 
 ## Pending — ordered by priority
 
@@ -86,6 +88,7 @@ Last maintained: 2026-09-02
 - [x] Bind configured Upstox reconciliation identity without masking contradictory broker account/route/generation fields.
 - [x] Validate Dhan authoritative order identity before reconciliation.
 - [x] Validate Dhan authoritative trade identity before reconciliation.
+- [x] Validate main Dhan trade endpoints and reject blank order IDs before broker transport.
 
 ### P2 — Platform / operations
 - [ ] Authentication/authorization audit.
@@ -95,7 +98,7 @@ Last maintained: 2026-09-02
 - [ ] CI/CD and deployment readiness audit.
 - [ ] Frontend/mobile integration audit.
 
-## Architecture of Record
+### Architecture of Record
 
 ```text
 AI Decision / API Manual Order
