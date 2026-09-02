@@ -41,6 +41,8 @@ Last maintained: 2026-09-02
 - [x] Regression coverage added for concurrent PostgreSQL reconciliation-state writers.
 - [x] Upstox order-trade reconciliation now scopes the broker request by `order_id` and rejects any returned trade carrying a different broker order identity.
 - [x] Regression coverage verifies order-scoped trade lookup and fail-closed mismatched trade identity handling.
+- [x] Canonical broker normalization now preserves partial fills when an order is subsequently cancelled, while rejecting contradictory full-fill cancellation and missing fill pricing.
+- [x] Regression coverage added for partial-fill cancellation semantics.
 
 ## Pending — ordered by priority
 
