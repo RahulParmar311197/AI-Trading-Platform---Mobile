@@ -46,7 +46,7 @@ class DhanAdapter(BrokerAdapter):
     @staticmethod
     def _placement_status(raw_status: str) -> str:
         status = str(raw_status or "").strip().upper()
-        return {"TRANSIT": "NEW", "PENDING": "NEW", "REJECTED": "REJECTED", "CANCELLED": "CANCELLED", "TRADED": "FILLED", "EXPIRED": "CANCELLED"}.get(status, status)
+        return {"TRANSIT": "NEW", "PENDING": "NEW", "PART_TRADED": "PARTIALLY_FILLED", "REJECTED": "REJECTED", "CANCELLED": "CANCELLED", "TRADED": "FILLED", "EXPIRED": "CANCELLED"}.get(status, status)
     @staticmethod
     def _fill_fields(data: dict) -> tuple[float | None, float | None]:
         filled_raw = data.get("filledQty", data.get("filledQuantity", data.get("tradedQuantity")))
@@ -62,7 +62,7 @@ class DhanAdapter(BrokerAdapter):
         payload={"dhanClientId":self.config.client_id,"correlationId":correlation_id,"transactionType":request.side.upper(),"exchangeSegment":request.exchange_segment,"productType":request.product_type,"orderType":request.order_type,"validity":request.validity,"securityId":request.security_id,"quantity":request.quantity,"price":request.price,"triggerPrice":request.trigger_price}
         response=self.transport.post(f"{self.config.base_url}/orders",headers=self._headers(),json=payload); response.raise_for_status(); data=response.json()
         status=self._placement_status(data.get("orderStatus"))
-        if status not in {"NEW","REJECTED","CANCELLED","FILLED"}: raise RuntimeError(f"unsupported Dhan placement status: {status}")
+        if status not in {"NEW","PARTIALLY_FILLED","REJECTED","CANCELLED","FILLED"}: raise RuntimeError(f"unsupported Dhan placement status: {status}")
         filled, average = self._fill_fields(data)
         raw={"order_id":str(data["orderId"]),"status":status,"client_order_id":correlation_id,"symbol":request.symbol,"side":request.side.upper(),"quantity":request.quantity,"filled_quantity":filled,"average_price":average,"price":request.price,"broker_account_id":request.broker_account_id,"broker_route":request.broker_route,"broker_route_generation":request.broker_route_generation,"message":"DHAN_ORDER_ACCEPTED"}
         return normalize_broker_update(raw, expected=request)
