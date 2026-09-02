@@ -68,4 +68,5 @@ jobs:
           pytest -q \
             tests/test_ambiguous_submission_recovery_matrix.py \
             tests/test_startup_recovery.py \
-            tests/test_risk_reservation_store.py
+            tests/test_risk_reservation_store.py \
+            tests/test_stale_risk_reservation_recovery.py
