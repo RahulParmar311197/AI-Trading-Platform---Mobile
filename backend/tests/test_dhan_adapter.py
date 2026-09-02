@@ -43,6 +43,8 @@ class FakeTransport:
         self.calls.append(("GET", url, kwargs))
         if "/orders/external/" in url:
             return FakeResponse(self.external_order)
+        if url.endswith("/orders/D123"):
+            return FakeResponse({"orderId": "D123", "orderStatus": "TRANSIT"})
         return FakeResponse([])
 
 
@@ -97,6 +99,14 @@ def test_cancel_maps_dhan_response():
     assert transport.calls[0][0] == "DELETE"
 
 
+def test_cancel_rejects_mismatched_broker_order_identity():
+    transport = FakeTransport()
+    transport.delete = lambda url, **kwargs: (transport.calls.append(("DELETE", url, kwargs)) or FakeResponse({"orderId": "OTHER", "orderStatus": "CANCELLED"}))
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    with pytest.raises(RuntimeError, match="broker order identity mismatch"):
+        adapter.cancel_order("D123")
+
+
 def test_find_order_by_client_id_uses_dhan_external_lookup():
     transport = FakeTransport()
     adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
@@ -106,6 +116,38 @@ def test_find_order_by_client_id_uses_dhan_external_lookup():
     assert method == "GET"
     assert url.endswith("/orders/external/TEST123")
     assert kwargs["headers"]["access-token"] == "token"
+
+
+def test_find_order_by_client_id_rejects_mismatched_correlation_id():
+    transport = FakeTransport()
+    transport.external_order = {"orderId": "D123", "orderStatus": "TRANSIT", "correlationId": "OTHER"}
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    with pytest.raises(RuntimeError, match="client order identity mismatch"):
+        adapter.find_order_by_client_id("TEST123")
+
+
+def test_find_order_by_client_id_rejects_mismatched_account_identity():
+    transport = FakeTransport()
+    transport.external_order = {"orderId": "D123", "orderStatus": "TRANSIT", "correlationId": "TEST123", "dhanClientId": "OTHER"}
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    with pytest.raises(RuntimeError, match="account identity mismatch"):
+        adapter.find_order_by_client_id("TEST123")
+
+
+def test_get_order_rejects_mismatched_broker_order_identity():
+    transport = FakeTransport()
+    transport.get = lambda url, **kwargs: (transport.calls.append(("GET", url, kwargs)) or FakeResponse({"orderId": "OTHER", "orderStatus": "TRANSIT"}))
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    with pytest.raises(RuntimeError, match="broker order identity mismatch"):
+        adapter.get_order("D123")
+
+
+def test_get_orders_rejects_duplicate_broker_order_identity():
+    transport = FakeTransport()
+    transport.get = lambda url, **kwargs: (transport.calls.append(("GET", url, kwargs)) or FakeResponse([{"orderId": "D123", "orderStatus": "TRANSIT"}, {"orderId": "D123", "orderStatus": "CANCELLED"}]))
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    with pytest.raises(RuntimeError, match="duplicate Dhan broker order identity"):
+        adapter.get_orders()
 
 
 def test_find_order_by_client_id_rejects_overlong_correlation_id():
