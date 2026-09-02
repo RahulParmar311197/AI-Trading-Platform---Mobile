@@ -26,6 +26,16 @@ class StartupRecoveryCoordinator:
         OrderStatus.OPEN,
         OrderStatus.PARTIALLY_FILLED,
     }
+    _BROKER_ACTIVE_ORDER_STATUSES = {
+        "NEW", "OPEN", "PENDING", "PARTIALLY_FILLED", "SUBMITTED", "TRANSIT",
+        "VALIDATION PENDING", "OPEN PENDING", "TRIGGER PENDING", "CANCEL PENDING",
+        "MODIFY PENDING",
+    }
+    _BROKER_TERMINAL_ORDER_STATUSES = {
+        "FILLED", "COMPLETE", "TRADED", "CANCELLED", "CANCELED", "EXPIRED",
+        "REJECTED", "FAILED", "NOT CANCELLED", "CANCEL REJECTED",
+        "CANCELLED AFTER MARKET ORDER",
+    }
 
     def __init__(self, execution_state: StartupExecutionStateMachine | None = None, audit_log: TradingAuditLog | None = None):
         self.audit_log = audit_log or (execution_state.audit_log if execution_state else TradingAuditLog())
@@ -116,19 +126,25 @@ class StartupRecoveryCoordinator:
 
     @classmethod
     def compare_live_orders(cls, lifecycle, broker_orders):
-        """Return broker-only live orders; fail closed on ambiguous broker identities."""
+        """Return broker-only live orders; fail closed on ambiguous or unknown broker states."""
         if not isinstance(broker_orders, list):
             raise ValueError("broker order snapshot is invalid")
         local_ids = cls._local_reconciled_broker_order_ids(lifecycle)
         broker_ids = set()
         broker_only = []
         for raw in broker_orders:
+            if not isinstance(raw, dict):
+                raise ValueError("broker order record is invalid")
             broker_id = cls._broker_order_id(raw)
             if broker_id in broker_ids:
                 raise ValueError(f"duplicate broker order identity: {broker_id}")
             broker_ids.add(broker_id)
-            status = str(raw.get("status", "")).strip().upper()
-            if status in {"NEW", "OPEN", "PENDING", "PARTIALLY_FILLED", "SUBMITTED", "TRANSIT", "VALIDATION PENDING", "OPEN PENDING", "TRIGGER PENDING", "CANCEL PENDING", "MODIFY PENDING"} and broker_id not in local_ids:
+            status = str(raw.get("status", raw.get("orderStatus", ""))).strip().upper()
+            if not status:
+                raise ValueError(f"broker order is missing status: {broker_id}")
+            if status not in cls._BROKER_ACTIVE_ORDER_STATUSES and status not in cls._BROKER_TERMINAL_ORDER_STATUSES:
+                raise ValueError(f"unknown broker order status: {status}")
+            if status in cls._BROKER_ACTIVE_ORDER_STATUSES and broker_id not in local_ids:
                 broker_only.append(broker_id)
         return tuple(sorted(broker_only))
 
