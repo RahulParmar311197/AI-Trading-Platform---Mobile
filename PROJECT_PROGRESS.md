@@ -49,6 +49,8 @@ Last maintained: 2026-09-02
 - [x] Regression coverage verifies Dhan partial-trade normalization and fails closed when the broker omits the required filled quantity.
 - [x] Upstox authoritative order history and snapshots now bind the configured account/route/route-generation identity without masking contradictory broker identity fields.
 - [x] Regression coverage verifies missing identity is safely bound and contradictory account, route, and route-generation identities fail closed.
+- [x] Dhan authoritative order lookups now verify returned broker `orderId`, requested `correlationId`, and configured `dhanClientId` when present; order snapshots reject duplicate broker order identities before reconciliation.
+- [x] Regression coverage verifies Dhan broker-order identity mismatch, correlation-ID mismatch, account mismatch, and duplicate authoritative order identities fail closed.
 
 ## Pending — ordered by priority
 
@@ -80,6 +82,7 @@ Last maintained: 2026-09-02
 - [x] Reject fractional Upstox quantities before broker submission; no silent quantity truncation.
 - [x] Recover matched durable submission intents during authoritative coordinator reconciliation.
 - [x] Bind configured Upstox reconciliation identity without masking contradictory broker account/route/generation fields.
+- [x] Validate Dhan authoritative order identity before reconciliation.
 
 ### P2 — Platform / operations
 - [ ] Authentication/authorization audit.
