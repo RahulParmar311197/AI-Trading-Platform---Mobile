@@ -137,6 +137,8 @@ class SubmissionIntentStore:
                 record = session.get(SubmissionIntentRecord, client_order_id)
                 if record is None:
                     raise KeyError(client_order_id)
+                if record.resolved_at is not None:
+                    raise RuntimeError("resolved submission intent is immutable")
                 if record.broker_order_id is not None and record.broker_order_id != broker_order_id:
                     raise RuntimeError("submission intent is already bound to a different broker order")
                 record.broker_order_id = broker_order_id
@@ -156,6 +158,8 @@ class SubmissionIntentStore:
                     raise KeyError(client_order_id)
                 if record.broker_order_id is None:
                     raise RuntimeError("cannot resolve submission intent before broker order is durably bound")
+                if record.resolved_at is not None:
+                    return
                 record.resolved_at = datetime.now(timezone.utc)
                 session.flush()
         finally:
@@ -197,6 +201,8 @@ class SubmissionIntentStore:
             record = data.get(client_order_id)
             if record is None:
                 raise KeyError(client_order_id)
+            if record.get("resolved_at") is not None:
+                raise RuntimeError("resolved submission intent is immutable")
             existing = record.get("broker_order_id")
             if existing is not None and existing != broker_order_id:
                 raise RuntimeError("submission intent is already bound to a different broker order")
@@ -266,6 +272,7 @@ class SubmissionIntentStore:
             data = self._load_unlocked(); record = data.get(client_order_id)
             if record is None: raise KeyError(client_order_id)
             if record.get("broker_order_id") is None: raise RuntimeError("cannot resolve submission intent before broker order is durably bound")
+            if record.get("resolved_at") is not None: return
             record["resolved_at"] = datetime.now(timezone.utc).isoformat(); self._save_unlocked(data)
 
     def unresolved(self) -> list[SubmissionIntent]:
