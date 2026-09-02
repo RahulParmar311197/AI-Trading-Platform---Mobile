@@ -57,6 +57,8 @@ Last maintained: 2026-09-02
 - [x] Regression coverage verifies order-scoped Dhan trade requests, wrong-order trade rejection, duplicate trade identity, account mismatch, and blank broker order IDs fail closed before transport.
 - [x] Startup broker position reconciliation now rejects duplicate broker position symbols instead of aggregating ambiguous authoritative records.
 - [x] Regression coverage verifies duplicate broker position identity fails closed.
+- [x] Startup recovery now quarantines unexplained live broker orders instead of allowing broker-only exposure to pass the readiness gate.
+- [x] Regression coverage verifies broker-only live orders, duplicate broker order identities, and missing local broker identity fail closed.
 
 ## Pending — ordered by priority
 
