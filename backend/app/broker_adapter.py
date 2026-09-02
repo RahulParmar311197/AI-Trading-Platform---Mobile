@@ -152,7 +152,9 @@ def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected
     if status == "PARTIALLY_FILLED" and (quantity is None or filled is None or not (0 < filled < quantity)): raise ValueError("PARTIALLY_FILLED broker status requires 0 < filled < quantity")
     if status == "FILLED" and (quantity is None or filled is None or abs(filled - quantity) > 1e-9): raise ValueError("FILLED broker status requires filled quantity equal to quantity")
     if status == "REJECTED" and filled is not None and abs(filled) > 1e-9: raise ValueError("REJECTED broker status requires zero filled quantity")
+    if status == "CANCELLED" and filled is not None and quantity is not None and abs(filled - quantity) <= 1e-9: raise ValueError("CANCELLED broker status cannot report a fully filled order")
     if status in {"PARTIALLY_FILLED", "FILLED"} and (filled is None or filled <= 0): raise ValueError("filled broker status requires positive filled quantity")
+    if status == "CANCELLED" and filled is not None and filled > 0 and average is None: raise ValueError("cancelled broker order with a fill requires average_price")
     if filled is not None and filled > 0 and average is None: raise ValueError("non-zero broker fill requires average_price")
     return BrokerOrderUpdate(order_id=order_id,status=status,client_order_id=client_id,symbol=symbol,side=side,quantity=quantity,filled_quantity=filled,price=price,average_price=average,broker_account_id=broker_account_id,broker_route=broker_route,broker_route_generation=broker_route_generation,message=data.get("message"))
 
@@ -263,8 +265,8 @@ class UpstoxAdapter(BrokerAdapter):
         data.setdefault("client_order_id",data.get("tag")); data.setdefault("symbol",data.get("trading_symbol") or (expected.symbol if expected else None)); data.setdefault("side",data.get("transaction_type") or (expected.side if expected else None))
         return normalize_broker_update(data,expected=expected)
     def submit_order(self,order):
-        raw=self._call(self.client,"place_order",self._payload(order)); data=dict(self._data(raw) or {}); order_id=str(data.get("order_id") or "").strip()
-        if not order_id: raise RuntimeError("Upstox place_order response missing order_id")
+        payload=self._payload(order); raw=self._call(self.client,"place_order",payload); data=dict(self._data(raw) or {}); order_id=str(data.get("order_id") or "").strip()
+        if not order_id: raise RuntimeError("Upstox place_order response did not contain an order id")
         details=self.get_order(order_id) if callable(getattr(self.client,"get_order",None)) else {**data,"status":"NEW","order_id":order_id}
         return self._normalize(details,expected=order)
     def cancel_order(self,broker_order_id:str)->BrokerOrderUpdate:
