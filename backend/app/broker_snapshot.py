@@ -31,15 +31,28 @@ class BrokerSnapshot:
 
 
 def canonical_order_status(status: Any) -> str:
-    value = str(status or "").upper()
-    return {
+    value = str(status or "").strip().upper()
+    if not value:
+        raise ValueError("broker order status is required")
+    mapped = {
         "TRADED": "FILLED",
         "FILLED": "FILLED",
+        "COMPLETE": "FILLED",
+        "EXECUTED": "FILLED",
         "CANCELLED": "CANCELLED",
+        "CANCELED": "CANCELLED",
         "REJECTED": "REJECTED",
+        "FAILED": "REJECTED",
         "TRANSIT": "NEW",
         "PENDING": "NEW",
-    }.get(value, value)
+        "OPEN": "NEW",
+        "NEW": "NEW",
+        "PARTIALLY_FILLED": "PARTIALLY_FILLED",
+    }
+    try:
+        return mapped[value]
+    except KeyError as exc:
+        raise ValueError(f"unsupported broker order status: {status}") from exc
 
 
 def map_dhan_order(row: dict[str, Any]) -> dict[str, Any]:
