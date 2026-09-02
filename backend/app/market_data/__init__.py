@@ -1,19 +1,18 @@
 """Canonical market-data contracts for the trading platform."""
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .models import Candle, Instrument, Tick, Timeframe
 from .provider import HistoricalMarketDataProvider, RealtimeMarketDataProvider
 
 
+@dataclass(frozen=True)
 class MarketDataFreshness:
-    __slots__ = ("fresh", "age_seconds", "max_age_seconds", "message")
-
-    def __init__(self, fresh: bool, age_seconds: float, max_age_seconds: float, message: str = "") -> None:
-        self.fresh = fresh
-        self.age_seconds = age_seconds
-        self.max_age_seconds = max_age_seconds
-        self.message = message
+    fresh: bool
+    age_seconds: float
+    max_age_seconds: float
+    message: str = ""
 
 
 def validate_freshness(
