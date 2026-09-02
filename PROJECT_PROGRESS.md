@@ -55,6 +55,8 @@ Last maintained: 2026-09-02
 - [x] Regression coverage verifies Dhan order-trade identity mismatch, duplicate trade identity, invalid trade quantities/prices, account mismatch, and valid authoritative trade records.
 - [x] Main Dhan HTTP adapter now exposes authoritative `/trades` and `/trades/{orderId}` reads with strict trade identity/account/quantity/price validation.
 - [x] Regression coverage verifies order-scoped Dhan trade requests, wrong-order trade rejection, duplicate trade identity, account mismatch, and blank broker order IDs fail closed before transport.
+- [x] Startup broker position reconciliation now rejects duplicate broker position symbols instead of aggregating ambiguous authoritative records.
+- [x] Regression coverage verifies duplicate broker position identity fails closed.
 
 ## Pending — ordered by priority
 
