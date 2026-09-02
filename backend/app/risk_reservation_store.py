@@ -176,12 +176,28 @@ class RiskReservationStore:
     def reconcile_authoritative_orders(self, *, broker_orders: list[dict], broker_account_id: str, broker_route: str) -> list[dict]:
         """Reconcile every active reservation against one authoritative broker snapshot."""
         account = str(broker_account_id).strip(); route = str(broker_route).strip(); scope = self._scope(account, route)
+        if not isinstance(broker_orders, list):
+            return [{"id": "broker_orders", "reason": "RISK_RESERVATION_BROKER_SNAPSHOT_INVALID"}]
         by_client: dict[str, list[dict]] = {}
         by_broker_order: dict[str, list[dict]] = {}
-        for order in broker_orders:
-            if not isinstance(order, dict): continue
-            client_id = str(order.get("client_order_id") or "").strip()
+        malformed: list[dict] = []
+        for index, order in enumerate(broker_orders):
+            if not isinstance(order, dict):
+                malformed.append({"id": str(index), "reason": "RISK_RESERVATION_BROKER_RECORD_INVALID"})
+                continue
             broker_order_id = str(order.get("broker_order_id") or "").strip()
+            broker_account = str(order.get("broker_account_id") or "").strip()
+            broker_route = str(order.get("broker_route") or "").strip()
+            status = str(order.get("status") or "").strip().upper().replace("-", "_").replace(" ", "_")
+            if not broker_order_id:
+                malformed.append({"id": str(index), "reason": "RISK_RESERVATION_BROKER_ORDER_ID_MISSING"})
+            if not broker_account or not broker_route:
+                malformed.append({"id": broker_order_id or str(index), "reason": "RISK_RESERVATION_BROKER_IDENTITY_MISSING"})
+            if not status:
+                malformed.append({"id": broker_order_id or str(index), "reason": "RISK_RESERVATION_BROKER_STATUS_MISSING"})
+            elif status not in self.TERMINAL and status not in self.ACTIVE_BROKER_STATUSES:
+                malformed.append({"id": broker_order_id or str(index), "reason": "RISK_RESERVATION_BROKER_STATE_AMBIGUOUS"})
+            client_id = str(order.get("client_order_id") or "").strip()
             if client_id: by_client.setdefault(client_id, []).append(order)
             if broker_order_id: by_broker_order.setdefault(broker_order_id, []).append(order)
         session = self._session_factory()
@@ -189,7 +205,7 @@ class RiskReservationStore:
             with session.begin():
                 self._lock_scope(session, scope)
                 records = session.query(RiskReservationRecord).filter(RiskReservationRecord.broker_account_id == account, RiskReservationRecord.broker_route == route, RiskReservationRecord.status == self.ACTIVE).all()
-                active_clients = {record.client_order_id for record in records}; failures = []
+                active_clients = {record.client_order_id for record in records}; failures = list(malformed)
                 duplicate_broker_ids = {broker_id for broker_id, matches in by_broker_order.items() if len(matches) > 1}
                 if duplicate_broker_ids:
                     for broker_id in sorted(duplicate_broker_ids):
