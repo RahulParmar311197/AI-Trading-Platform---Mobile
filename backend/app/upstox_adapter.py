@@ -79,6 +79,17 @@ class UpstoxAdapter(BrokerAdapter):
         for field, expected in (("broker_account_id", self.config.broker_account_id), ("broker_route", self.config.broker_route), ("broker_route_generation", self.config.broker_route_generation)):
             if expected is not None and identity[field] != expected: raise ValueError(f"Upstox {field} does not match configured route")
         return {k: str(v) for k, v in identity.items() if v is not None}
+    def _bind_configured_identity(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Bind an account-scoped broker response without masking contradictory identity."""
+        item = dict(record)
+        for field, expected in (("broker_account_id", self.config.broker_account_id), ("broker_route", self.config.broker_route), ("broker_route_generation", self.config.broker_route_generation)):
+            if expected is None:
+                continue
+            observed = item.get(field)
+            if observed is not None and str(observed).strip() and str(observed).strip() != str(expected).strip():
+                raise RuntimeError(f"Upstox {field} does not match configured route")
+            item[field] = str(expected).strip()
+        return item
     def submit_order(self, request: BrokerOrderRequest) -> BrokerOrderUpdate:
         self._require_live(); self._validate_execution_contract(request); tag=self._validate_tag(request.client_order_id); quantity=self._validate_quantity(request.quantity); order_type=request.order_type.upper()
         if order_type in {"MARKET","SL-M"} and not (-1 <= self.config.market_protection <= 25): raise ValueError("Upstox market protection must be -1 or between 1 and 25")
@@ -94,16 +105,16 @@ class UpstoxAdapter(BrokerAdapter):
         if getattr(response,"status_code",None)==404: return None
         response.raise_for_status(); body=response.json(); data=body.get("data",body)
         if isinstance(data,dict): data=data.get("orders",[data])
-        matches=[order for order in self._require_record_list(data, "order history response") if str(order.get("tag",tag))==tag]
+        matches=[self._bind_configured_identity(order) for order in self._require_record_list(data, "order history response") if str(order.get("tag",tag))==tag]
         if not matches: return None
         if len(matches)==1: return matches[0]
         raise RuntimeError("ambiguous broker order identity")
     def get_order(self, broker_order_id: str) -> dict[str, Any]:
-        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/details",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); return self._require_record(body.get("data",body), "order response")
+        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/details",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); return self._bind_configured_identity(self._require_record(body.get("data",body), "order response"))
     def get_orders(self) -> list[dict[str, Any]]:
-        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/retrieve-all",headers=self._headers()); response.raise_for_status(); body=response.json(); return self._require_record_list(body.get("data",body), "orders response")
+        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/retrieve-all",headers=self._headers()); response.raise_for_status(); body=response.json(); return [self._bind_configured_identity(order) for order in self._require_record_list(body.get("data",body), "orders response")]
     def get_order_snapshot(self) -> BrokerOrderSnapshot:
-        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/retrieve-all",headers=self._headers()); response.raise_for_status(); body=response.json(); data=self._require_record_list(body.get("data",body), "order snapshot"); return BrokerOrderSnapshot(orders=data,complete=True,source="upstox")
+        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/retrieve-all",headers=self._headers()); response.raise_for_status(); body=response.json(); data=[self._bind_configured_identity(order) for order in self._require_record_list(body.get("data",body), "order snapshot")]; return BrokerOrderSnapshot(orders=data,complete=True,source="upstox")
     def get_trades_by_order(self, broker_order_id: str) -> list[dict[str, Any]]:
         self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/trades",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); data=self._require_record_list(body.get("data",body), "trades response")
         if any(str(trade.get("order_id", broker_order_id)) != str(broker_order_id) for trade in data):
