@@ -169,10 +169,11 @@ class StartupRecoveryCoordinator:
                 return self._fail("unresolved orders", unresolved)
             if broker_orders_provider is not None:
                 broker_orders = broker_orders_provider()
-            if broker_orders is not None:
-                broker_only = self.compare_live_orders(lifecycle, broker_orders)
-                if broker_only:
-                    return self._fail("broker-only live orders", unresolved=broker_only)
+            if broker_orders is None:
+                return self._fail("broker order snapshot unavailable")
+            broker_only = self.compare_live_orders(lifecycle, broker_orders)
+            if broker_only:
+                return self._fail("broker-only live orders", unresolved=broker_only)
             if broker_positions_provider is not None:
                 broker_positions = broker_positions_provider()
             if broker_positions is None:
