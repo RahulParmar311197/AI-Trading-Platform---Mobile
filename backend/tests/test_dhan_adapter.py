@@ -19,13 +19,21 @@ class FakeResponse:
 
 
 class FakeTransport:
-    def __init__(self):
+    def __init__(self, placement_status="TRANSIT", filled_qty=None, average_price=None):
         self.calls = []
+        self.placement_status = placement_status
+        self.filled_qty = filled_qty
+        self.average_price = average_price
         self.external_order = {"orderId": "D123", "orderStatus": "TRANSIT", "correlationId": "TEST123"}
 
     def post(self, url, **kwargs):
         self.calls.append(("POST", url, kwargs))
-        return FakeResponse({"orderId": "D123", "orderStatus": "TRANSIT"})
+        payload = {"orderId": "D123", "orderStatus": self.placement_status}
+        if self.filled_qty is not None:
+            payload["filledQty"] = self.filled_qty
+        if self.average_price is not None:
+            payload["averageTradedPrice"] = self.average_price
+        return FakeResponse(payload)
 
     def delete(self, url, **kwargs):
         self.calls.append(("DELETE", url, kwargs))
@@ -53,7 +61,7 @@ def test_submit_maps_dhan_v2_request_and_correlation_id():
     adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
     result = adapter.submit_order(request())
     assert result.order_id == "D123"
-    assert result.status == "TRANSIT"
+    assert result.status == "NEW"
     method, url, kwargs = transport.calls[0]
     assert method == "POST"
     assert url.endswith("/orders")
@@ -61,6 +69,23 @@ def test_submit_maps_dhan_v2_request_and_correlation_id():
     assert kwargs["json"]["dhanClientId"] == "client"
     assert kwargs["json"]["securityId"] == "11536"
     assert kwargs["json"]["correlationId"] == "TEST123"
+
+
+def test_submit_maps_dhan_part_traded_to_partial_fill():
+    transport = FakeTransport(placement_status="PART_TRADED", filled_qty=2, average_price=101.5)
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    result = adapter.submit_order(request())
+    assert result.order_id == "D123"
+    assert result.status == "PARTIALLY_FILLED"
+    assert result.filled_quantity == 2
+    assert result.average_price == 101.5
+
+
+def test_submit_rejects_part_traded_without_fill_quantity():
+    transport = FakeTransport(placement_status="PART_TRADED", average_price=101.5)
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    with pytest.raises(ValueError, match="filled broker status requires positive filled quantity"):
+        adapter.submit_order(request())
 
 
 def test_cancel_maps_dhan_response():
