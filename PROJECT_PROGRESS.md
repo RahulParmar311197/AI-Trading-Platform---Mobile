@@ -25,6 +25,8 @@ Last maintained: 2026-09-03
 - [x] Regression coverage verifies resolved submission client-order IDs cannot be reused while unresolved intents remain idempotent.
 - [x] PostgreSQL-backed submission-intent regression coverage verifies resolved client-order IDs remain immutable and unresolved replays remain idempotent.
 - [x] Reconciliation Safety CI executes the PostgreSQL submission-intent regression suite after migrations.
+- [x] Resolved submission intents are now fully immutable: broker bindings/status cannot be mutated after resolution, and repeated resolution is idempotent.
+- [x] Regression coverage verifies resolved intent broker binding/status mutation is rejected and repeated resolution is safe.
 
 ## Pending — ordered by priority
 
