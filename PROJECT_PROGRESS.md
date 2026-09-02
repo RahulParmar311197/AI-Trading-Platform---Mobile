@@ -43,6 +43,8 @@ Last maintained: 2026-09-02
 - [x] Regression coverage verifies order-scoped trade lookup and fail-closed mismatched trade identity handling.
 - [x] Canonical broker normalization now preserves partial fills when an order is subsequently cancelled, while rejecting contradictory full-fill cancellation and missing fill pricing.
 - [x] Regression coverage added for partial-fill cancellation semantics.
+- [x] Upstox broker lifecycle statuses are now mapped explicitly from the documented status vocabulary; active statuses with partial fills become `PARTIALLY_FILLED`, active statuses claiming a full fill fail closed, and unknown statuses are rejected.
+- [x] Regression coverage added for documented Upstox status mapping, partial-fill open orders, contradictory full fills, unknown statuses, and rejected orders carrying fills.
 
 ## Pending — ordered by priority
 
@@ -64,7 +66,8 @@ Last maintained: 2026-09-02
 ### P1 — Broker coverage
 - [ ] Audit broker adapters and capability declarations.
 - [x] Validate canonical pre-submission order type/price/trigger semantics.
-- [ ] Validate broker-specific order types, status mappings, precision, lot sizes, and rejection handling.
+- [x] Validate Upstox documented lifecycle status mappings and fail-closed rejection semantics.
+- [ ] Validate broker-specific order types, precision, lot sizes, and rejection handling for remaining adapters.
 - [x] Validate account identity and route binding for Dhan and Upstox submission paths.
 - [x] Require explicit request identity on account-bound broker routes.
 - [x] Prevent unconfigured Dhan snapshot reads from masquerading as authoritative empty broker state.
