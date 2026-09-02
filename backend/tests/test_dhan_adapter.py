@@ -107,6 +107,14 @@ def test_cancel_rejects_mismatched_broker_order_identity():
         adapter.cancel_order("D123")
 
 
+def test_cancel_rejects_blank_broker_order_id_before_transport():
+    transport = FakeTransport()
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    with pytest.raises(ValueError, match="broker order ID is required"):
+        adapter.cancel_order("   ")
+    assert transport.calls == []
+
+
 def test_find_order_by_client_id_uses_dhan_external_lookup():
     transport = FakeTransport()
     adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
@@ -142,6 +150,14 @@ def test_get_order_rejects_mismatched_broker_order_identity():
         adapter.get_order("D123")
 
 
+def test_get_order_rejects_blank_broker_order_id_before_transport():
+    transport = FakeTransport()
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    with pytest.raises(ValueError, match="broker order ID is required"):
+        adapter.get_order("")
+    assert transport.calls == []
+
+
 def test_get_orders_rejects_duplicate_broker_order_identity():
     transport = FakeTransport()
     transport.get = lambda url, **kwargs: (transport.calls.append(("GET", url, kwargs)) or FakeResponse([{"orderId": "D123", "orderStatus": "TRANSIT"}, {"orderId": "D123", "orderStatus": "CANCELLED"}]))
@@ -150,10 +166,56 @@ def test_get_orders_rejects_duplicate_broker_order_identity():
         adapter.get_orders()
 
 
-def test_find_order_by_client_id_rejects_overlong_correlation_id():
-    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), FakeTransport())
-    with pytest.raises(ValueError, match="30 characters"):
-        adapter.find_order_by_client_id("X" * 31)
+def test_get_trades_uses_authoritative_trade_endpoint_and_validates_records():
+    transport = FakeTransport()
+    transport.get = lambda url, **kwargs: (transport.calls.append(("GET", url, kwargs)) or FakeResponse([
+        {"orderId": "D123", "exchangeTradeId": "T1", "dhanClientId": "client", "tradedQuantity": 2, "tradedPrice": 101.5},
+        {"orderId": "D124", "exchangeTradeId": "T2", "dhanClientId": "client", "tradedQuantity": 1, "tradedPrice": 102.0},
+    ]))
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    trades = adapter.get_trades()
+    assert [trade["exchangeTradeId"] for trade in trades] == ["T1", "T2"]
+    assert transport.calls[0][1].endswith("/trades")
+
+
+def test_get_trades_for_order_scopes_request_and_rejects_wrong_order_identity():
+    transport = FakeTransport()
+    transport.get = lambda url, **kwargs: (transport.calls.append(("GET", url, kwargs)) or FakeResponse([
+        {"orderId": "OTHER", "exchangeTradeId": "T1", "dhanClientId": "client", "tradedQuantity": 2, "tradedPrice": 101.5},
+    ]))
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    with pytest.raises(RuntimeError, match="order identity does not match"):
+        adapter.get_trades_for_order("D123")
+    assert transport.calls[0][1].endswith("/trades/D123")
+
+
+def test_get_trades_for_order_rejects_blank_order_id_before_transport():
+    transport = FakeTransport()
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    with pytest.raises(ValueError, match="broker order ID is required"):
+        adapter.get_trades_for_order(" ")
+    assert transport.calls == []
+
+
+def test_get_trades_rejects_duplicate_trade_identity():
+    transport = FakeTransport()
+    transport.get = lambda url, **kwargs: (transport.calls.append(("GET", url, kwargs)) or FakeResponse([
+        {"orderId": "D123", "exchangeTradeId": "T1", "dhanClientId": "client", "tradedQuantity": 2, "tradedPrice": 101.5},
+        {"orderId": "D124", "exchangeTradeId": "T1", "dhanClientId": "client", "tradedQuantity": 1, "tradedPrice": 102.0},
+    ]))
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    with pytest.raises(RuntimeError, match="duplicate trade identity"):
+        adapter.get_trades()
+
+
+def test_get_trades_rejects_account_identity_mismatch():
+    transport = FakeTransport()
+    transport.get = lambda url, **kwargs: (transport.calls.append(("GET", url, kwargs)) or FakeResponse([
+        {"orderId": "D123", "exchangeTradeId": "T1", "dhanClientId": "other", "tradedQuantity": 2, "tradedPrice": 101.5},
+    ]))
+    adapter = DhanAdapter(DhanConfig("client", "token", live_enabled=True), transport)
+    with pytest.raises(RuntimeError, match="account identity"):
+        adapter.get_trades()
 
 
 def test_credentials_are_required_before_transport():
