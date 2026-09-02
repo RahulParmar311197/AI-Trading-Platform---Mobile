@@ -15,6 +15,8 @@ Last maintained: 2026-09-02
 - [x] Startup recovery now requires an authoritative broker order snapshot before execution can become READY; missing order state fails closed.
 - [x] Regression coverage verifies missing broker order snapshot keeps execution locked.
 - [x] Dedicated PostgreSQL reconciliation-safety CI gate runs ambiguous-submission, startup-recovery, and risk-reservation regression suites after migrations.
+- [x] Canonical broker snapshot status normalization now rejects missing/unknown statuses before Dhan snapshots enter reconciliation.
+- [x] Regression coverage verifies canonical broker status normalization and fail-closed Dhan snapshot mapping.
 
 ## Pending — ordered by priority
 
