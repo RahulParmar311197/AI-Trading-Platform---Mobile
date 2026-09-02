@@ -39,6 +39,8 @@ Last maintained: 2026-09-02
 - [x] Regression coverage verifies both mutation paths execute the post-lock refresh boundary.
 - [x] Reconciliation state persistence now uses atomic PostgreSQL/SQLite upsert semantics for account/route state, eliminating the select-then-insert race between concurrent reconciliation writers.
 - [x] Regression coverage added for concurrent PostgreSQL reconciliation-state writers.
+- [x] Upstox order-trade reconciliation now scopes the broker request by `order_id` and rejects any returned trade carrying a different broker order identity.
+- [x] Regression coverage verifies order-scoped trade lookup and fail-closed mismatched trade identity handling.
 
 ## Pending — ordered by priority
 
