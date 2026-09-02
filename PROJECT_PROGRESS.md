@@ -12,6 +12,8 @@ Last maintained: 2026-09-02
 - [x] Regression coverage verifies broker-only live orders, duplicate broker order identities, and missing local broker identity fail closed.
 - [x] Startup broker-order reconciliation now rejects missing or unknown broker order statuses instead of silently ignoring malformed authoritative records.
 - [x] Regression coverage verifies missing/unknown broker order status fails closed and known terminal status remains non-live.
+- [x] Startup recovery now requires an authoritative broker order snapshot before execution can become READY; missing order state fails closed.
+- [x] Regression coverage verifies missing broker order snapshot keeps execution locked.
 
 ## Pending — ordered by priority
 
