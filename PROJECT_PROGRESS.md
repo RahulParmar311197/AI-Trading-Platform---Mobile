@@ -17,6 +17,8 @@ Last maintained: 2026-09-02
 - [x] Dedicated PostgreSQL reconciliation-safety CI gate runs ambiguous-submission, startup-recovery, and risk-reservation regression suites after migrations.
 - [x] Canonical broker snapshot status normalization now rejects missing/unknown statuses before Dhan snapshots enter reconciliation.
 - [x] Regression coverage verifies canonical broker status normalization and fail-closed Dhan snapshot mapping.
+- [x] Risk reservation authoritative reconciliation now rejects malformed/non-list broker snapshots before any risk reservation mutation.
+- [x] Regression coverage verifies malformed/non-dict broker snapshot records fail closed without changing active risk.
 
 ## Pending — ordered by priority
 
