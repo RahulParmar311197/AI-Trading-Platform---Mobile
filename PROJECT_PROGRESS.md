@@ -47,6 +47,8 @@ Last maintained: 2026-09-02
 - [x] Regression coverage added for documented Upstox status mapping, partial-fill open orders, contradictory full fills, unknown statuses, and rejected orders carrying fills.
 - [x] Dhan `PART_TRADED` status is now mapped to canonical `PARTIALLY_FILLED` instead of being rejected as an unsupported lifecycle; fill quantity and average price remain subject to canonical fill invariants.
 - [x] Regression coverage verifies Dhan partial-trade normalization and fails closed when the broker omits the required filled quantity.
+- [x] Upstox authoritative order history and snapshots now bind the configured account/route/route-generation identity without masking contradictory broker identity fields.
+- [x] Regression coverage verifies missing identity is safely bound and contradictory account, route, and route-generation identities fail closed.
 
 ## Pending — ordered by priority
 
@@ -77,6 +79,7 @@ Last maintained: 2026-09-02
 - [x] Reject malformed Upstox authoritative snapshot payloads before reconciliation.
 - [x] Reject fractional Upstox quantities before broker submission; no silent quantity truncation.
 - [x] Recover matched durable submission intents during authoritative coordinator reconciliation.
+- [x] Bind configured Upstox reconciliation identity without masking contradictory broker account/route/generation fields.
 
 ### P2 — Platform / operations
 - [ ] Authentication/authorization audit.
