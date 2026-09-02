@@ -14,6 +14,7 @@ Last maintained: 2026-09-02
 - [x] Regression coverage verifies missing/unknown broker order status fails closed and known terminal status remains non-live.
 - [x] Startup recovery now requires an authoritative broker order snapshot before execution can become READY; missing order state fails closed.
 - [x] Regression coverage verifies missing broker order snapshot keeps execution locked.
+- [x] Dedicated PostgreSQL reconciliation-safety CI gate runs ambiguous-submission, startup-recovery, and risk-reservation regression suites after migrations.
 
 ## Pending — ordered by priority
 
