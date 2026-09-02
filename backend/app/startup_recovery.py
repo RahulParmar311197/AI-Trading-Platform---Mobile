@@ -20,6 +20,13 @@ class RecoveryResult:
 
 class StartupRecoveryCoordinator:
     """Fail-closed startup recovery gate synchronized with live execution state."""
+    _LOCAL_RECONCILIABLE_STATUSES = {
+        OrderStatus.SUBMISSION_INTENT,
+        OrderStatus.SUBMITTED,
+        OrderStatus.OPEN,
+        OrderStatus.PARTIALLY_FILLED,
+    }
+
     def __init__(self, execution_state: StartupExecutionStateMachine | None = None, audit_log: TradingAuditLog | None = None):
         self.audit_log = audit_log or (execution_state.audit_log if execution_state else TradingAuditLog())
         self.execution_state = execution_state or StartupExecutionStateMachine(self.audit_log)
@@ -81,6 +88,50 @@ class StartupRecoveryCoordinator:
         broker = cls._position_map(broker_positions)
         return tuple(f"{symbol}: local={local.get(symbol, 0.0)} broker={broker.get(symbol, 0.0)}" for symbol in sorted(set(local) | set(broker)) if abs(local.get(symbol, 0.0) - broker.get(symbol, 0.0)) > tolerance)
 
+    @staticmethod
+    def _broker_order_id(raw):
+        if not isinstance(raw, dict):
+            raise ValueError("broker order record is invalid")
+        value = raw.get("broker_order_id")
+        if value is None:
+            value = raw.get("order_id")
+        identity = str(value or "").strip()
+        if not identity:
+            raise ValueError("broker order is missing broker_order_id")
+        return identity
+
+    @classmethod
+    def _local_reconciled_broker_order_ids(cls, lifecycle):
+        ids = set()
+        for order in lifecycle.orders.values():
+            if order.status not in cls._LOCAL_RECONCILIABLE_STATUSES:
+                continue
+            broker_order_id = str(order.broker_order_id or "").strip()
+            if not broker_order_id:
+                raise ValueError(f"live local order is missing broker_order_id: {order.order_id}")
+            if broker_order_id in ids:
+                raise ValueError(f"duplicate local broker_order_id: {broker_order_id}")
+            ids.add(broker_order_id)
+        return ids
+
+    @classmethod
+    def compare_live_orders(cls, lifecycle, broker_orders):
+        """Return broker-only live orders; fail closed on ambiguous broker identities."""
+        if not isinstance(broker_orders, list):
+            raise ValueError("broker order snapshot is invalid")
+        local_ids = cls._local_reconciled_broker_order_ids(lifecycle)
+        broker_ids = set()
+        broker_only = []
+        for raw in broker_orders:
+            broker_id = cls._broker_order_id(raw)
+            if broker_id in broker_ids:
+                raise ValueError(f"duplicate broker order identity: {broker_id}")
+            broker_ids.add(broker_id)
+            status = str(raw.get("status", "")).strip().upper()
+            if status in {"NEW", "OPEN", "PENDING", "PARTIALLY_FILLED", "SUBMITTED", "TRANSIT", "VALIDATION PENDING", "OPEN PENDING", "TRIGGER PENDING", "CANCEL PENDING", "MODIFY PENDING"} and broker_id not in local_ids:
+                broker_only.append(broker_id)
+        return tuple(sorted(broker_only))
+
     def _fail(self, reason, unresolved=(), mismatches=()):
         self.state = RecoveryState.FAILED
         self.last_result = RecoveryResult(RecoveryState.FAILED, tuple(unresolved), reason, tuple(mismatches))
@@ -89,18 +140,30 @@ class StartupRecoveryCoordinator:
         self.audit_log.record("STARTUP_RECOVERY_FAILED", reason=reason, metadata={"unresolved_order_ids": list(unresolved), "position_mismatches": list(mismatches)})
         return self.last_result
 
-    def recover(self, lifecycle, reconcile_order, broker_positions=None, broker_positions_provider=None):
+    def recover(self, lifecycle, reconcile_order, broker_positions=None, broker_positions_provider=None, broker_orders=None, broker_orders_provider=None):
         self.begin(); unresolved = []
         try:
             for order_id, order in lifecycle.orders.items():
-                if order.status not in (OrderStatus.SUBMISSION_INTENT, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED): continue
+                if order.status not in self._LOCAL_RECONCILIABLE_STATUSES:
+                    continue
                 updated = reconcile_order(order)
-                if updated is None or updated.status in (OrderStatus.SUBMISSION_INTENT, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED): unresolved.append(order_id)
-            if unresolved: return self._fail("unresolved orders", unresolved)
-            if broker_positions_provider is not None: broker_positions = broker_positions_provider()
-            if broker_positions is None: return self._fail("broker position snapshot unavailable")
+                if updated is None or updated.status in self._LOCAL_RECONCILIABLE_STATUSES:
+                    unresolved.append(order_id)
+            if unresolved:
+                return self._fail("unresolved orders", unresolved)
+            if broker_orders_provider is not None:
+                broker_orders = broker_orders_provider()
+            if broker_orders is not None:
+                broker_only = self.compare_live_orders(lifecycle, broker_orders)
+                if broker_only:
+                    return self._fail("broker-only live orders", unresolved=broker_only)
+            if broker_positions_provider is not None:
+                broker_positions = broker_positions_provider()
+            if broker_positions is None:
+                return self._fail("broker position snapshot unavailable")
             mismatches = self.compare_positions(lifecycle.positions, broker_positions)
-            if mismatches: return self._fail("position reconciliation mismatch", mismatches=mismatches)
+            if mismatches:
+                return self._fail("position reconciliation mismatch", mismatches=mismatches)
             self.execution_state.transition(StartupExecutionState.BROKER_RECONCILED, "broker state reconciled")
             self.execution_state.transition(StartupExecutionState.PORTFOLIO_RECONCILED, "portfolio matches broker")
             self.execution_state.transition(StartupExecutionState.RISK_READY, "startup recovery checks passed")
@@ -108,7 +171,9 @@ class StartupRecoveryCoordinator:
             self.state = RecoveryState.READY; self.last_result = RecoveryResult(RecoveryState.READY)
             self.audit_log.record("STARTUP_RECOVERY_READY", metadata={"state": self.execution_state.state.value})
             return self.last_result
-        except Exception as exc: return self._fail(str(exc), unresolved)
+        except Exception as exc:
+            return self._fail(str(exc), unresolved)
 
     def require_execution_ready(self) -> None:
-        if not self.execution_allowed: raise RuntimeError(f"live execution locked: recovery state={self.state.value}, execution state={self.execution_state.state.value}")
+        if not self.execution_allowed:
+            raise RuntimeError(f"live execution locked: recovery state={self.state.value}, execution state={self.execution_state.state.value}")
