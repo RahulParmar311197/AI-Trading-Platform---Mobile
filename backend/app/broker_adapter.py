@@ -118,17 +118,36 @@ def _optional_identity(value: Any, field: str) -> str | None:
     if not identity: raise ValueError(f"invalid broker {field}")
     return identity
 
+_ACTIVE_BROKER_STATUSES = {
+    "VALIDATION PENDING", "MODIFY PENDING", "TRIGGER PENDING", "PUT ORDER REQ RECEIVED",
+    "MODIFY AFTER MARKET ORDER REQ RECEIVED", "MODIFY VALIDATION PENDING", "AFTER MARKET ORDER REQ RECEIVED",
+    "MODIFIED", "NOT CANCELLED", "CANCEL PENDING", "OPEN PENDING", "NOT MODIFIED", "OPEN", "PENDING",
+}
+
+def _canonical_broker_status(raw_status: str, quantity: float | None, filled: float | None) -> str:
+    status = str(raw_status or "").strip().upper()
+    if not status: raise ValueError("broker response missing status")
+    if status in {"COMPLETE", "EXECUTED", "FILLED"}: return "FILLED"
+    if status in {"REJECTED", "FAILED"}: return "REJECTED"
+    if status in {"CANCELLED", "CANCELED", "CANCEL", "CANCELLED AFTER MARKET ORDER"}: return "CANCELLED"
+    if status in _ACTIVE_BROKER_STATUSES:
+        if filled is not None and filled > 0:
+            if quantity is None: raise ValueError("active broker status with a fill requires quantity")
+            if filled >= quantity - 1e-9:
+                raise ValueError("active broker status cannot report a fully filled order")
+            return "PARTIALLY_FILLED"
+        return "NEW"
+    raise ValueError(f"unsupported broker order status: {raw_status}")
+
 def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected: BrokerOrderRequest | None = None) -> BrokerOrderUpdate:
     data = raw.as_dict() if isinstance(raw, BrokerOrderUpdate) else dict(raw)
     order_id = str(data.get("order_id") or data.get("broker_order_id") or "").strip()
     if not order_id: raise ValueError("broker response missing order_id")
-    status = str(data.get("status") or "").strip().upper()
-    status = {"OPEN":"NEW","PENDING":"NEW","COMPLETE":"FILLED","EXECUTED":"FILLED","CANCELED":"CANCELLED","CANCEL":"CANCELLED","FAILED":"REJECTED"}.get(status, status)
-    if status not in {s.value for s in BrokerOrderStatus}: raise ValueError(f"unsupported broker order status: {status}")
     quantity = _finite_optional(data.get("quantity"), "quantity"); filled = _finite_optional(data.get("filled_quantity"), "filled quantity"); price = _finite_optional(data.get("price"), "price"); average = _finite_optional(data.get("average_price"), "average price")
     if quantity is not None and quantity < 0: raise ValueError("invalid broker quantity")
     if filled is not None and filled < 0: raise ValueError("invalid broker filled quantity")
     if quantity is not None and filled is not None and filled > quantity + 1e-9: raise ValueError("broker filled quantity exceeds order quantity")
+    status = _canonical_broker_status(data.get("status"), quantity, filled)
     client_id = str(data.get("client_order_id") if data.get("client_order_id") is not None else data.get("tag")).strip() if data.get("client_order_id") is not None or data.get("tag") is not None else None
     symbol = str(data.get("symbol") or data.get("trading_symbol") or "").strip().upper() or None
     side = str(data.get("side") or data.get("transaction_type") or "").strip().upper() or None
@@ -148,8 +167,6 @@ def normalize_broker_update(raw: BrokerOrderUpdate | dict[str, Any], *, expected
         if expected.broker_route_generation is not None and (broker_route_generation is None or broker_route_generation != expected.broker_route_generation): raise ValueError("broker route generation does not match request")
     if price is not None and price <= 0: raise ValueError("broker price must be positive")
     if average is not None and average <= 0: raise ValueError("broker average price must be positive")
-    if status == "NEW" and filled is not None and abs(filled) > 1e-9: raise ValueError("NEW broker status requires zero filled quantity")
-    if status == "PARTIALLY_FILLED" and (quantity is None or filled is None or not (0 < filled < quantity)): raise ValueError("PARTIALLY_FILLED broker status requires 0 < filled < quantity")
     if status == "FILLED" and (quantity is None or filled is None or abs(filled - quantity) > 1e-9): raise ValueError("FILLED broker status requires filled quantity equal to quantity")
     if status == "REJECTED" and filled is not None and abs(filled) > 1e-9: raise ValueError("REJECTED broker status requires zero filled quantity")
     if status == "CANCELLED" and filled is not None and quantity is not None and abs(filled - quantity) <= 1e-9: raise ValueError("CANCELLED broker status cannot report a fully filled order")
