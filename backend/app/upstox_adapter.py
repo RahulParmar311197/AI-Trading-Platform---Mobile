@@ -105,7 +105,10 @@ class UpstoxAdapter(BrokerAdapter):
     def get_order_snapshot(self) -> BrokerOrderSnapshot:
         self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/retrieve-all",headers=self._headers()); response.raise_for_status(); body=response.json(); data=self._require_record_list(body.get("data",body), "order snapshot"); return BrokerOrderSnapshot(orders=data,complete=True,source="upstox")
     def get_trades_by_order(self, broker_order_id: str) -> list[dict[str, Any]]:
-        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/trades",headers=self._headers()); response.raise_for_status(); body=response.json(); return self._require_record_list(body.get("data",body), "trades response")
+        self._require_live(); response=self.transport.request("GET",f"{self.config.base_url}/v2/order/trades",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); data=self._require_record_list(body.get("data",body), "trades response")
+        if any(str(trade.get("order_id", broker_order_id)) != str(broker_order_id) for trade in data):
+            raise RuntimeError("Upstox trades response contains a mismatched broker order identity")
+        return data
     def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
         self._require_live(); response=self.transport.request("DELETE",f"{self.config.base_url}/v3/order/cancel",headers=self._headers(),params={"order_id":broker_order_id}); response.raise_for_status(); body=response.json(); data=self._require_record(body.get("data",body), "cancel response"); raw={"order_id":str(data.get("order_id",broker_order_id)),"status":"CANCELLED","message":str(data.get("message","")) or None,**{k:v for k,v in (("broker_account_id",self.config.broker_account_id),("broker_route",self.config.broker_route),("broker_route_generation",self.config.broker_route_generation)) if v is not None}}; return normalize_broker_update(raw)
     def get_positions(self) -> list[dict[str, Any]]:
