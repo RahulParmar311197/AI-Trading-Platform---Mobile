@@ -59,6 +59,33 @@ def test_resolved_client_order_id_cannot_be_reused(tmp_path: Path):
     assert store.unresolved() == []
 
 
+def test_resolved_intent_cannot_be_rebound_to_different_broker_order(tmp_path: Path):
+    store = SubmissionIntentStore(str(tmp_path / "intents.json"))
+    _create(store)
+    store.record_broker_order("cli-1", "broker-old", "FILLED")
+    store.resolve("cli-1")
+    with pytest.raises(RuntimeError, match="resolved submission intent is immutable"):
+        store.record_broker_order("cli-1", "broker-new", "CANCELLED")
+
+
+def test_resolved_intent_cannot_be_mutated_even_with_same_broker_order(tmp_path: Path):
+    store = SubmissionIntentStore(str(tmp_path / "intents.json"))
+    _create(store)
+    store.record_broker_order("cli-1", "broker-old", "FILLED")
+    store.resolve("cli-1")
+    with pytest.raises(RuntimeError, match="resolved submission intent is immutable"):
+        store.record_broker_order("cli-1", "broker-old", "CANCELLED")
+
+
+def test_resolve_is_idempotent_after_resolution(tmp_path: Path):
+    store = SubmissionIntentStore(str(tmp_path / "intents.json"))
+    _create(store)
+    store.record_broker_order("cli-1", "broker-old", "FILLED")
+    store.resolve("cli-1")
+    store.resolve("cli-1")
+    assert store.unresolved() == []
+
+
 def test_same_unresolved_intent_is_idempotent_for_same_fingerprint(tmp_path: Path):
     store = SubmissionIntentStore(str(tmp_path / "intents.json"))
     first = _create(store)
