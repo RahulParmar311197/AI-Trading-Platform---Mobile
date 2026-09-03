@@ -70,4 +70,5 @@ jobs:
             tests/test_startup_recovery.py \
             tests/test_risk_reservation_store.py \
             tests/test_stale_risk_reservation_recovery.py \
-            tests/test_submission_intent_store_postgres.py
+            tests/test_submission_intent_store_postgres.py \
+            tests/test_submission_retry_no_duplicate.py
