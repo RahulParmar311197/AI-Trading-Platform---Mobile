@@ -34,14 +34,13 @@ def _canonical_candle(candle: Candle):
 def _equity_snapshot(portfolio: PaperPortfolio, mark_prices: dict[str, float] | None = None) -> float:
     prices = mark_prices or {}
     unrealized = sum(p.unrealized_pnl(prices[p.symbol]) for p in portfolio.positions.values() if p.symbol in prices)
-    snapshot = EquitySnapshot(
+    return calculate_equity(
         starting_equity=portfolio.initial_equity,
         realized_pnl=portfolio.realized_pnl,
         unrealized_pnl=unrealized,
         fees=portfolio.entry_commission,
         charges=0.0,
     )
-    return calculate_equity(starting_equity=snapshot.starting_equity, realized_pnl=snapshot.realized_pnl, unrealized_pnl=snapshot.unrealized_pnl, fees=snapshot.fees, charges=snapshot.charges)
 
 
 def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_percent: float = 1.0, fee_bps: float = 3.0, slippage_bps: float = 1.0, limits: RiskLimits | None = None, *, enable_ml: bool = False, ml_predictor=None, ml_artifact=None, ml_confidence: float = 0.0, ml_config: MLDecisionConfig | None = None, ml_expected_features: tuple[str, ...] = (), ml_horizon: int = 5, ml_threshold: float = 0.002, strategy_mode: str = 'legacy', ai_symbol: str | None = None, ai_timeframe: str | None = None) -> dict:
@@ -62,8 +61,8 @@ def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_
         raise ValueError('ML predictor and artifact are required when enable_ml=True')
 
     portfolio = PaperPortfolio(starting_equity)
-    broker = PaperBroker()
     costs_model = ExecutionCostModel(commission_bps=fee_bps, slippage_bps=slippage_bps)
+    broker = PaperBroker(costs=costs_model)
     trades: list[BacktestTrade] = []
     equity_curve = [starting_equity]
     i = 20
@@ -106,25 +105,28 @@ def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_
                 ml_rejected += 1
                 i += 1
                 continue
+
         entry_bar = i + 1
         direction = 1 if signal.action == 'BUY' else -1
-        raw_entry = candles[entry_bar].open
-        entry = costs_model.fill_price(signal.action, raw_entry)
+        reference_entry = float(candles[entry_bar].open)
         if signal.stop_loss is None or signal.target is None:
             i += 1
             continue
-        if (direction == 1 and not signal.stop_loss < entry < signal.target) or (direction == -1 and not signal.target < entry < signal.stop_loss):
+        expected_entry = costs_model.fill_price(signal.action, reference_entry)
+        if (direction == 1 and not signal.stop_loss < expected_entry < signal.target) or (direction == -1 and not signal.target < expected_entry < signal.stop_loss):
             i += 1
             continue
-        sizing = size_position(portfolio.equity, risk_percent, entry, signal.stop_loss)
-        order = OrderIntent(candles[entry_bar].symbol, signal.action, entry, signal.stop_loss, signal.target, sizing['quantity'], sizing['risk_amount'], 'backtest', signal.confidence)
+        sizing = size_position(portfolio.equity, risk_percent, expected_entry, signal.stop_loss)
+        order = OrderIntent(candles[entry_bar].symbol, signal.action, reference_entry, signal.stop_loss, signal.target, sizing['quantity'], sizing['risk_amount'], 'backtest', signal.confidence)
         risk = authorize(order=order, equity=portfolio.equity, daily_pnl=portfolio.realized_pnl, open_positions=len(portfolio.positions), limits=limits)
         if not risk.approved:
             skipped_risk += 1
             i += 1
             continue
+
         fill = execute_paper(risk=risk, broker=broker)
         portfolio.apply_fill(order, fill)
+        entry = fill.fill_price
         exit_price = candles[-1].close
         reason = 'END_OF_TEST'
         exit_i = len(candles) - 1
@@ -139,10 +141,13 @@ def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_
                 break
             exit_price = bar.close
             exit_i = j
-        exit_price = costs_model.fill_price('SELL' if direction == 1 else 'BUY', exit_price)
+
+        exit_side = 'SELL' if direction == 1 else 'BUY'
+        exit_price = costs_model.fill_price(exit_side, exit_price)
         close_commission = costs_model.commission(exit_price, order.quantity)
         close = portfolio.close_position(order.symbol, exit_price, reason, commission=close_commission)
-        pnl = close.realized_pnl - portfolio.entry_commission
+        entry_commission = fill.commission
+        pnl = close.realized_pnl - entry_commission
         equity_curve.append(_equity_snapshot(portfolio))
         trades.append(BacktestTrade(signal.action, entry, exit_price, pnl, exit_i - entry_bar + 1, reason))
         i = max(i + 1, exit_i + 1)
