@@ -117,7 +117,8 @@ def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_
             i += 1
             continue
         sizing = size_position(portfolio.equity, risk_percent, expected_entry, signal.stop_loss)
-        order = OrderIntent(candles[entry_bar].symbol, signal.action, reference_entry, signal.stop_loss, signal.target, sizing['quantity'], sizing['risk_amount'], 'backtest', signal.confidence)
+        symbol = candles[entry_bar].instrument.symbol
+        order = OrderIntent(symbol, signal.action, reference_entry, signal.stop_loss, signal.target, sizing['quantity'], sizing['risk_amount'], 'backtest', signal.confidence)
         risk = authorize(order=order, equity=portfolio.equity, daily_pnl=portfolio.realized_pnl, open_positions=len(portfolio.positions), limits=limits)
         if not risk.approved:
             skipped_risk += 1
