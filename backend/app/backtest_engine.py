@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.accounting import EquitySnapshot, calculate_equity
+from app.accounting import calculate_equity
 from app.strategy import generate_signal
 from app.market_data import Candle
 from app.position_sizing import size_position
@@ -146,8 +146,10 @@ def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_
         exit_price = costs_model.fill_price(exit_side, exit_price)
         close_commission = costs_model.commission(exit_price, order.quantity)
         close = portfolio.close_position(order.symbol, exit_price, reason, commission=close_commission)
-        entry_commission = fill.commission
-        pnl = close.realized_pnl - entry_commission
+        # close.realized_pnl includes the exit commission; entry commission is
+        # tracked separately by PaperPortfolio and is therefore subtracted once
+        # here only for the trade journal's net P&L.
+        pnl = close.realized_pnl - fill.commission
         equity_curve.append(_equity_snapshot(portfolio))
         trades.append(BacktestTrade(signal.action, entry, exit_price, pnl, exit_i - entry_bar + 1, reason))
         i = max(i + 1, exit_i + 1)
