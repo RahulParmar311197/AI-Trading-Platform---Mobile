@@ -19,6 +19,16 @@ except ImportError:  # pragma: no cover - production deployments are Linux conta
     fcntl = None
 
 
+_ALLOWED_BROKER_STATUSES = {"NEW", "PARTIALLY_FILLED", "FILLED", "REJECTED", "CANCELLED"}
+
+
+def _validate_broker_status(value: str) -> str:
+    status = str(value or "").strip().upper()
+    if status not in _ALLOWED_BROKER_STATUSES:
+        raise ValueError(f"unsupported broker status: {value}")
+    return status
+
+
 @dataclass(frozen=True)
 class SubmissionIntent:
     client_order_id: str
@@ -131,6 +141,7 @@ class SubmissionIntentStore:
         broker_order_id = str(broker_order_id).strip()
         if not broker_order_id:
             raise ValueError("broker order id is required")
+        broker_status = _validate_broker_status(broker_status)
         session = self._session_factory()
         try:
             with session.begin():
@@ -142,7 +153,7 @@ class SubmissionIntentStore:
                 if record.broker_order_id is not None and record.broker_order_id != broker_order_id:
                     raise RuntimeError("submission intent is already bound to a different broker order")
                 record.broker_order_id = broker_order_id
-                record.broker_status = str(broker_status).upper()
+                record.broker_status = broker_status
                 record.recovered_at = datetime.now(timezone.utc)
                 session.flush()
         finally:
@@ -193,6 +204,7 @@ class SubmissionIntentStore:
         broker_order_id = str(broker_order_id).strip()
         if not broker_order_id:
             raise ValueError("broker order id is required")
+        broker_status = _validate_broker_status(broker_status)
         if self._session_factory is not None:
             self._record_broker_database(client_order_id, broker_order_id, broker_status)
             return
@@ -207,7 +219,7 @@ class SubmissionIntentStore:
             if existing is not None and existing != broker_order_id:
                 raise RuntimeError("submission intent is already bound to a different broker order")
             record["broker_order_id"] = broker_order_id
-            record["broker_status"] = str(broker_status).upper()
+            record["broker_status"] = broker_status
             record["recovered_at"] = datetime.now(timezone.utc).isoformat()
             self._save_unlocked(data)
 
