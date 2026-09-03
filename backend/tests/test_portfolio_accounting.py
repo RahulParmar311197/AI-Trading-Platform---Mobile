@@ -45,3 +45,29 @@ def test_short_position_pnl_direction():
     portfolio.apply_fill(make_order('SELL'), make_fill('SELL', 100.0))
     result=portfolio.close_position('NIFTY', 90.0, 'TAKE_PROFIT')
     assert result.realized_pnl == 1000.0
+
+
+def test_entry_and_exit_commission_are_each_charged_once():
+    portfolio = PaperPortfolio(100000.0)
+    portfolio.apply_fill(make_order(), make_fill(quantity=10.0, commission=3.0))
+    result = portfolio.close_position('NIFTY', 108.0, 'TAKE_PROFIT', commission=4.0)
+
+    gross_trade_pnl = (108.0 - 100.0) * 10.0
+    expected_final_equity = 100000.0 + gross_trade_pnl - 3.0 - 4.0
+
+    assert result.realized_pnl == gross_trade_pnl - 4.0
+    assert portfolio.realized_pnl == gross_trade_pnl - 4.0
+    assert portfolio.equity == expected_final_equity
+    assert portfolio.total_commission == 7.0
+
+
+def test_marked_equity_includes_unrealized_pnl_and_entry_fee_once():
+    portfolio = PaperPortfolio(100000.0)
+    portfolio.apply_fill(make_order(), make_fill(quantity=10.0, commission=3.0))
+
+    marked = portfolio.mark({'NIFTY': 105.0})
+
+    assert marked['realized_pnl'] == 0.0
+    assert marked['unrealized_pnl'] == 50.0
+    assert marked['equity'] == 100047.0
+    assert marked['total_commission'] == 3.0
