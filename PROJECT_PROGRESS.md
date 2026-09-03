@@ -33,6 +33,7 @@ Last maintained: 2026-09-03
 - [x] Regression coverage verifies unsupported broker status cannot bind an intent and supported statuses are canonicalized.
 - [x] Live execution now checks for an existing unresolved submission intent before calling the broker, recovering by authoritative client-order identity instead of issuing a duplicate submission.
 - [x] Regression coverage verifies an unresolved retry performs zero new broker submissions and unmatched recovery remains blocked.
+- [x] Reconciliation Safety CI now executes duplicate-submission recovery regression coverage alongside the PostgreSQL safety suites.
 - [x] Broker order lifecycle now persists broker_order_id and rejects broker identity changes within an existing lifecycle.
 - [x] Regression coverage verifies lifecycle broker-order identity is immutable and blank identities fail closed.
 
