@@ -13,6 +13,7 @@ from app.execution import PaperBroker, execute_paper
 from app.portfolio import PaperPortfolio
 from app.ml_decision import MLDecisionConfig, apply_ml_decision
 from app.performance_metrics import calculate_performance_metrics
+from app.execution_costs import ExecutionCostModel
 
 
 @dataclass
@@ -27,21 +28,12 @@ class BacktestTrade:
 
 def _canonical_candle(candle: Candle):
     from app.market_context import Candle as ContextCandle
-    return ContextCandle(
-        timestamp=candle.timestamp,
-        open=float(candle.open), high=float(candle.high), low=float(candle.low),
-        close=float(candle.close), volume=float(candle.volume),
-    )
+    return ContextCandle(timestamp=candle.timestamp, open=float(candle.open), high=float(candle.high), low=float(candle.low), close=float(candle.close), volume=float(candle.volume))
 
 
-def _equity_snapshot(portfolio: PaperPortfolio, mark_price: float | None = None) -> float:
-    unrealized = 0.0
-    if mark_price is not None:
-        prices = {symbol: mark_price for symbol in portfolio.positions}
-        unrealized = sum(
-            position.unrealized_pnl(prices[position.symbol])
-            for position in portfolio.positions.values()
-        )
+def _equity_snapshot(portfolio: PaperPortfolio, mark_prices: dict[str, float] | None = None) -> float:
+    prices = mark_prices or {}
+    unrealized = sum(p.unrealized_pnl(prices[p.symbol]) for p in portfolio.positions.values() if p.symbol in prices)
     snapshot = EquitySnapshot(
         starting_equity=portfolio.initial_equity,
         realized_pnl=portfolio.realized_pnl,
@@ -49,35 +41,10 @@ def _equity_snapshot(portfolio: PaperPortfolio, mark_price: float | None = None)
         fees=portfolio.entry_commission,
         charges=0.0,
     )
-    return calculate_equity(
-        starting_equity=snapshot.starting_equity,
-        realized_pnl=snapshot.realized_pnl,
-        unrealized_pnl=snapshot.unrealized_pnl,
-        fees=snapshot.fees,
-        charges=snapshot.charges,
-    )
+    return calculate_equity(starting_equity=snapshot.starting_equity, realized_pnl=snapshot.realized_pnl, unrealized_pnl=snapshot.unrealized_pnl, fees=snapshot.fees, charges=snapshot.charges)
 
 
-def run_backtest(
-    candles: list[Candle],
-    starting_equity: float = 100000.0,
-    risk_percent: float = 1.0,
-    fee_bps: float = 3.0,
-    slippage_bps: float = 1.0,
-    limits: RiskLimits | None = None,
-    *,
-    enable_ml: bool = False,
-    ml_predictor=None,
-    ml_artifact=None,
-    ml_confidence: float = 0.0,
-    ml_config: MLDecisionConfig | None = None,
-    ml_expected_features: tuple[str, ...] = (),
-    ml_horizon: int = 5,
-    ml_threshold: float = 0.002,
-    strategy_mode: str = 'legacy',
-    ai_symbol: str | None = None,
-    ai_timeframe: str | None = None,
-) -> dict:
+def run_backtest(candles: list[Candle], starting_equity: float = 100000.0, risk_percent: float = 1.0, fee_bps: float = 3.0, slippage_bps: float = 1.0, limits: RiskLimits | None = None, *, enable_ml: bool = False, ml_predictor=None, ml_artifact=None, ml_confidence: float = 0.0, ml_config: MLDecisionConfig | None = None, ml_expected_features: tuple[str, ...] = (), ml_horizon: int = 5, ml_threshold: float = 0.002, strategy_mode: str = 'legacy', ai_symbol: str | None = None, ai_timeframe: str | None = None) -> dict:
     """Run the deterministic simulator with canonical accounting and metrics."""
     if starting_equity <= 0 or risk_percent <= 0 or risk_percent > 5 or len(candles) < 25:
         raise ValueError('invalid capital/risk or insufficient candles')
@@ -96,6 +63,7 @@ def run_backtest(
 
     portfolio = PaperPortfolio(starting_equity)
     broker = PaperBroker()
+    costs_model = ExecutionCostModel(commission_bps=fee_bps, slippage_bps=slippage_bps)
     trades: list[BacktestTrade] = []
     equity_curve = [starting_equity]
     i = 20
@@ -122,7 +90,6 @@ def run_backtest(
             signal = _Signal()
         else:
             signal = generate_signal(history)
-
         if signal is None:
             i += 1
             continue
@@ -139,18 +106,16 @@ def run_backtest(
                 ml_rejected += 1
                 i += 1
                 continue
-
         entry_bar = i + 1
         direction = 1 if signal.action == 'BUY' else -1
         raw_entry = candles[entry_bar].open
-        entry = raw_entry * (1 + direction * slippage_bps / 10000)
+        entry = costs_model.fill_price(signal.action, raw_entry)
         if signal.stop_loss is None or signal.target is None:
             i += 1
             continue
         if (direction == 1 and not signal.stop_loss < entry < signal.target) or (direction == -1 and not signal.target < entry < signal.stop_loss):
             i += 1
             continue
-
         sizing = size_position(portfolio.equity, risk_percent, entry, signal.stop_loss)
         order = OrderIntent(candles[entry_bar].symbol, signal.action, entry, signal.stop_loss, signal.target, sizing['quantity'], sizing['risk_amount'], 'backtest', signal.confidence)
         risk = authorize(order=order, equity=portfolio.equity, daily_pnl=portfolio.realized_pnl, open_positions=len(portfolio.positions), limits=limits)
@@ -158,7 +123,6 @@ def run_backtest(
             skipped_risk += 1
             i += 1
             continue
-
         fill = execute_paper(risk=risk, broker=broker)
         portfolio.apply_fill(order, fill)
         exit_price = candles[-1].close
@@ -175,47 +139,15 @@ def run_backtest(
                 break
             exit_price = bar.close
             exit_i = j
-
-        exit_price *= 1 - direction * slippage_bps / 10000
-        close = portfolio.close_position(order.symbol, exit_price, reason)
-        costs = (entry * order.quantity + exit_price * order.quantity) * fee_bps / 10000
-        portfolio.realized_pnl -= costs
-        pnl = close.realized_pnl - costs
+        exit_price = costs_model.fill_price('SELL' if direction == 1 else 'BUY', exit_price)
+        close_commission = costs_model.commission(exit_price, order.quantity)
+        close = portfolio.close_position(order.symbol, exit_price, reason, commission=close_commission)
+        pnl = close.realized_pnl - portfolio.entry_commission
         equity_curve.append(_equity_snapshot(portfolio))
         trades.append(BacktestTrade(signal.action, entry, exit_price, pnl, exit_i - entry_bar + 1, reason))
         i = max(i + 1, exit_i + 1)
 
-    # Mark any remaining state at the final candle before producing the report.
-    if portfolio.positions:
-        equity_curve.append(_equity_snapshot(portfolio, candles[-1].close))
-
     trade_pnls = [trade.pnl for trade in trades]
-    metrics = calculate_performance_metrics(
-        equity_curve,
-        trade_pnls,
-        initial_equity=starting_equity,
-    )
+    metrics = calculate_performance_metrics(equity_curve, trade_pnls, initial_equity=starting_equity)
     ending = _equity_snapshot(portfolio)
-    return {
-        'starting_equity': starting_equity,
-        'ending_equity': ending,
-        'net_pnl': ending - starting_equity,
-        'return_percent': metrics.total_return * 100,
-        'trades': metrics.trade_count,
-        'wins': metrics.winning_trades,
-        'losses': metrics.losing_trades,
-        'win_rate': metrics.win_rate,
-        'profit_factor': metrics.profit_factor,
-        'max_drawdown_percent': metrics.max_drawdown_pct * 100,
-        'sharpe': metrics.sharpe_ratio,
-        'sortino': metrics.sortino_ratio,
-        'calmar': metrics.calmar_ratio,
-        'volatility': metrics.volatility,
-        'gross_profit': metrics.gross_profit,
-        'gross_loss': metrics.gross_loss,
-        'risk_rejected': skipped_risk,
-        'ml_rejected': ml_rejected,
-        'equity_curve': equity_curve,
-        'trade_journal': [t.__dict__ for t in trades],
-        'strategy_mode': strategy_mode,
-    }
+    return {'starting_equity': starting_equity, 'ending_equity': ending, 'net_pnl': ending - starting_equity, 'return_percent': metrics.total_return * 100, 'trades': metrics.trade_count, 'wins': metrics.winning_trades, 'losses': metrics.losing_trades, 'win_rate': metrics.win_rate, 'profit_factor': metrics.profit_factor, 'max_drawdown_percent': metrics.max_drawdown_pct * 100, 'sharpe': metrics.sharpe_ratio, 'sortino': metrics.sortino_ratio, 'calmar': metrics.calmar_ratio, 'volatility': metrics.volatility, 'gross_profit': metrics.gross_profit, 'gross_loss': metrics.gross_loss, 'risk_rejected': skipped_risk, 'ml_rejected': ml_rejected, 'equity_curve': equity_curve, 'trade_journal': [t.__dict__ for t in trades], 'strategy_mode': strategy_mode}
