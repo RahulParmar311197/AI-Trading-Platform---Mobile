@@ -144,6 +144,21 @@ class LiveExecutionGateway:
         intent_created = False
         if self.policy.mode is ExecutionMode.LIVE and expected_request is not None:
             try:
+                existing_intent = self.submission_intent_store.get_unresolved(expected_request.client_order_id)
+                if existing_intent is not None:
+                    recovered = self._recover_existing_submission(expected_request)
+                    if recovered is None:
+                        raise ExecutionSafetyError(
+                            "execution blocked: existing unresolved submission intent requires authoritative broker reconciliation"
+                        )
+                    self._apply_broker_result(lifecycle, recovered, expected_request=expected_request)
+                    self.submission_intent_store.record_broker_order(
+                        expected_request.client_order_id,
+                        recovered.order_id,
+                        recovered.status,
+                    )
+                    self.submission_intent_store.resolve(expected_request.client_order_id)
+                    return TrackedExecution(result=recovered, lifecycle=lifecycle)
                 self.submission_intent_store.create(
                     client_order_id=expected_request.client_order_id,
                     route=str(expected_request.broker_route),
@@ -154,6 +169,8 @@ class LiveExecutionGateway:
                     request_fingerprint=_fingerprint(safe_order),
                 )
                 intent_created = True
+            except ExecutionSafetyError:
+                raise
             except Exception as exc:
                 self.incident_reporter.report(IncidentType.UNKNOWN_BROKER_ORDER, IncidentSeverity.CRITICAL, f"execution blocked: submission intent could not be persisted for client_order_id={expected_request.client_order_id}: {exc}")
                 raise ExecutionSafetyError("execution blocked: submission intent could not be persisted") from exc
@@ -201,6 +218,13 @@ class LiveExecutionGateway:
             if self.policy.mode is ExecutionMode.LIVE:
                 raise ExecutionSafetyError("execution blocked: live broker executor must support request-aware submit_order")
         return self.executor.execute(order)
+
+    def _recover_existing_submission(self, request: BrokerOrderRequest) -> BrokerOrderUpdate | None:
+        """Recover an existing unresolved intent before any new broker submission."""
+        recovered = self._recover_ambiguous_submission(request)
+        if recovered is None:
+            return None
+        return recovered
 
     def _recover_ambiguous_submission(self, request: BrokerOrderRequest) -> BrokerOrderUpdate | None:
         finder = getattr(self.executor, "find_order_by_client_id", None)
