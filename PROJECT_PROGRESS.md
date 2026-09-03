@@ -2,7 +2,7 @@
 
 > Persistent execution tracker. **Rule: before every next implementation step, re-check this file and the repository call graph to avoid duplicate/loop work.**
 
-Last maintained: 2026-09-01
+Last maintained: 2026-09-03
 
 ## Working Rules
 
@@ -102,6 +102,14 @@ Last maintained: 2026-09-01
 - [x] Startup position comparison now rejects unknown local position sides and negative local quantities.
 - [x] Added regression coverage proving malformed position direction fails startup recovery and leaves execution locked.
 
+### Backtest / portfolio accounting hardening
+- [x] Fixed a directionally incorrect short-position stop-loss condition in the canonical `backtest_engine.py` path; short stops now compare the bar high against `signal.stop_loss` rather than the take-profit level.
+- [x] Audited the existing `PaperPortfolio` fee model and confirmed entry commission is held separately while exit commission is included in realized P&L, so each commission is charged exactly once in final equity.
+- [x] Added regression coverage for the entry-plus-exit fee invariant: `initial equity + gross trade P&L - entry commission - exit commission = final equity`.
+- [x] Added regression coverage that marked equity includes unrealized P&L while deducting the entry fee only once.
+- [x] Repaired stale backtest regression tests so they match the canonical `CandleBacktester` result contract and its minimum-candle validation instead of asserting fields that do not exist.
+- [ ] Full backtest engine audit remains pending, including continuous mark-to-market equity-curve semantics, exit-path coverage, and strategy/risk interaction coverage.
+
 ## Pending — ordered by priority
 
 ### P0 — Remove/retire duplicate execution stack safely
@@ -138,7 +146,7 @@ Last maintained: 2026-09-01
 - [ ] Strategy/rule engine audit.
 - [ ] AI decision/ranking layer audit.
 - [ ] Backtesting engine audit.
-- [ ] Portfolio/position/P&L accounting audit.
+- [x] Portfolio/position/P&L accounting fee invariant audited and regression-tested; broader portfolio semantics remain pending.
 - [ ] Paper/sandbox/live mode separation audit.
 - [x] Connect broker historical candles to the existing canonical `MarketDataProvider` / validated `Candle[]` pipeline.
 - [ ] Add live/intraday candle ingestion or stream integration using the same canonical candle contract.
