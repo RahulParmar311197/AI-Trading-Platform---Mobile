@@ -31,6 +31,8 @@ Last maintained: 2026-09-03
 - [x] Regression coverage verifies missing reconciliation capability fails closed and keeps the reservation held.
 - [x] Submission-intent broker bindings now reject unknown/empty lifecycle statuses before mutating durable intent state.
 - [x] Regression coverage verifies unsupported broker status cannot bind an intent and supported statuses are canonicalized.
+- [x] Live execution now checks for an existing unresolved submission intent before calling the broker, recovering by authoritative client-order identity instead of issuing a duplicate submission.
+- [x] Regression coverage verifies an unresolved retry performs zero new broker submissions and unmatched recovery remains blocked.
 
 ## Pending — ordered by priority
 
@@ -39,6 +41,7 @@ Last maintained: 2026-09-03
 - [ ] Validate startup reconciliation and recovery jobs in runtime/CI.
 - [ ] Validate stale reservation recovery audit events in runtime/CI.
 - [ ] Validate immutable submission client-order ID behavior in PostgreSQL-backed runtime/CI.
+- [ ] Validate duplicate-submission prevention for unresolved intents in PostgreSQL-backed runtime/CI.
 
 ### P1 — Trading-system completeness
 - [ ] Full market-data pipeline audit.
