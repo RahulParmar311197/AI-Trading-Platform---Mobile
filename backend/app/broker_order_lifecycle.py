@@ -45,6 +45,7 @@ class OrderLifecycle:
     filled_quantity: float = 0
     average_price: float | None = None
     events: list[OrderLifecycleEvent] | None = None
+    broker_order_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.events is None:
@@ -61,6 +62,11 @@ class OrderLifecycle:
             raise ValueError("filled quantity must be finite and non-negative")
         if self.requested_quantity is not None and float(self.filled_quantity) > self.requested_quantity + 1e-9:
             raise ValueError("filled quantity cannot exceed requested quantity")
+        if self.broker_order_id is not None:
+            broker_order_id = str(self.broker_order_id).strip()
+            if not broker_order_id:
+                raise ValueError("broker order id must be non-empty")
+            self.broker_order_id = broker_order_id
 
     @property
     def terminal(self) -> bool:
@@ -88,8 +94,17 @@ class OrderLifecycle:
                 raise InvalidOrderTransition("average price must be finite and positive")
             if not math.isfinite(average_price) or average_price <= 0:
                 raise InvalidOrderTransition("average price must be finite and positive")
+        event_broker_order_id = None
+        if event.broker_order_id is not None:
+            event_broker_order_id = str(event.broker_order_id).strip()
+            if not event_broker_order_id:
+                raise InvalidOrderTransition("broker order id must be non-empty")
+            if self.broker_order_id is not None and event_broker_order_id != self.broker_order_id:
+                raise InvalidOrderTransition("broker order id cannot change during lifecycle")
         self.status = event.status
         self.filled_quantity = filled
         if event.average_price is not None:
             self.average_price = float(event.average_price)
+        if event_broker_order_id is not None:
+            self.broker_order_id = event_broker_order_id
         self.events.append(event)
