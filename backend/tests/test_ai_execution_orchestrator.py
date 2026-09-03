@@ -66,6 +66,19 @@ class FakeReservationStore:
         return self.reconcile_result
 
 
+class ReservationStoreWithoutReconciliation:
+    def __init__(self):
+        self.reserved = []
+        self.released = []
+
+    def reserve(self, **kwargs):
+        self.reserved.append(kwargs)
+        return "reservation-1"
+
+    def release(self, reservation_id):
+        self.released.append(reservation_id)
+
+
 class LegacySubmitter:
     async def submit(self, request):
         return {"status": "accepted"}
@@ -288,3 +301,19 @@ async def test_partial_fill_requires_active_reservation_when_exposure_remains():
 
     assert reservation_store.reconciled[0]["broker_status"] == "PARTIALLY_FILLED"
     assert reservation_store.reconciled[0]["remaining_amount"] == 5000.0
+
+
+@pytest.mark.asyncio
+async def test_terminal_broker_state_requires_durable_reconciliation_capability():
+    reservation_store = ReservationStoreWithoutReconciliation()
+    lifecycle = SimpleNamespace(status=OrderStatus.FILLED, filled_quantity=100.0)
+    submitter = FakeSubmitter(lifecycle=lifecycle)
+
+    with pytest.raises(RuntimeError, match="durable risk reservation reconciliation"):
+        await make_orchestrator(submitter, reservation_store).evaluate_and_execute(
+            object(), equity=100_000, client_order_id="ai-terminal-no-reconcile",
+            risk_snapshot=risk_snapshot(), broker_execution_context=broker_context(),
+        )
+
+    assert reservation_store.reserved
+    assert reservation_store.released == []
