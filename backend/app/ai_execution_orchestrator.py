@@ -115,18 +115,17 @@ class AIExecutionOrchestrator:
             status = getattr(lifecycle, "status", None)
             if status in {OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED}:
                 reconcile = getattr(self.risk_reservation_store, "reconcile_client_order", None)
-                if callable(reconcile):
-                    remaining_amount = 0.0
-                    if status is OrderStatus.PARTIALLY_FILLED:
-                        remaining_quantity = max(0.0, float(request.quantity) - float(getattr(lifecycle, "filled_quantity", 0.0)))
-                        remaining_amount = remaining_quantity * abs(float(request.price)) * multiplier
-                    broker_status = status.value.upper()
-                    reconciled_status = reconcile(client_order_id=client_order_id, broker_status=broker_status, remaining_amount=remaining_amount)
-                    expected_status = "ACTIVE" if status is OrderStatus.PARTIALLY_FILLED and remaining_amount > 0 else "RELEASED"
-                    if reconciled_status != expected_status:
-                        raise RuntimeError("risk reservation reconciliation did not reach the expected terminal state")
-                elif status in {OrderStatus.REJECTED, OrderStatus.CANCELLED}:
-                    self.risk_reservation_store.release(reservation_id)
+                if not callable(reconcile):
+                    raise RuntimeError("durable risk reservation reconciliation is required for terminal broker states")
+                remaining_amount = 0.0
+                if status is OrderStatus.PARTIALLY_FILLED:
+                    remaining_quantity = max(0.0, float(request.quantity) - float(getattr(lifecycle, "filled_quantity", 0.0)))
+                    remaining_amount = remaining_quantity * abs(float(request.price)) * multiplier
+                broker_status = status.value.upper()
+                reconciled_status = reconcile(client_order_id=client_order_id, broker_status=broker_status, remaining_amount=remaining_amount)
+                expected_status = "ACTIVE" if status is OrderStatus.PARTIALLY_FILLED and remaining_amount > 0 else "RELEASED"
+                if reconciled_status != expected_status:
+                    raise RuntimeError("risk reservation reconciliation did not reach the expected terminal state")
                 if status in {OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.FILLED}:
                     reservation_id = None
         return AIExecutionResult(decision=decision, order_request=request, execution=execution, risk_decision=risk_decision, risk_reservation_id=reservation_id)
