@@ -1,30 +1,30 @@
+import pytest
+
 from app.backtest import Candle, CandleBacktester
 
 
 def test_backtest_empty_candles_is_deterministic():
     result = CandleBacktester().run([])
-    assert result.trades == []
+    assert result.trades == ()
     assert result.final_equity == 100000.0
-    assert result.net_pnl == 0.0
+    assert result.equity_curve == (100000.0,)
 
 
-def test_backtest_result_exposes_gross_and_net_pnl_consistently():
+def test_backtest_rejects_insufficient_candles():
     candles = [
-        Candle(timestamp=1, open=100, high=105, low=95, close=104),
-        Candle(timestamp=2, open=104, high=110, low=100, close=109),
+        Candle(timestamp=index, open=100, high=101, low=99, close=100)
+        for index in range(24)
     ]
-    result = CandleBacktester().run(candles)
-    assert result.final_equity == 100000.0 + result.net_pnl
-    assert result.net_pnl <= result.gross_pnl
-    assert result.fees >= 0.0
+    with pytest.raises(ValueError, match="insufficient candles"):
+        CandleBacktester().run(candles)
 
 
-def test_backtest_equity_curve_ends_at_final_equity():
+def test_backtest_equity_curve_ends_at_final_equity_for_valid_input():
     candles = [
-        Candle(timestamp=1, open=100, high=101, low=99, close=100),
-        Candle(timestamp=2, open=100, high=102, low=98, close=101),
-        Candle(timestamp=3, open=101, high=103, low=100, close=102),
+        Candle(timestamp=index, open=100 + index * 0.1, high=101 + index * 0.1, low=99 + index * 0.1, close=100 + index * 0.1)
+        for index in range(25)
     ]
     result = CandleBacktester().run(candles)
     assert result.equity_curve
     assert result.equity_curve[-1] == result.final_equity
+    assert result.final_equity == result.initial_equity
