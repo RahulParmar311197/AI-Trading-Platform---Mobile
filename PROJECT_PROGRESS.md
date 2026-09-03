@@ -29,6 +29,8 @@ Last maintained: 2026-09-03
 - [x] Regression coverage verifies resolved intent broker binding/status mutation is rejected and repeated resolution is safe.
 - [x] Terminal broker lifecycle states now require durable risk-reservation reconciliation before the orchestrator can release its reservation handle.
 - [x] Regression coverage verifies missing reconciliation capability fails closed and keeps the reservation held.
+- [x] Submission-intent broker bindings now reject unknown/empty lifecycle statuses before mutating durable intent state.
+- [x] Regression coverage verifies unsupported broker status cannot bind an intent and supported statuses are canonicalized.
 
 ## Pending — ordered by priority
 
