@@ -200,3 +200,10 @@ If an apparent gap is found, first search for an existing implementation and wir
 ## Progress Estimate
 
 This is a **work tracker, not a fabricated percentage**. A percentage will only be reported after a full repository/blueprint inventory has been re-run against the current `main` tree.
+
+## Latest Verified Step
+
+- Branch: `fix/execution-recovery-hardening`
+- Latest code commit: `5b184b3bd47597d6c16bc229fbc9689b6b333a90`
+- Verification: backtest engine and regression test files were re-fetched from the branch after edits. GitHub reports no combined status/workflow run for the latest code commit, so CI execution is **not yet verified**.
+- Next highest-priority implementation item: continue the full backtest/portfolio audit, specifically continuous per-candle mark-to-market equity-curve semantics and exit-path/strategy-risk coverage.
