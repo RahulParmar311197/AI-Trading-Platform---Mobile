@@ -27,6 +27,8 @@ Last maintained: 2026-09-03
 - [x] Reconciliation Safety CI executes the PostgreSQL submission-intent regression suite after migrations.
 - [x] Resolved submission intents are now fully immutable: broker bindings/status cannot be mutated after resolution, and repeated resolution is idempotent.
 - [x] Regression coverage verifies resolved intent broker binding/status mutation is rejected and repeated resolution is safe.
+- [x] Terminal broker lifecycle states now require durable risk-reservation reconciliation before the orchestrator can release its reservation handle.
+- [x] Regression coverage verifies missing reconciliation capability fails closed and keeps the reservation held.
 
 ## Pending — ordered by priority
 
