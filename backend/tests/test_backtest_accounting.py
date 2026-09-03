@@ -52,6 +52,10 @@ def test_portfolio_trade_fee_invariant_deducts_entry_and_exit_once():
     fill = ExecutionResult("PAPER-1", OrderStatus.FILLED, 1.0, 100.0, "paper fill", entry_commission, 0.0)
 
     portfolio.apply_fill(order, fill)
+    marked = portfolio.mark({"TEST": 110.0})
+    assert marked["unrealized_pnl"] == pytest.approx(10.0)
+    assert marked["equity"] == pytest.approx(100000.0 + 10.0 - entry_commission)
+
     close = portfolio.close_position("TEST", 110.0, "TAKE_PROFIT", commission=exit_commission)
 
     expected_trade_pnl = (110.0 - 100.0) - entry_commission - exit_commission
