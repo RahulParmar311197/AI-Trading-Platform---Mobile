@@ -48,14 +48,17 @@ Last maintained: 2026-09-04
 - [x] AI decision regression coverage verifies invalid confidence/configuration, invalid ML confidence, mismatched/future predictions, explanation integrity, and fail-closed behavior.
 - [x] Backtest engine now rejects malformed/non-monotonic/mixed-identity candles, invalid/non-finite configuration, unsupported/non-finite strategy outputs, and invalid fill requests; replay remains isolated from live execution.
 - [x] Backtest regression coverage verifies configuration, market-data, and fill-price safety contracts.
+- [x] Paper portfolio accounting now validates position/fill/mark/bar numeric state, rejects duplicate-symbol overwrites, and fails closed on incomplete valuation or malformed OHLC ranges.
+- [x] Portfolio regression coverage verifies duplicate positions, invalid fills/marks, incomplete valuation, malformed OHLC, and directional short P&L behavior.
+- [x] Execution module is now a package with a SQL terminal-settlement adapter, restoring the durable reservation settlement regression contract.
+- [x] Market-data broker ingestion now preserves source ordering and fails closed on non-monotonic/future batches instead of sorting malformed input into validity.
 
 ## Verified — 2026-09-04
 - [x] Trading Safety CI run `33836170503` completed successfully, including the bound-broker recovery contract and live-execution-disabled-by-default checks.
-- [x] Upstox sandbox authentication workflow was executed against `main` with secret value withheld; dependency installation succeeded and the workflow failed closed because `UPSTOX_SANDBOX_ACCESS_TOKEN` was absent from repository Actions secrets.
-- [ ] Upstox sandbox profile authentication remains unverified because the repository secret is not configured; no sandbox order was submitted.
-- [ ] Strategy safety CI verification is pending for commits `ed4eb254f28fa23c0cb214e86e5b843a6e413d15` / `67c52067b037d45e1bac3441409576033a41bd10`.
-- [ ] AI decision safety CI verification is pending for commits `bc28423ec132f0006ae50d424eb51d9934e44c6a` / `a74ec87fdcf1609737018a42b81d5d63cc919d52`.
-- [ ] Backtest safety CI verification is pending for commits `3aaf6aa3ddb30ecf344c04de838f50e98736cb21` / `49a503de9c7ceb6370ee4f762ef26b8af2339df1`.
+- [x] Latest pre-fix CI run `33837533833`/`33837533840` identified concrete regressions: missing `execution_alert_worker_health` wiring, missing `app.execution.sql_repository`, and three market-data contract failures.
+- [x] Those regressions were fixed in commits following the failed run; a new CI cycle is running on `main` commit `2e5283343ea6352b898209b6183e0bd3cdba73c1`.
+- [ ] Upstox sandbox profile authentication remains unverified. The latest observed sandbox-auth run still received an empty `UPSTOX_SANDBOX_ACCESS_TOKEN` environment value; the read-only profile call was skipped. No sandbox order was submitted.
+- [ ] Latest CI cycle for commit `2e5283343ea6352b898209b6183e0bd3cdba73c1` is pending completion; do not treat it as CI-verified until all required checks pass.
 
 ## Pending — ordered by priority
 
@@ -73,7 +76,7 @@ Last maintained: 2026-09-04
 - [ ] Strategy/rule engine audit — deterministic signal validation and regression contract added; CI verification pending.
 - [x] AI decision/ranking layer audit — advisory decision contract hardened and regression coverage added; CI verification pending.
 - [x] Backtesting engine audit — deterministic candle replay contract hardened and regression coverage added; CI verification pending.
-- [ ] Portfolio/position/P&L accounting audit.
+- [x] Portfolio/position/P&L accounting audit — implementation hardening and regression contract added; CI verification pending.
 - [ ] Paper/sandbox/live mode separation audit.
 
 ### P1 — Broker coverage
