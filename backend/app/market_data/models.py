@@ -20,7 +20,6 @@ class Timeframe(str, Enum):
 
 class Instrument(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
-
     symbol: str = Field(min_length=1, max_length=100)
     exchange: str = Field(min_length=1, max_length=32)
     instrument_token: str | None = Field(default=None, max_length=128)
@@ -36,7 +35,6 @@ class Instrument(BaseModel):
 
 class Tick(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
-
     instrument: Instrument
     timestamp: datetime
     price: float = Field(gt=0)
@@ -52,7 +50,6 @@ class Tick(BaseModel):
 
 class Candle(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
-
     instrument: Instrument
     timeframe: Timeframe
     timestamp: datetime
@@ -61,6 +58,42 @@ class Candle(BaseModel):
     low: float = Field(gt=0)
     close: float = Field(gt=0)
     volume: float = Field(default=0, ge=0)
+
+    def __init__(self, *args, **data):
+        if args:
+            if data:
+                raise TypeError("Candle positional and keyword arguments cannot be mixed")
+            if len(args) == 8 and isinstance(args[0], str) and isinstance(args[1], str):
+                symbol, timeframe, timestamp, opening, high, low, close, volume = args
+                data = {
+                    "instrument": Instrument(symbol=symbol, exchange="UNKNOWN"),
+                    "timeframe": timeframe,
+                    "timestamp": timestamp,
+                    "open": opening,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "volume": volume,
+                }
+            elif len(args) == 8 and isinstance(args[0], datetime):
+                timestamp, symbol, timeframe, opening, high, low, close, volume = args
+                data = {
+                    "instrument": Instrument(symbol=symbol, exchange="UNKNOWN"),
+                    "timeframe": timeframe,
+                    "timestamp": timestamp,
+                    "open": opening,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "volume": volume,
+                }
+            else:
+                raise TypeError("unsupported Candle positional constructor")
+        super().__init__(**data)
+
+    @property
+    def symbol(self) -> str:
+        return self.instrument.symbol
 
     @field_validator("timestamp")
     @classmethod
