@@ -42,11 +42,14 @@ Last maintained: 2026-09-04
 - [x] ICT/SMC analysis functions now require canonical, monotonic, finite OHLCV candle sequences before analysis.
 - [x] ICT/SMC parameter validation now rejects invalid swing lookbacks, liquidity tolerances, and order-block displacement multipliers.
 - [x] ICT/SMC regression coverage verifies malformed/mixed/non-finite candle inputs and invalid analysis parameters fail closed, plus deterministic FVG/order-block detection on valid candles.
+- [x] Strategy signal generation now validates configuration, market-data identity/freshness, scoring output, MTF identity/bias/score, ATR, and final risk/reward values before returning a candidate.
+- [x] Strategy regression coverage verifies invalid configuration, malformed/mismatched data, non-finite scoring/ATR, and deterministic candidate generation fail closed or produce a bounded candidate without broker execution.
 
 ## Verified — 2026-09-04
 - [x] Trading Safety CI run `33836170503` completed successfully, including the bound-broker recovery contract and live-execution-disabled-by-default checks.
 - [x] Upstox sandbox authentication workflow was executed against `main` with secret value withheld; dependency installation succeeded and the workflow failed closed because `UPSTOX_SANDBOX_ACCESS_TOKEN` was absent from repository Actions secrets.
 - [ ] Upstox sandbox profile authentication remains unverified because the repository secret is not configured; no sandbox order was submitted.
+- [ ] Strategy safety CI verification is pending for commits `ed4eb254f28fa23c0cb214e86e5b843a6e413d15` / `67c52067b037d45e1bac3441409576033a41bd10`.
 
 ## Pending — ordered by priority
 
@@ -61,7 +64,7 @@ Last maintained: 2026-09-04
 - [ ] Full market-data pipeline audit.
 - [ ] Technical-analysis engine audit — implementation hardening and regression tests added; CI verification pending for the latest commit.
 - [ ] SMC/ICT signal implementation audit — implementation hardening and regression tests added; CI verification pending for the latest commit.
-- [ ] Strategy/rule engine audit.
+- [ ] Strategy/rule engine audit — deterministic signal validation and regression contract added; CI verification pending.
 - [ ] AI decision/ranking layer audit.
 - [ ] Backtesting engine audit.
 - [ ] Portfolio/position/P&L accounting audit.
