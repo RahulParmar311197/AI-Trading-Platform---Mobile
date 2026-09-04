@@ -68,15 +68,15 @@ def test_broker_candle_batch_rejects_invalid_ohlc_without_partial_write():
     assert data.candles("NIFTY", "5m") == []
 
 
-def test_broker_candle_batch_accepts_valid_rows_and_orders_them():
+def test_broker_candle_batch_rejects_non_monotonic_rows_without_reordering():
     data = InMemoryMarketData()
     now = datetime.now(timezone.utc)
     rows = [broker_row(now - timedelta(minutes=5), 102), broker_row(now - timedelta(minutes=10), 101)]
 
-    assert data.ingest_broker_candles("NIFTY", "5m", rows) == 2
-    candles = data.candles("NIFTY", "5m")
-    assert len(candles) == 2
-    assert candles[0].timestamp < candles[1].timestamp
+    with pytest.raises(ValueError, match="failed canonical validation"):
+        data.ingest_broker_candles("NIFTY", "5m", rows)
+
+    assert data.candles("NIFTY", "5m") == []
 
 
 def test_broker_candle_batch_rejects_future_row_without_partial_write():
