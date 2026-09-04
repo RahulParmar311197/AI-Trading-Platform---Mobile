@@ -39,6 +39,9 @@ Last maintained: 2026-09-04
 - [x] Technical-analysis snapshot now requires a non-empty, canonical, monotonic candle sequence before indicators are computed.
 - [x] Technical-analysis parameter validation now rejects invalid periods and invalid Bollinger deviation multipliers.
 - [x] Technical-analysis regression coverage verifies empty, mixed-identity, non-monotonic, and non-finite candle inputs fail closed.
+- [x] ICT/SMC analysis functions now require canonical, monotonic, finite OHLCV candle sequences before analysis.
+- [x] ICT/SMC parameter validation now rejects invalid swing lookbacks, liquidity tolerances, and order-block displacement multipliers.
+- [x] ICT/SMC regression coverage verifies malformed/mixed/non-finite candle inputs and invalid analysis parameters fail closed, plus deterministic FVG/order-block detection on valid candles.
 
 ## Verified — 2026-09-04
 - [x] Trading Safety CI run `33836170503` completed successfully, including the bound-broker recovery contract and live-execution-disabled-by-default checks.
@@ -57,7 +60,7 @@ Last maintained: 2026-09-04
 ### P1 — Trading-system completeness
 - [ ] Full market-data pipeline audit.
 - [ ] Technical-analysis engine audit — implementation hardening and regression tests added; CI verification pending for the latest commit.
-- [ ] SMC/ICT signal implementation audit.
+- [ ] SMC/ICT signal implementation audit — implementation hardening and regression tests added; CI verification pending for the latest commit.
 - [ ] Strategy/rule engine audit.
 - [ ] AI decision/ranking layer audit.
 - [ ] Backtesting engine audit.
