@@ -146,7 +146,7 @@ class LiveExecutionGateway:
             try:
                 existing_intent = self.submission_intent_store.get_unresolved(expected_request.client_order_id)
                 if existing_intent is not None:
-                    recovered = self._recover_existing_submission(expected_request)
+                    recovered = self._recover_existing_submission(expected_request, existing_intent)
                     if recovered is None:
                         raise ExecutionSafetyError(
                             "execution blocked: existing unresolved submission intent requires authoritative broker reconciliation"
@@ -219,12 +219,20 @@ class LiveExecutionGateway:
                 raise ExecutionSafetyError("execution blocked: live broker executor must support request-aware submit_order")
         return self.executor.execute(order)
 
-    def _recover_existing_submission(self, request: BrokerOrderRequest) -> BrokerOrderUpdate | None:
-        """Recover an existing unresolved intent before any new broker submission."""
-        recovered = self._recover_ambiguous_submission(request)
-        if recovered is None:
-            return None
-        return recovered
+    def _recover_existing_submission(self, request: BrokerOrderRequest, existing_intent=None) -> BrokerOrderUpdate | None:
+        """Recover an unresolved submission using its immutable broker binding first."""
+        if existing_intent is not None and existing_intent.broker_order_id:
+            getter = getattr(self.executor, "get_order", None)
+            if not callable(getter):
+                return None
+            try:
+                recovered = getter(existing_intent.broker_order_id)
+                if recovered is None:
+                    return None
+                return normalize_broker_update(recovered, expected=request)
+            except (TypeError, ValueError, RuntimeError):
+                return None
+        return self._recover_ambiguous_submission(request)
 
     def _recover_ambiguous_submission(self, request: BrokerOrderRequest) -> BrokerOrderUpdate | None:
         finder = getattr(self.executor, "find_order_by_client_id", None)
