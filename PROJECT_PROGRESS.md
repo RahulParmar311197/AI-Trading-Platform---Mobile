@@ -1,6 +1,6 @@
 # AI Trading Platform — Production Progress
 
-Last maintained: 2026-09-03
+Last maintained: 2026-09-04
 
 ## Completed — production hardening
 - [x] Regression coverage verifies Dhan order-trade identity mismatch, duplicate trade identity, invalid trade quantities/prices, account mismatch, and valid authoritative trade records.
@@ -36,6 +36,11 @@ Last maintained: 2026-09-03
 - [x] Reconciliation Safety CI now executes duplicate-submission recovery regression coverage alongside the PostgreSQL safety suites.
 - [x] Broker order lifecycle now persists broker_order_id and rejects broker identity changes within an existing lifecycle.
 - [x] Regression coverage verifies lifecycle broker-order identity is immutable and blank identities fail closed.
+
+## Verified — 2026-09-04
+- [x] Trading Safety CI run `33836170503` completed successfully, including the bound-broker recovery contract and live-execution-disabled-by-default checks.
+- [x] Upstox sandbox authentication workflow was executed against `main` with secret value withheld; dependency installation succeeded and the workflow failed closed because `UPSTOX_SANDBOX_ACCESS_TOKEN` was absent from repository Actions secrets.
+- [ ] Upstox sandbox profile authentication remains unverified because the repository secret is not configured; no sandbox order was submitted.
 
 ## Pending — ordered by priority
 
