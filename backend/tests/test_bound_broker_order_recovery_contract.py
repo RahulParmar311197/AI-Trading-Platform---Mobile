@@ -60,7 +60,7 @@ def request():
 
 def context():
     observed_at = datetime.now(timezone.utc)
-    base = BrokerExecutionContext("acct-1", "paper-route", "route-gen-1", 7, "snapshot", observed_at)
+    base = BrokerExecutionContext("1", "paper-route", "route-gen-1", 7, "snapshot", observed_at)
     signature = BrokerContextAttestor(SECRET).sign(
         account_id=base.account_id,
         broker_route=base.broker_route,
