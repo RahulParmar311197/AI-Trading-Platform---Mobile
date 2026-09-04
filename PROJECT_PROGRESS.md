@@ -46,6 +46,8 @@ Last maintained: 2026-09-04
 - [x] Strategy regression coverage verifies invalid configuration, malformed/mismatched data, non-finite scoring/ATR, and deterministic candidate generation fail closed or produce a bounded candidate without broker execution.
 - [x] AI decision layer now validates market-data sequences, ML prediction identity/timestamp/label/model metadata, finite signal outputs, configuration, and ML confidence before producing an advisory decision; malformed AI/ML state fails closed and this layer has no broker execution authority.
 - [x] AI decision regression coverage verifies invalid confidence/configuration, invalid ML confidence, mismatched/future predictions, explanation integrity, and fail-closed behavior.
+- [x] Backtest engine now rejects malformed/non-monotonic/mixed-identity candles, invalid/non-finite configuration, unsupported/non-finite strategy outputs, and invalid fill requests; replay remains isolated from live execution.
+- [x] Backtest regression coverage verifies configuration, market-data, and fill-price safety contracts.
 
 ## Verified — 2026-09-04
 - [x] Trading Safety CI run `33836170503` completed successfully, including the bound-broker recovery contract and live-execution-disabled-by-default checks.
@@ -53,6 +55,7 @@ Last maintained: 2026-09-04
 - [ ] Upstox sandbox profile authentication remains unverified because the repository secret is not configured; no sandbox order was submitted.
 - [ ] Strategy safety CI verification is pending for commits `ed4eb254f28fa23c0cb214e86e5b843a6e413d15` / `67c52067b037d45e1bac3441409576033a41bd10`.
 - [ ] AI decision safety CI verification is pending for commits `bc28423ec132f0006ae50d424eb51d9934e44c6a` / `a74ec87fdcf1609737018a42b81d5d63cc919d52`.
+- [ ] Backtest safety CI verification is pending for commits `3aaf6aa3ddb30ecf344c04de838f50e98736cb21` / `49a503de9c7ceb6370ee4f762ef26b8af2339df1`.
 
 ## Pending — ordered by priority
 
@@ -69,7 +72,7 @@ Last maintained: 2026-09-04
 - [ ] SMC/ICT signal implementation audit — implementation hardening and regression tests added; CI verification pending for the latest commit.
 - [ ] Strategy/rule engine audit — deterministic signal validation and regression contract added; CI verification pending.
 - [x] AI decision/ranking layer audit — advisory decision contract hardened and regression coverage added; CI verification pending.
-- [ ] Backtesting engine audit.
+- [x] Backtesting engine audit — deterministic candle replay contract hardened and regression coverage added; CI verification pending.
 - [ ] Portfolio/position/P&L accounting audit.
 - [ ] Paper/sandbox/live mode separation audit.
 
