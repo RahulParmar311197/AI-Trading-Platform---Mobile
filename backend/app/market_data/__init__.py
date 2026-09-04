@@ -122,11 +122,12 @@ class InMemoryMarketData:
                 raise ValueError(f"invalid broker candle timestamp at index {index}")
             try:
                 normalized.append(Candle(timestamp, symbol, timeframe, float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"]), float(row.get("volume", 0.0))))
-            except (KeyError, TypeError, ValueError) as exc:
+            except Exception as exc:
                 raise ValueError(f"invalid broker candle row at index {index}") from exc
-        normalized.sort(key=lambda candle: candle.timestamp)
         if not normalized:
             return 0
+        # Preserve broker ordering so non-monotonic or future input cannot be
+        # repaired by sorting into an apparently valid sequence.
         if not validate_candle_sequence(normalized):
             raise ValueError("broker candle batch failed canonical validation")
         return sum(1 for candle in normalized if self.put(candle))
