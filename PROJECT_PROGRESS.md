@@ -36,6 +36,9 @@ Last maintained: 2026-09-04
 - [x] Reconciliation Safety CI now executes duplicate-submission recovery regression coverage alongside the PostgreSQL safety suites.
 - [x] Broker order lifecycle now persists broker_order_id and rejects broker identity changes within an existing lifecycle.
 - [x] Regression coverage verifies lifecycle broker-order identity is immutable and blank identities fail closed.
+- [x] Technical-analysis snapshot now requires a non-empty, canonical, monotonic candle sequence before indicators are computed.
+- [x] Technical-analysis parameter validation now rejects invalid periods and invalid Bollinger deviation multipliers.
+- [x] Technical-analysis regression coverage verifies empty, mixed-identity, non-monotonic, and non-finite candle inputs fail closed.
 
 ## Verified — 2026-09-04
 - [x] Trading Safety CI run `33836170503` completed successfully, including the bound-broker recovery contract and live-execution-disabled-by-default checks.
@@ -53,7 +56,7 @@ Last maintained: 2026-09-04
 
 ### P1 — Trading-system completeness
 - [ ] Full market-data pipeline audit.
-- [ ] Technical-analysis engine audit.
+- [ ] Technical-analysis engine audit — implementation hardening and regression tests added; CI verification pending for the latest commit.
 - [ ] SMC/ICT signal implementation audit.
 - [ ] Strategy/rule engine audit.
 - [ ] AI decision/ranking layer audit.
