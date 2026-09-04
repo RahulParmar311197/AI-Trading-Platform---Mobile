@@ -20,6 +20,8 @@ jobs:
         run: pytest -q backend/tests/test_bound_broker_order_recovery_contract.py
       - name: Verify market data safety contract
         run: pytest -q backend/tests/test_market_data_contract.py backend/tests/test_market_data.py
+      - name: Verify technical analysis safety contract
+        run: pytest -q backend/tests/test_technical_analysis.py
       - name: Verify live execution is disabled by default
         run: |
           python - <<'PY'
