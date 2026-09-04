@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
-
 from app.broker_adapter import BrokerOrderRequest, BrokerOrderUpdate
 from app.broker_context_attestation import BrokerContextAttestor
 from app.broker_execution_context import BrokerExecutionContext
 from app.execution_authorization_store import ExecutionAuthorizationStore
-from app.live_execution_gateway import ExecutionMode, ExecutionPolicy, ExecutionSafetyError, LiveExecutionGateway
+from app.live_execution_gateway import ExecutionMode, ExecutionPolicy, LiveExecutionGateway
 from app.submission_intent_store import SubmissionIntentStore
 
 SECRET = b"r" * 32
@@ -50,6 +48,7 @@ def request():
         symbol="NIFTY",
         side="BUY",
         quantity=1,
+        order_type="LIMIT",
         price=100,
         stop=99,
         target=102,
@@ -123,16 +122,27 @@ def test_bound_intent_recovery_uses_exact_broker_order_id_before_client_lookup(t
     gw = gateway(broker, store)
     auth = gw.authorize_request(req, context())
 
-    with pytest.raises(ExecutionSafetyError):
-        gw.execute_request(req, auth, context())
+    result = gw.execute_request(req, auth, context())
 
-    assert broker.get_calls == []
-    assert broker.find_calls == [req.client_order_id]
+    assert result.result.order_id == "broker-bound-123"
+    assert broker.get_calls == ["broker-bound-123"]
+    assert broker.find_calls == []
     assert broker.submit_calls == 0
+    assert store.get_unresolved(req.client_order_id) is None
 
 
 def test_bound_intent_with_contradictory_client_lookup_must_not_rebind(tmp_path):
     req = request()
     store = SubmissionIntentStore(tmp_path / "intents.json")
     seed_bound_intent(store, req)
-    assert store.get_unresolved(req.client_order_id).broker_order_id == "broker-bound-123"
+    broker = BoundOrderExecutor(BrokerOrderUpdate(order_id="broker-bound-123", status="FILLED", client_order_id=req.client_order_id, symbol=req.symbol, side=req.side, quantity=req.quantity, filled_quantity=1, average_price=100))
+    gw = gateway(broker, store)
+    auth = gw.authorize_request(req, context())
+
+    result = gw.execute_request(req, auth, context())
+
+    assert result.result.order_id == "broker-bound-123"
+    assert broker.get_calls == ["broker-bound-123"]
+    assert broker.find_calls == []
+    assert broker.submit_calls == 0
+    assert store.get_unresolved(req.client_order_id) is None
