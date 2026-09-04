@@ -3,7 +3,7 @@ import math
 
 import pytest
 
-from app.market_data import Candle, validate_candle_sequence, validate_freshness, timeframe_seconds
+from app.market_data import Candle, Instrument, validate_candle_sequence, validate_freshness, timeframe_seconds
 
 
 def _candle(ts: datetime, *, symbol: str = "NIFTY", timeframe: str = "5m", close: float = 101.0) -> Candle:
@@ -44,7 +44,16 @@ def test_validate_candle_sequence_rejects_mixed_identity_and_non_monotonic_time(
 
 def test_validate_candle_sequence_rejects_invalid_numeric_ohlcv():
     now = datetime(2026, 9, 4, 10, 0, tzinfo=timezone.utc)
-    invalid = Candle(now - timedelta(minutes=5), "NIFTY", "5m", 100, 102, 99, math.nan, 1000)
+    invalid = Candle.model_construct(
+        instrument=Instrument(symbol="NIFTY", exchange="UNKNOWN"),
+        timeframe="5m",
+        timestamp=now - timedelta(minutes=5),
+        open=100.0,
+        high=102.0,
+        low=99.0,
+        close=math.nan,
+        volume=1000.0,
+    )
     assert not validate_candle_sequence([invalid], now=now)
 
 
