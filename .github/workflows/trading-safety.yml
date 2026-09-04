@@ -30,6 +30,8 @@ jobs:
         run: pytest -q backend/tests/test_ai_decision.py
       - name: Verify backtest safety contract
         run: pytest -q backend/tests/test_backtest.py
+      - name: Verify portfolio accounting safety contract
+        run: pytest -q backend/tests/test_portfolio_contract.py
       - name: Verify live execution is disabled by default
         run: |
           python - <<'PY'
