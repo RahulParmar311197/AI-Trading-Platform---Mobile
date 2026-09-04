@@ -117,6 +117,9 @@ def test_bound_intent_recovery_uses_exact_broker_order_id_before_client_lookup(t
             quantity=req.quantity,
             filled_quantity=1,
             average_price=100,
+            broker_account_id=str(req.broker_account_id),
+            broker_route=req.broker_route,
+            broker_route_generation=req.broker_route_generation,
         )
     )
     gw = gateway(broker, store)
@@ -135,7 +138,19 @@ def test_bound_intent_with_contradictory_client_lookup_must_not_rebind(tmp_path)
     req = request()
     store = SubmissionIntentStore(tmp_path / "intents.json")
     seed_bound_intent(store, req)
-    broker = BoundOrderExecutor(BrokerOrderUpdate(order_id="broker-bound-123", status="FILLED", client_order_id=req.client_order_id, symbol=req.symbol, side=req.side, quantity=req.quantity, filled_quantity=1, average_price=100))
+    broker = BoundOrderExecutor(BrokerOrderUpdate(
+        order_id="broker-bound-123",
+        status="FILLED",
+        client_order_id=req.client_order_id,
+        symbol=req.symbol,
+        side=req.side,
+        quantity=req.quantity,
+        filled_quantity=1,
+        average_price=100,
+        broker_account_id=str(req.broker_account_id),
+        broker_route=req.broker_route,
+        broker_route_generation=req.broker_route_generation,
+    ))
     gw = gateway(broker, store)
     auth = gw.authorize_request(req, context())
 
