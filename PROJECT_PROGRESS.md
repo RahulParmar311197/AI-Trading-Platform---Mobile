@@ -44,12 +44,15 @@ Last maintained: 2026-09-04
 - [x] ICT/SMC regression coverage verifies malformed/mixed/non-finite candle inputs and invalid analysis parameters fail closed, plus deterministic FVG/order-block detection on valid candles.
 - [x] Strategy signal generation now validates configuration, market-data identity/freshness, scoring output, MTF identity/bias/score, ATR, and final risk/reward values before returning a candidate.
 - [x] Strategy regression coverage verifies invalid configuration, malformed/mismatched data, non-finite scoring/ATR, and deterministic candidate generation fail closed or produce a bounded candidate without broker execution.
+- [x] AI decision layer now validates market-data sequences, ML prediction identity/timestamp/label/model metadata, finite signal outputs, configuration, and ML confidence before producing an advisory decision; malformed AI/ML state fails closed and this layer has no broker execution authority.
+- [x] AI decision regression coverage verifies invalid confidence/configuration, invalid ML confidence, mismatched/future predictions, explanation integrity, and fail-closed behavior.
 
 ## Verified — 2026-09-04
 - [x] Trading Safety CI run `33836170503` completed successfully, including the bound-broker recovery contract and live-execution-disabled-by-default checks.
 - [x] Upstox sandbox authentication workflow was executed against `main` with secret value withheld; dependency installation succeeded and the workflow failed closed because `UPSTOX_SANDBOX_ACCESS_TOKEN` was absent from repository Actions secrets.
 - [ ] Upstox sandbox profile authentication remains unverified because the repository secret is not configured; no sandbox order was submitted.
 - [ ] Strategy safety CI verification is pending for commits `ed4eb254f28fa23c0cb214e86e5b843a6e413d15` / `67c52067b037d45e1bac3441409576033a41bd10`.
+- [ ] AI decision safety CI verification is pending for commits `bc28423ec132f0006ae50d424eb51d9934e44c6a` / `a74ec87fdcf1609737018a42b81d5d63cc919d52`.
 
 ## Pending — ordered by priority
 
@@ -65,7 +68,7 @@ Last maintained: 2026-09-04
 - [ ] Technical-analysis engine audit — implementation hardening and regression tests added; CI verification pending for the latest commit.
 - [ ] SMC/ICT signal implementation audit — implementation hardening and regression tests added; CI verification pending for the latest commit.
 - [ ] Strategy/rule engine audit — deterministic signal validation and regression contract added; CI verification pending.
-- [ ] AI decision/ranking layer audit.
+- [x] AI decision/ranking layer audit — advisory decision contract hardened and regression coverage added; CI verification pending.
 - [ ] Backtesting engine audit.
 - [ ] Portfolio/position/P&L accounting audit.
 - [ ] Paper/sandbox/live mode separation audit.
