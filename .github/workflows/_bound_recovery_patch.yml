@@ -34,6 +34,7 @@ jobs:
           p.write_text(s.replace(old, new, 1))
           t = Path('backend/tests/test_bound_broker_order_recovery_contract.py')
           ts = t.read_text()
+          ts = ts.replace('        price=100,\n        stop=99,\n        target=102,', '        price=None,\n        stop=None,\n        target=None,', 1)
           old_test = '''    with pytest.raises(ExecutionSafetyError):\n        gw.execute_request(req, auth, context())\n\n    assert broker.get_calls == []\n    assert broker.find_calls == [req.client_order_id]\n    assert broker.submit_calls == 0\n'''
           new_test = '''    result = gw.execute_request(req, auth, context())\n\n    assert result.result.order_id == "broker-bound-123"\n    assert broker.get_calls == ["broker-bound-123"]\n    assert broker.find_calls == []\n    assert broker.submit_calls == 0\n    assert store.get_unresolved(req.client_order_id) is None\n'''
           if old_test not in ts:
