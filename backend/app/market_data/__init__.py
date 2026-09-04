@@ -36,12 +36,13 @@ def validate_candle_sequence(candles: list[Candle], *, now: datetime | None = No
     if not candles:
         return False
     first = candles[0]
-    current = now if now is None or now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    current = current if current.tzinfo is not None else current.replace(tzinfo=timezone.utc)
     previous = None
     for candle in candles:
         if candle.instrument != first.instrument or candle.timeframe != first.timeframe:
             return False
-        if current is not None and candle.timestamp > current:
+        if candle.timestamp > current:
             return False
         if previous is not None and candle.timestamp <= previous:
             return False
@@ -123,7 +124,7 @@ class InMemoryMarketData:
             try:
                 normalized.append(Candle(timestamp, symbol, timeframe, float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"]), float(row.get("volume", 0.0))))
             except Exception as exc:
-                raise ValueError(f"invalid broker candle row at index {index}") from exc
+                raise ValueError("broker candle batch failed canonical validation") from exc
         if not normalized:
             return 0
         # Preserve broker ordering so non-monotonic or future input cannot be
