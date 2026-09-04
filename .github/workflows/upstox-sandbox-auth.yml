@@ -1,0 +1,44 @@
+name: Upstox Sandbox Auth Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sandbox-auth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements.txt
+      - name: Verify sandbox secret is configured
+        env:
+          UPSTOX_SANDBOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_SANDBOX_ACCESS_TOKEN }}
+        run: |
+          if [ -z "$UPSTOX_SANDBOX_ACCESS_TOKEN" ]; then
+            echo "UPSTOX_SANDBOX_ACCESS_TOKEN is not configured in repository secrets."
+            exit 1
+          fi
+          echo "Upstox sandbox access token is configured (value withheld)."
+      - name: Authenticate against Upstox sandbox using read-only profile
+        env:
+          UPSTOX_SANDBOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_SANDBOX_ACCESS_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          import upstox_client
+
+          configuration = upstox_client.Configuration(sandbox=True)
+          configuration.access_token = os.environ["UPSTOX_SANDBOX_ACCESS_TOKEN"]
+          api = upstox_client.UserApi(upstox_client.ApiClient(configuration))
+          response = api.get_profile()
+          data = getattr(response, "data", None)
+          if data is None:
+              raise RuntimeError("Upstox sandbox profile response did not contain data")
+          user_id = getattr(data, "user_id", None)
+          if not user_id:
+              raise RuntimeError("Upstox sandbox profile response did not contain user_id")
+          print("Upstox sandbox authentication succeeded; user_id is present and withheld.")
+          PY
