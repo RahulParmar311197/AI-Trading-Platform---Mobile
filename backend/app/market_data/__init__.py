@@ -15,13 +15,7 @@ class MarketDataFreshness:
     message: str = ""
 
 
-def validate_freshness(
-    timestamp: datetime,
-    *,
-    max_age_seconds: float,
-    now: datetime | None = None,
-) -> MarketDataFreshness:
-    """Return a deterministic freshness decision; future data is never treated as fresh."""
+def validate_freshness(timestamp: datetime, *, max_age_seconds: float, now: datetime | None = None) -> MarketDataFreshness:
     if max_age_seconds < 0:
         raise ValueError("max_age_seconds must be non-negative")
     current = now or datetime.now(timezone.utc)
@@ -35,18 +29,11 @@ def validate_freshness(
     return MarketDataFreshness(True, age, max_age_seconds, "ok")
 
 
-def validate_candle_sequence(
-    candles: list[Candle],
-    *,
-    now: datetime | None = None,
-) -> bool:
-    """Validate that a candle window is one instrument/timeframe with strict chronology."""
+def validate_candle_sequence(candles: list[Candle], *, now: datetime | None = None) -> bool:
     if not candles:
         return False
     first = candles[0]
-    current = now
-    if current is not None:
-        current = current if current.tzinfo is not None else current.replace(tzinfo=timezone.utc)
+    current = now if now is None or now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
     previous = None
     for candle in candles:
         if candle.instrument != first.instrument or candle.timeframe != first.timeframe:
@@ -60,14 +47,35 @@ def validate_candle_sequence(
     return True
 
 
+class MarketDataStore:
+    """Small in-process canonical store used by API development and tests."""
+    def __init__(self) -> None:
+        self._candles: dict[tuple[str, Timeframe], list[Candle]] = {}
+
+    def put(self, candle: Candle) -> bool:
+        key = (candle.instrument.symbol, candle.timeframe)
+        items = self._candles.setdefault(key, [])
+        if items and candle.timestamp <= items[-1].timestamp:
+            return False
+        items.append(candle)
+        self._candles[key] = items[-5000:]
+        return True
+
+    def candles(self, symbol: str, timeframe: str = "5m", limit: int = 200) -> list[Candle]:
+        if limit <= 0:
+            return []
+        try:
+            tf = Timeframe(timeframe.strip().lower())
+        except ValueError:
+            return []
+        return list(self._candles.get((symbol.strip().upper(), tf), []))[-limit:]
+
+
+market_data = MarketDataStore()
+
+
 __all__ = [
-    "Candle",
-    "Instrument",
-    "Tick",
-    "Timeframe",
-    "HistoricalMarketDataProvider",
-    "RealtimeMarketDataProvider",
-    "MarketDataFreshness",
-    "validate_freshness",
-    "validate_candle_sequence",
+    "Candle", "Instrument", "Tick", "Timeframe", "HistoricalMarketDataProvider",
+    "RealtimeMarketDataProvider", "MarketDataFreshness", "validate_freshness",
+    "validate_candle_sequence", "MarketDataStore", "market_data",
 ]
